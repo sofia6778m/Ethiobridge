@@ -108,6 +108,8 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/workflow', workflowRoutes);
 app.use('/api/public-complaints', publicComplaintRoutes);
+// Alias so /api/complaints/* works alongside /api/public-complaints/*.
+app.use('/api/complaints', publicComplaintRoutes);
 app.use('/api/alerts', alertBroadcastRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/campaigns', campaignRoutes);

@@ -17,6 +17,7 @@ import AdminWoredas from './AdminWoredas';
 import AdminIssueTypes from './AdminIssueTypes';
 import MunicipalComplaintList from '../municipal/MunicipalComplaintList';
 import MunicipalComplaintDetail from '../municipal/MunicipalComplaintDetail';
+import AdminComplaints from './AdminComplaints';
 
 export default function AdminDashboard() {
   const { t } = useTranslation();
@@ -27,7 +28,7 @@ export default function AdminDashboard() {
     { path: '/dashboard/admin/campaigns',    icon: '❤️', label: 'Campaigns' },
     { path: '/dashboard/admin/users',        icon: '👥', label: t('dashboard.userManagement') },
     { path: '/dashboard/admin/reports',      icon: '📋', label: t('dashboard.reportManagement') },
-    { path: '/dashboard/admin/municipal-complaints', icon: '🏛️', label: 'Complaint Management' },
+    { path: '/dashboard/admin/complaints', icon: '🏛️', label: 'Complaint Management' },
     { path: '/dashboard/admin/activity',     icon: '📜', label: t('admin.activityLog') },
     { path: '/dashboard/admin/departments',  icon: '🏛️', label: t('admin.deptManagement') },
     { path: '/dashboard/admin/subcities',    icon: '🏙️', label: 'Subcity Management' },
@@ -47,6 +48,7 @@ export default function AdminDashboard() {
         <Route path="campaigns"  element={<AdminCampaigns />} />
         <Route path="users"      element={<AdminUsers />} />
         <Route path="reports"    element={<AdminReports />} />
+        <Route path="complaints" element={<AdminComplaints />} />
         <Route path="municipal-complaints" element={<MunicipalComplaintList basePath="/dashboard/admin/municipal-complaints" />} />
         <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
         <Route path="activity"   element={<AdminActivity />} />

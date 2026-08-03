@@ -56,13 +56,31 @@ const publicComplaintSchema = new mongoose.Schema(
     reporterEmail: { type: String, default: '' },
     status: {
       type: String,
-      enum: ['Pending', 'Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected', 'Closed'],
+      enum: [
+        'Pending', 'Submitted', 'Under Review', 'Assigned', 'Inspector Assigned',
+        'Technician Assigned', 'In Progress', 'Escalated to Subcity',
+        'Resolved', 'Rejected', 'Closed', 'Reopened',
+      ],
       default: 'Pending',
     },
     assignedOrganization: { type: String, default: '' },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedAt: { type: Date },
     resolvedAt: { type: Date },
+    // ── Field-staff assignment (officer / technician) ───────────────────────
+    assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    assignedOfficerName: { type: String, default: '' },
+    assignedOfficerAt: { type: Date },
+    assignedTechnicianId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    assignedTechnicianName: { type: String, default: '' },
+    assignedTechnicianAt: { type: Date },
+    dueDate: { type: Date },
+    workInstruction: { type: String, default: '' },
+    // Routing level — 'WOREDA' normally, 'SUBCITY' once escalated upward.
+    assignedLevel: { type: String, enum: ['WOREDA', 'SUBCITY'], default: 'WOREDA' },
+    escalationReason: { type: String, default: '' },
+    escalatedToSubcity: { type: Boolean, default: false },
+    closedAt: { type: Date },
     // Explicit submission date (also captured by timestamps.createdAt). Kept
     // separate so dashboard tables can always render "submitted on" reliably.
     submittedAt: { type: Date, default: Date.now },
@@ -74,10 +92,21 @@ const publicComplaintSchema = new mongoose.Schema(
     subcityEscalationDeadline: { type: Date },   // createdAt + 5 days
     escalatedToSubcityAt: { type: Date },
     escalatedToSubcityAdminAt: { type: Date },
+    // Internal (non-public) notes visible to officers/admins in the detail view.
+    internalNotes: [
+      {
+        body: { type: String, required: true },
+        author: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        authorName: { type: String, default: '' },
+        authorRole: { type: String, default: '' },
+      },
+      { timestamps: true },
+    ],
     timeline: [
       {
         action: { type: String, required: true },
         description: { type: String },
+        at: { type: Date, default: Date.now },
         performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         performedByName: { type: String },
         performedByRole: { type: String },
@@ -130,6 +159,10 @@ publicComplaintSchema.index({ region: 1 });
 publicComplaintSchema.index({ subcity: 1 });
 publicComplaintSchema.index({ woredaId: 1 });
 publicComplaintSchema.index({ woredaId: 1, department: 1 });
+publicComplaintSchema.index({ department: 1 });
+publicComplaintSchema.index({ priority: 1 });
+publicComplaintSchema.index({ assignedOfficerId: 1 });
+publicComplaintSchema.index({ assignedTechnicianId: 1 });
 publicComplaintSchema.index({ escalationDeadline: 1, status: 1 });
 publicComplaintSchema.index({ createdAt: -1 });
 

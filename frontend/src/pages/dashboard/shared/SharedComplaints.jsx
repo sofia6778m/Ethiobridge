@@ -10,14 +10,20 @@ import InlineLoader from '../../../components/common/InlineLoader';
 
 const STATUS_STYLES = {
   'Submitted': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  'Pending': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
   'Under Review': 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
   'Assigned': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
+  'Inspector Assigned': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
+  'Technician Assigned': 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300',
   'In Progress': 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+  'Escalated to Subcity': 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
   'Resolved': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   'Rejected': 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+  'Closed': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  'Reopened': 'bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300',
 };
 
-const STATUS_OPTIONS = ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected'];
+const STATUS_OPTIONS = ['Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned', 'Technician Assigned', 'In Progress', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed', 'Reopened'];
 
 export default function SharedComplaints() {
   const { user } = useAuth();

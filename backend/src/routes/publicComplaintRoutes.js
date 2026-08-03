@@ -6,6 +6,11 @@ const {
   getComplaintById,
   getByTrackingNumber,
   updateStatus,
+  assignOfficer,
+  assignTechnician,
+  escalateToSubcityManual,
+  addInternalNote,
+  getAssignableUsers,
   getStats,
   getSubcityWoredas,
   escalateToSubcity,
@@ -22,6 +27,9 @@ router.get('/track/:trackingNumber', getByTrackingNumber);
 // Public — woredas for a subcity (complaint form dropdown). Must be before /:id.
 router.get('/subcity-woredas', getSubcityWoredas);
 
+// Complaint managers — users eligible for officer / technician assignment
+router.get('/assignable-users', protect, authorize(...COMPLAINT_MANAGER_ROLES), getAssignableUsers);
+
 // List — public, but scoped to the logged-in user's role when authenticated
 router.get('/', protectOptional, getPublicComplaints);
 
@@ -33,6 +41,12 @@ router.post('/', protectOptional, upload.array('attachments', 5), validateCompla
 
 // Complaint managers — update status (enforced scope in controller)
 router.patch('/:id/status', protect, authorize(...COMPLAINT_MANAGER_ROLES), validateComplaintStatus, updateStatus);
+
+// Complaint managers — operational workflow actions (enforced scope in controller)
+router.put('/:id/assign-officer', protect, authorize(...COMPLAINT_MANAGER_ROLES), assignOfficer);
+router.put('/:id/assign-technician', protect, authorize(...COMPLAINT_MANAGER_ROLES), assignTechnician);
+router.put('/:id/escalate', protect, authorize(...COMPLAINT_MANAGER_ROLES), escalateToSubcityManual);
+router.post('/:id/internal-notes', protect, authorize(...COMPLAINT_MANAGER_ROLES), addInternalNote);
 
 // Stats (role-scoped)
 router.get('/stats', protect, authorize(...COMPLAINT_MANAGER_ROLES), getStats);

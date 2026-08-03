@@ -200,6 +200,11 @@ export const complaintAPI = {
   track: (trackingNumber) => API.get(`/public-complaints/track/${trackingNumber}`),
   updateStatus: (id, data) => API.patch(`/public-complaints/${id}/status`, data),
   getStats: () => API.get('/public-complaints/stats'),
+  getAssignableUsers: () => API.get('/public-complaints/assignable-users'),
+  assignOfficer: (id, data) => API.put(`/public-complaints/${id}/assign-officer`, data),
+  assignTechnician: (id, data) => API.put(`/public-complaints/${id}/assign-technician`, data),
+  escalate: (id, data) => API.put(`/public-complaints/${id}/escalate`, data),
+  addInternalNote: (id, data) => API.post(`/public-complaints/${id}/internal-notes`, data),
 };
 
 // ---- Alert Broadcasts ----
