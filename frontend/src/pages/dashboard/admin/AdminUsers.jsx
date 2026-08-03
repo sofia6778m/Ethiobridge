@@ -19,7 +19,9 @@ const ROLES = [
   { value: 'woreda',     label: 'Woreda' },
   { value: 'department', label: 'Department' },
   { value: 'inspector',  label: 'Inspector' },
-  { value: 'technician', label: 'Technician' },
+  { value: 'OFFICER',    label: 'Officer' },
+  { value: 'TECHNICIAN', label: 'Technician' },
+  { value: 'CONTRACTOR', label: 'Contractor' },
   { value: 'ngo',        label: 'NGO' },
 ];
 
@@ -36,7 +38,14 @@ const FILTER_ROLES = [
   { value: 'woreda',            label: 'Woreda' },
   { value: 'department',        label: 'Department' },
   { value: 'inspector',         label: 'Inspector' },
-  { value: 'technician',        label: 'Technician' },
+  { value: 'technician',        label: 'Technician (legacy)' },
+  { value: 'ADMIN',             label: 'System Admin (new)' },
+  { value: 'SUBCITY_HEAD',      label: 'Subcity Head' },
+  { value: 'WOREDA_HEAD',       label: 'Woreda Head' },
+  { value: 'DEPARTMENT_ADMIN',  label: 'Department Admin' },
+  { value: 'OFFICER',           label: 'Officer' },
+  { value: 'TECHNICIAN',        label: 'Technician (field)' },
+  { value: 'CONTRACTOR',        label: 'Contractor' },
 ];
 
 // Maps the subcity name stored in DB → the role value used in the User model.
@@ -64,7 +73,7 @@ const EMPTY_FORM = {
   fullName: '', email: '', password: '', phone: '',
   role: 'citizen',
   organizationName: '', organizationType: '',
-  subcity: '', woredaId: '', woredaName: '', department: '',
+  subcity: '', woredaId: '', woredaName: '', department: '', employeeId: '',
 };
 
 // Human-readable role label shown in the users table.
@@ -86,6 +95,14 @@ function getDisplayRole(user) {
     case 'ngo':         return 'NGO';
     case 'volunteer':   return 'Volunteer';
     case 'citizen':     return 'Citizen';
+    case 'ADMIN':       return 'System Admin';
+    case 'SUBCITY_HEAD': return `Subcity Head${user.subcity ? ` – ${SUBCITY_DISPLAY[user.subcity] || user.subcity}` : ''}`;
+    case 'WOREDA_HEAD': return `Woreda Head – ${user.woredaName || ''}`.trim().replace(/–\s*$/, '');
+    case 'DEPARTMENT_ADMIN': return `Department Admin – ${user.department || 'Dept'}${user.woredaName ? ` (${user.woredaName})` : ''}`;
+    case 'OFFICER':     return `Officer${user.department ? ` – ${user.department}` : ''}${user.woredaName ? ` (${user.woredaName})` : ''}`;
+    case 'TECHNICIAN':  return `Field Technician${user.department ? ` – ${user.department}` : ''}${user.woredaName ? ` (${user.woredaName})` : ''}`;
+    case 'CONTRACTOR':  return `Contractor${user.department ? ` – ${user.department}` : ''}${user.woredaName ? ` (${user.woredaName})` : ''}`;
+    case 'CITIZEN':     return 'Citizen';
     default:            return user.role;
   }
 }
@@ -103,6 +120,14 @@ const roleColor = {
   department:           'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
   inspector:            'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
   technician:           'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300',
+  ADMIN:                'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
+  SUBCITY_HEAD:         'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
+  WOREDA_HEAD:          'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300',
+  DEPARTMENT_ADMIN:     'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
+  OFFICER:              'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  TECHNICIAN:           'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300',
+  CONTRACTOR:           'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300',
+  CITIZEN:              'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
 };
 
 export default function AdminUsers() {
@@ -155,13 +180,16 @@ export default function AdminUsers() {
 
   // ── Computed flags based on current form role ────────────────────────────
   const isSubcityRole   = Boolean(SUBCITY_ROLE_MAP[form.role]);
-  const isWoredaRole    = form.role === 'woreda';
-  const isDeptRole      = form.role === 'department';
+  const isWoredaRole    = form.role === 'woreda' || form.role === 'WOREDA_HEAD' || form.role === 'OFFICER' || form.role === 'TECHNICIAN' || form.role === 'CONTRACTOR';
+  const isDeptRole      = form.role === 'department' || form.role === 'DEPARTMENT_ADMIN';
   const isInspectorRole = form.role === 'inspector';
-  const isTechRole      = form.role === 'technician';
+  const isTechRole      = form.role === 'technician' || form.role === 'TECHNICIAN' || form.role === 'CONTRACTOR';
+  const isOfficerRole   = form.role === 'OFFICER';
+  const isFieldStaff    = form.role === 'OFFICER' || form.role === 'TECHNICIAN' || form.role === 'CONTRACTOR';
   const showSubcity     = isSubcityRole || isWoredaRole || isDeptRole || isInspectorRole || isTechRole;
   const showWoreda      = isWoredaRole || isDeptRole || isTechRole;
-  const showDepartment  = isDeptRole || isTechRole;
+  const showDepartment  = isDeptRole || isTechRole || isOfficerRole;
+  const showEmployeeId  = isFieldStaff;
   const showOrgFields   = form.role === 'government' || form.role === 'ngo';
   const isCreateModal   = modal === 'create';
   const isEditModal     = modal?.type === 'edit';
@@ -229,6 +257,7 @@ export default function AdminUsers() {
       organizationType: u.organizationType || '',
       subcity: u.subcity || '', woredaId: u.woredaId || '',
       woredaName: u.woredaName || '', department: u.department || '',
+      employeeId: u.employeeId || '',
     });
     setErrors({});
     fetchLocations();   // refresh subcities, woredas, departments from DB
@@ -653,14 +682,33 @@ export default function AdminUsers() {
                   <p className="text-xs text-amber-600 dark:text-amber-400">
                     {isInspectorRole
                       ? 'Multiple inspectors can be assigned per subcity.'
-                      : isTechRole
-                        ? 'Multiple technicians can be assigned per woreda department.'
-                        : isSubcityRole
-                          ? 'Only one account is allowed per subcity.'
-                          : showDepartment
-                            ? `One account per department per woreda. ${selectedWoreda ? `${selectedWoreda.name} has ${departmentOptions.length} department(s).` : ''}`
-                            : 'Only one woreda manager account is allowed per woreda.'}
+                      : isOfficerRole
+                        ? 'Multiple officers can be assigned per woreda department.'
+                        : isTechRole
+                          ? 'Multiple technicians can be assigned per woreda department.'
+                          : isSubcityRole
+                            ? 'Only one account is allowed per subcity.'
+                            : showDepartment
+                              ? `One account per department per woreda. ${selectedWoreda ? `${selectedWoreda.name} has ${departmentOptions.length} department(s).` : ''}`
+                              : 'Only one woreda manager account is allowed per woreda.'}
                   </p>
+                </div>
+              )}
+
+              {/* Employee ID (field staff only) */}
+              {showEmployeeId && (
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      {t('dashboard.employeeId', 'Employee ID')}
+                    </label>
+                    <input
+                      value={form.employeeId}
+                      onChange={e => setForm(p => ({ ...p, employeeId: e.target.value }))}
+                      className="input-field"
+                      placeholder="e.g. BR-001"
+                    />
+                  </div>
                 </div>
               )}
 

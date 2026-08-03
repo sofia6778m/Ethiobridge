@@ -40,6 +40,10 @@ const {
   getComplaintById,
   assignOfficer,
   assignTechnician,
+  acceptOfficerAssignment,
+  updateTechnicianWorkState,
+  verifyWork,
+  closeComplaint,
   escalateToSubcityManual,
   addInternalNote,
   getAssignableUsers,
@@ -170,9 +174,9 @@ describe('public complaint list', () => {
 
 // ── Officer assignment ────────────────────────────────────────────────────────
 describe('assign officer', () => {
-  it('assigns an eligible officer, updates status and records the timeline', async () => {
+  it('assigns an eligible OFFICER, updates status and records the timeline', async () => {
     const c = await mkComplaint();
-    const officer = await mkUser({ role: 'department', fullName: 'Officer Adem' });
+    const officer = await mkUser({ role: 'OFFICER', fullName: 'Officer Adem' });
 
     const { status, json } = await call(assignOfficer)(c._id, { officerId: officer._id, note: 'Please review' });
     assert.equal(status, 200);
@@ -180,14 +184,28 @@ describe('assign officer', () => {
     assert.equal(fresh.assignedOfficerId.toString(), officer._id.toString());
     assert.equal(fresh.assignedOfficerName, 'Officer Adem');
     assert.ok(fresh.assignedOfficerAt);
-    assert.equal(fresh.status, 'Assigned');
+    assert.equal(fresh.status, 'Under Review');
     assert.ok(fresh.timeline.some((t) => t.action === 'officer_assigned'));
   });
 
-  it('rejects a non-officer (citizen) user', async () => {
+  it('rejects a citizen user as officer', async () => {
     const c = await mkComplaint();
     const citizen = await mkUser({ role: 'citizen' });
     const { status } = await call(assignOfficer)(c._id, { officerId: citizen._id });
+    assert.equal(status, 400);
+  });
+
+  it('rejects a department admin as officer (never offered in dropdowns)', async () => {
+    const c = await mkComplaint();
+    const deptAdmin = await mkUser({ role: 'DEPARTMENT_ADMIN' });
+    const { status } = await call(assignOfficer)(c._id, { officerId: deptAdmin._id });
+    assert.equal(status, 400);
+  });
+
+  it('rejects an officer outside the complaint scope', async () => {
+    const c = await mkComplaint({ woredaId: new mongoose.Types.ObjectId() });
+    const other = await mkUser({ role: 'OFFICER', woredaId: new mongoose.Types.ObjectId(), department: 'Road' });
+    const { status } = await call(assignOfficer)(c._id, { officerId: other._id });
     assert.equal(status, 400);
   });
 
@@ -200,9 +218,9 @@ describe('assign officer', () => {
 
 // ── Technician assignment ─────────────────────────────────────────────────────
 describe('assign technician', () => {
-  it('assigns a technician with due date + work instruction', async () => {
+  it('assigns a TECHNICIAN with due date + work instruction', async () => {
     const c = await mkComplaint();
-    const tech = await mkUser({ role: 'technician', fullName: 'Tech Gebre' });
+    const tech = await mkUser({ role: 'TECHNICIAN', fullName: 'Tech Gebre' });
 
     const { status, json } = await call(assignTechnician)(c._id, {
       technicianId: tech._id,
@@ -216,7 +234,195 @@ describe('assign technician', () => {
     assert.equal(fresh.dueDate.toISOString().slice(0, 10), '2026-08-10');
     assert.equal(fresh.workInstruction, 'Replace the bulb and test the circuit.');
     assert.equal(fresh.status, 'Technician Assigned');
+    assert.equal(fresh.technicianWorkState, 'ASSIGNED');
     assert.ok(fresh.timeline.some((t) => t.action === 'technician_assigned'));
+  });
+
+  it('rejects a department admin as technician (never offered in dropdowns)', async () => {
+    const c = await mkComplaint();
+    const deptAdmin = await mkUser({ role: 'DEPARTMENT_ADMIN' });
+    const { status } = await call(assignTechnician)(c._id, { technicianId: deptAdmin._id });
+    assert.equal(status, 400);
+  });
+
+  it('rejects a technician outside the complaint scope', async () => {
+    const c = await mkComplaint({ woredaId: new mongoose.Types.ObjectId() });
+    const other = await mkUser({ role: 'TECHNICIAN', woredaId: new mongoose.Types.ObjectId(), department: 'Road' });
+    const { status } = await call(assignTechnician)(c._id, { technicianId: other._id });
+    assert.equal(status, 400);
+  });
+});
+
+// ── Officer acceptance ────────────────────────────────────────────────────────
+describe('officer acceptance', () => {
+  it('marks the assignment accepted and records it', async () => {
+    const c = await mkComplaint();
+    const officer = await mkUser({ role: 'OFFICER', fullName: 'Officer Sara' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedOfficerId: officer._id } });
+
+    const asOfficer = { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer Sara' } };
+    const { status } = await call(acceptOfficerAssignment)(c._id, {}, asOfficer);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.officerAccepted, true);
+    assert.ok(fresh.officerAcceptedAt);
+    assert.ok(fresh.timeline.some((t) => t.action === 'officer_accepted'));
+  });
+
+  it('forbids a non-assigned officer from accepting', async () => {
+    const c = await mkComplaint();
+    const officer = await mkUser({ role: 'OFFICER' });
+    const { status } = await call(acceptOfficerAssignment)(c._id, {}, { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer' } });
+    assert.equal(status, 403);
+  });
+});
+
+// ── Technician work-order state machine ───────────────────────────────────────
+describe('technician work state', () => {
+  it('walks the work order through to WORK_COMPLETED and awaits verification', async () => {
+    const c = await mkComplaint();
+    const tech = await mkUser({ role: 'TECHNICIAN', fullName: 'Tech Hana' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedTechnicianId: tech._id, technicianWorkState: 'ASSIGNED' } });
+
+    const asTech = { user: { _id: tech._id, role: 'TECHNICIAN', fullName: 'Tech Hana' } };
+    for (const ws of ['ACCEPTED', 'ON_THE_WAY', 'WORK_STARTED', 'WORK_COMPLETED']) {
+      const r = await call(updateTechnicianWorkState)(c._id, { workState: ws }, asTech);
+      assert.equal(r.status, 200);
+    }
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.technicianWorkState, 'WORK_COMPLETED');
+    assert.equal(fresh.status, 'Awaiting Verification');
+    assert.equal(fresh.technicianRequested, true);
+    assert.ok(fresh.workNotes.length >= 4);
+    assert.ok(fresh.timeline.some((t) => t.action === 'technician_work_state'));
+  });
+
+  it('rejects an illegal transition', async () => {
+    const c = await mkComplaint();
+    const tech = await mkUser({ role: 'TECHNICIAN', fullName: 'Tech' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedTechnicianId: tech._id, technicianWorkState: 'ASSIGNED' } });
+    const asTech = { user: { _id: tech._id, role: 'TECHNICIAN', fullName: 'Tech' } };
+    const { status } = await call(updateTechnicianWorkState)(c._id, { workState: 'WORK_STARTED' }, asTech);
+    assert.equal(status, 400);
+  });
+
+  it('rejects an unknown work state', async () => {
+    const c = await mkComplaint();
+    const tech = await mkUser({ role: 'TECHNICIAN' });
+    const asTech = { user: { _id: tech._id, role: 'TECHNICIAN', fullName: 'Tech' } };
+    const { status } = await call(updateTechnicianWorkState)(c._id, { workState: 'TEA_BREAK' }, asTech);
+    assert.equal(status, 400);
+  });
+});
+
+// ── Verification + closure ────────────────────────────────────────────────────
+describe('verification & closure', () => {
+  it('approves the work: Resolved with verifier details', async () => {
+    const c = await mkComplaint({ status: 'Awaiting Verification' });
+    const officer = await mkUser({ role: 'OFFICER', fullName: 'Officer Ken' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedOfficerId: officer._id } });
+    const asOfficer = { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer Ken' } };
+
+    const { status } = await call(verifyWork)(c._id, { verified: true, note: 'Work looks good.' }, asOfficer);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Resolved');
+    assert.equal(fresh.verifiedByOfficerId.toString(), officer._id.toString());
+    assert.ok(fresh.verifiedAt);
+    assert.equal(fresh.verificationNote, 'Work looks good.');
+  });
+
+  it('sends the work back for rework', async () => {
+    const c = await mkComplaint({ status: 'Awaiting Verification' });
+    const officer = await mkUser({ role: 'OFFICER' });
+    const tech = await mkUser({ role: 'TECHNICIAN' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedOfficerId: officer._id, assignedTechnicianId: tech._id } });
+    const asOfficer = { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer' } };
+
+    const { status } = await call(verifyWork)(c._id, { verified: false, note: 'Loose wiring, redo it.' }, asOfficer);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Rework Required');
+    assert.equal(fresh.technicianWorkState, 'ASSIGNED');
+    assert.equal(fresh.technicianRequested, false);
+  });
+
+  it('requires a verification note', async () => {
+    const c = await mkComplaint({ status: 'Awaiting Verification' });
+    const officer = await mkUser({ role: 'OFFICER' });
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { assignedOfficerId: officer._id } });
+    const asOfficer = { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer' } };
+    const { status } = await call(verifyWork)(c._id, { verified: true }, asOfficer);
+    assert.equal(status, 400);
+  });
+
+  it('closes a resolved complaint with the closing admin recorded', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ status: 'Resolved', woredaId });
+    const deptAdmin = await mkUser({ role: 'DEPARTMENT_ADMIN', fullName: 'Dept Admin', woredaId, department: 'Electricity' });
+    const asDept = { user: { _id: deptAdmin._id, role: 'DEPARTMENT_ADMIN', fullName: 'Dept Admin', woredaId, department: 'Electricity' } };
+
+    const { status } = await call(closeComplaint)(c._id, { note: 'All done.' }, asDept);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Closed');
+    assert.ok(fresh.closedAt);
+    assert.equal(fresh.closedByAdminId.toString(), deptAdmin._id.toString());
+    assert.equal(fresh.closedByAdminName, 'Dept Admin');
+  });
+
+  it('refuses to close an un-resolved complaint', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ status: 'Awaiting Verification', woredaId });
+    const deptAdmin = await mkUser({ role: 'DEPARTMENT_ADMIN', woredaId, department: 'Electricity' });
+    const asDept = { user: { _id: deptAdmin._id, role: 'DEPARTMENT_ADMIN', fullName: 'Dept Admin', woredaId, department: 'Electricity' } };
+    const { status } = await call(closeComplaint)(c._id, {}, asDept);
+    assert.equal(status, 400);
+  });
+});
+
+// ── Full workflow: submit → officer → technician → verify → close ─────────────
+describe('full complaint workflow', () => {
+  it('routes a complaint end-to-end with the final scenario roles', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ woredaId });
+
+    const officer = await mkUser({ role: 'OFFICER', fullName: 'Officer Bole', woredaId, department: 'Electricity', subcity: 'BOLE' });
+    const tech = await mkUser({ role: 'TECHNICIAN', fullName: 'Tech Bole', woredaId, department: 'Electricity', subcity: 'BOLE' });
+    const deptAdmin = await mkUser({ role: 'DEPARTMENT_ADMIN', fullName: 'Dept Bole', woredaId, department: 'Electricity' });
+    const asDept = { user: { _id: deptAdmin._id, role: 'DEPARTMENT_ADMIN', fullName: 'Dept Bole', woredaId, department: 'Electricity' } };
+    const asOfficer = { user: { _id: officer._id, role: 'OFFICER', fullName: 'Officer Bole' } };
+    const asTech = { user: { _id: tech._id, role: 'TECHNICIAN', fullName: 'Tech Bole' } };
+
+    // Dropdowns filtered to the exact woreda + department staff, no department admin.
+    const { status: s0, json } = await call(getAssignableUsers)(undefined, {}, { query: { complaintId: c._id } });
+    assert.equal(s0, 200);
+    assert.deepEqual(json.data.officers.map((o) => o.fullName), ['Officer Bole']);
+    assert.deepEqual(json.data.technicians.map((t) => t.fullName), ['Tech Bole']);
+
+    // Officer assigned + accepts.
+    assert.equal((await call(assignOfficer)(c._id, { officerId: officer._id }, asDept)).status, 200);
+    assert.equal((await call(acceptOfficerAssignment)(c._id, {}, asOfficer)).status, 200);
+
+    // Technician assigned and progresses the work order to completion.
+    assert.equal((await call(assignTechnician)(c._id, { technicianId: tech._id }, asDept)).status, 200);
+    for (const ws of ['ACCEPTED', 'ON_THE_WAY', 'WORK_STARTED', 'WORK_COMPLETED']) {
+      assert.equal((await call(updateTechnicianWorkState)(c._id, { workState: ws }, asTech)).status, 200);
+    }
+
+    // Officer verifies → Resolved.
+    assert.equal((await call(verifyWork)(c._id, { verified: true, note: 'Verified on site.' }, asOfficer)).status, 200);
+
+    // Department admin closes → Closed.
+    assert.equal((await call(closeComplaint)(c._id, { note: 'Case closed.' }, asDept)).status, 200);
+
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Closed');
+    assert.equal(fresh.assignedOfficerId.toString(), officer._id.toString());
+    assert.equal(fresh.assignedTechnicianId.toString(), tech._id.toString());
+    assert.equal(fresh.verifiedByOfficerId.toString(), officer._id.toString());
+    assert.equal(fresh.closedByAdminId.toString(), deptAdmin._id.toString());
+    assert.equal(fresh.technicianWorkState, 'WORK_COMPLETED');
   });
 });
 
@@ -268,15 +474,38 @@ describe('internal notes', () => {
 
 // ── Assignable users ──────────────────────────────────────────────────────────
 describe('assignable users', () => {
-  it('lists officers and technicians separately', async () => {
-    await mkUser({ role: 'department', fullName: 'Officer A' });
-    await mkUser({ role: 'technician', fullName: 'Tech B' });
+  it('lists officers and technicians separately, excluding department admins', async () => {
+    await mkUser({ role: 'OFFICER', fullName: 'Officer A' });
+    await mkUser({ role: 'TECHNICIAN', fullName: 'Tech B' });
+    await mkUser({ role: 'DEPARTMENT_ADMIN', fullName: 'Dept Admin' });
     await mkUser({ role: 'citizen', fullName: 'Not Eligible' });
     const { status, json } = await call(getAssignableUsers)();
     assert.equal(status, 200);
     assert.ok(json.data.officers.some((o) => o.fullName === 'Officer A'));
+    assert.ok(!json.data.officers.some((o) => o.fullName === 'Dept Admin'));
     assert.ok(!json.data.officers.some((o) => o.fullName === 'Not Eligible'));
     assert.ok(json.data.technicians.some((t) => t.fullName === 'Tech B'));
+    assert.ok(!json.data.technicians.some((t) => t.fullName === 'Dept Admin'));
+  });
+
+  it('filters dropdowns to field staff covering the complaint scope', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ woredaId });
+    await mkUser({ role: 'OFFICER', fullName: 'Officer Local', woredaId, department: 'Electricity', subcity: 'BOLE' });
+    await mkUser({ role: 'OFFICER', fullName: 'Officer Far', woredaId: new mongoose.Types.ObjectId(), department: 'Electricity' });
+    await mkUser({ role: 'TECHNICIAN', fullName: 'Tech Local', woredaId, department: 'Electricity', subcity: 'BOLE' });
+    await mkUser({ role: 'TECHNICIAN', fullName: 'Tech WrongDept', woredaId, department: 'Water' });
+    await mkUser({ role: 'DEPARTMENT_ADMIN', fullName: 'Dept Admin', woredaId, department: 'Electricity' });
+
+    const { status, json } = await call(getAssignableUsers)(undefined, {}, { query: { complaintId: c._id } });
+    assert.equal(status, 200);
+    assert.deepEqual(json.data.officers.map((o) => o.fullName), ['Officer Local']);
+    assert.deepEqual(json.data.technicians.map((t) => t.fullName), ['Tech Local']);
+  });
+
+  it('returns 404 for an unknown complaint', async () => {
+    const { status } = await call(getAssignableUsers)(undefined, {}, { query: { complaintId: new mongoose.Types.ObjectId() } });
+    assert.equal(status, 404);
   });
 });
 

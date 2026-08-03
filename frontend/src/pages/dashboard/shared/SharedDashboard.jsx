@@ -32,15 +32,19 @@ export default function SharedDashboard() {
   const isWoreda = role === 'woreda';
   const isInspector = role === 'inspector';
   const isTechnician = role === 'technician';
+  const isSubcityHead = role === 'SUBCITY_HEAD';
+  const isWoredaHead = role === 'WOREDA_HEAD';
+  const isOfficer = role === 'OFFICER';
+  const isFieldTech = role === 'TECHNICIAN';
 
   const subcityLabel = SUB_CITY_LABELS[role] || user?.subcity || 'Subcity';
 
   // Role-based menu — locality roles get no user/department management.
   const navItems = [
     { path: base, icon: '📊', label: t('dashboard.overview') },
-    ...(isSubcity || isWoreda ? [{ path: `${base}/reports`, icon: '📋', label: 'Reports' }] : []),
+    ...(isSubcity || isWoreda || isSubcityHead || isWoredaHead ? [{ path: `${base}/reports`, icon: '📋', label: 'Reports' }] : []),
     ...(!isInspector && !isTechnician ? [{ path: `${base}/complaints`, icon: '📝', label: 'Complaints' }] : []),
-    { path: `${base}/municipal-complaints`, icon: '🏛️', label: isInspector || isTechnician ? 'My Work Orders' : 'Municipal Complaints' },
+    { path: `${base}/municipal-complaints`, icon: '🏛️', label: isInspector || isTechnician || isOfficer || isFieldTech ? 'My Work Orders' : 'Municipal Complaints' },
     ...(!isInspector && !isTechnician ? [
       { path: `${base}/workflow-complaints`, icon: '⚙️', label: 'Workflow Complaints' },
       { path: `${base}/workflow-analytics`, icon: '📈', label: 'Analytics' },
@@ -59,7 +63,15 @@ export default function SharedDashboard() {
         ? 'Inspector Dashboard'
         : isTechnician
           ? 'Technician Dashboard'
-          : 'Dashboard';
+          : isSubcityHead
+            ? `${subcityLabel} Subcity Dashboard`
+            : isWoredaHead
+              ? 'Woreda Dashboard'
+              : isOfficer
+                ? 'Officer Dashboard'
+                : isFieldTech
+                  ? 'Field Technician Dashboard'
+                  : 'Dashboard';
 
   return (
     <DashboardLayout navItems={navItems} title={title}>

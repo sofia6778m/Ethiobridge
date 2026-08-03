@@ -8,6 +8,10 @@ const {
   updateStatus,
   assignOfficer,
   assignTechnician,
+  acceptOfficerAssignment,
+  updateTechnicianWorkState,
+  verifyWork,
+  closeComplaint,
   escalateToSubcityManual,
   addInternalNote,
   getAssignableUsers,
@@ -47,6 +51,14 @@ router.put('/:id/assign-officer', protect, authorize(...COMPLAINT_MANAGER_ROLES)
 router.put('/:id/assign-technician', protect, authorize(...COMPLAINT_MANAGER_ROLES), assignTechnician);
 router.put('/:id/escalate', protect, authorize(...COMPLAINT_MANAGER_ROLES), escalateToSubcityManual);
 router.post('/:id/internal-notes', protect, authorize(...COMPLAINT_MANAGER_ROLES), addInternalNote);
+
+// Field staff — accept / progress work orders (self-scope checked in controller)
+router.put('/:id/accept-officer', protect, authorize('OFFICER'), acceptOfficerAssignment);
+router.put('/:id/technician-work-state', protect, authorize('TECHNICIAN', 'CONTRACTOR'), updateTechnicianWorkState);
+router.put('/:id/verify', protect, authorize('OFFICER'), verifyWork);
+
+// Department admin — close a resolved complaint
+router.put('/:id/close', protect, authorize(...COMPLAINT_MANAGER_ROLES), closeComplaint);
 
 // Stats (role-scoped)
 router.get('/stats', protect, authorize(...COMPLAINT_MANAGER_ROLES), getStats);

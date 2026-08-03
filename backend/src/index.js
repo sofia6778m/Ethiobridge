@@ -28,6 +28,7 @@ const woredaRoutes = require('./routes/woredaRoutes');
 const departmentRoutes = require('./routes/departmentRoutes');
 const workflowComplaintRoutes = require('./routes/workflowComplaintRoutes');
 const municipalComplaintRoutes = require('./routes/municipalComplaintRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 // ── Startup admin account guard ───────────────────────────────────────────────
 // Ensures a working admin account always exists. Runs once after the DB
@@ -118,6 +119,7 @@ app.use('/api/woreda', woredaRoutes);
 app.use('/api/department', departmentRoutes);
 app.use('/api/workflow-complaints', workflowComplaintRoutes);
 app.use('/api/municipal-complaints', municipalComplaintRoutes);
+app.use('/api/users', userRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

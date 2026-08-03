@@ -13,6 +13,14 @@ export const ROLE_DASHBOARD_MAP = {
   department: '/department/dashboard',
   inspector: '/dashboard',
   technician: '/dashboard',
+  // Complaint-management roles
+  ADMIN: '/dashboard/admin',
+  SUBCITY_HEAD: '/dashboard',
+  WOREDA_HEAD: '/dashboard',
+  DEPARTMENT_ADMIN: '/department/dashboard',
+  OFFICER: '/dashboard',
+  TECHNICIAN: '/dashboard',
+  CITIZEN: '/dashboard/citizen',
 };
 
 // Government users get a level-specific workflow dashboard when their

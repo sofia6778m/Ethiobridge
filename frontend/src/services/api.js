@@ -190,9 +190,16 @@ export const publicAPI = {
   getSubcities: () => API.get('/public/subcities'),
 };
 
+// ---- Users (role-scoped lists for assignment dropdowns) ----
+// The ONLY allowed source for officer / technician dropdowns. These endpoints
+// filter by role + location on the server — never reuse the full user list.
+export const userAPI = {
+  getOfficers: (params) => API.get('/users/officers', { params }),
+  getTechnicians: (params) => API.get('/users/technicians', { params }),
+};
+
 // ---- Public Complaints ----
-export const complaintAPI = {
-  create: (data) => API.post('/public-complaints', data, {
+export const complaintAPI = {  create: (data) => API.post('/public-complaints', data, {
     headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
   }),
   getAll: (params) => API.get('/public-complaints', { params }),
@@ -200,9 +207,13 @@ export const complaintAPI = {
   track: (trackingNumber) => API.get(`/public-complaints/track/${trackingNumber}`),
   updateStatus: (id, data) => API.patch(`/public-complaints/${id}/status`, data),
   getStats: () => API.get('/public-complaints/stats'),
-  getAssignableUsers: () => API.get('/public-complaints/assignable-users'),
+  getAssignableUsers: (params) => API.get('/public-complaints/assignable-users', { params }),
   assignOfficer: (id, data) => API.put(`/public-complaints/${id}/assign-officer`, data),
   assignTechnician: (id, data) => API.put(`/public-complaints/${id}/assign-technician`, data),
+  acceptOfficer: (id) => API.put(`/public-complaints/${id}/accept-officer`, {}),
+  updateTechnicianWorkState: (id, data) => API.put(`/public-complaints/${id}/technician-work-state`, data),
+  verifyWork: (id, data) => API.put(`/public-complaints/${id}/verify`, data),
+  closeComplaint: (id, data) => API.put(`/public-complaints/${id}/close`, data),
   escalate: (id, data) => API.put(`/public-complaints/${id}/escalate`, data),
   addInternalNote: (id, data) => API.post(`/public-complaints/${id}/internal-notes`, data),
 };

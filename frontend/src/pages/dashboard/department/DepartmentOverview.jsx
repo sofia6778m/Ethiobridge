@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { deptAPI } from '../../../services/api';
+import { deptAPI, complaintAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 
 export default function DepartmentOverview() {
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
+  const [complaintStats, setComplaintStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -20,6 +21,12 @@ export default function DepartmentOverview() {
       }
     };
     fetch();
+  }, []);
+
+  useEffect(() => {
+    complaintAPI.getStats()
+      .then(res => setComplaintStats(res.data.data))
+      .catch(() => setComplaintStats(null));
   }, []);
 
   if (loading) {
@@ -46,6 +53,20 @@ export default function DepartmentOverview() {
         <StatCard icon="❌" label="Rejected" value={stats?.rejected || 0} color="text-red-600" />
       </div>
 
+      {/* Public complaint widgets (role-scoped) */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-gray-900 dark:text-gray-100">Citizen Complaints</h3>
+          <Link to="/department/dashboard/complaints" className="text-sm text-primary-600 font-medium hover:underline">View all →</Link>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StatCard icon="📝" label="Total Complaints" value={complaintStats?.summary?.total ?? 0} color="text-gray-800" />
+          <StatCard icon="⏳" label="Pending Review" value={complaintStats?.summary?.pending ?? 0} color="text-yellow-600" />
+          <StatCard icon="🔄" label="Awaiting Verification" value={complaintStats?.byStatus?.['Awaiting Verification'] ?? 0} color="text-blue-600" />
+          <StatCard icon="✅" label="Resolved" value={complaintStats?.byStatus?.Resolved ?? 0} color="text-green-600" />
+        </div>
+      </div>
+
       <div className="card p-6">
         <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3">Quick Actions</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -53,6 +74,9 @@ export default function DepartmentOverview() {
           <QuickActionLink to="/department/dashboard/reports?status=Pending" icon="⏳" label="Pending Reports" />
           <QuickActionLink to="/department/dashboard/reports?status=Assigned" icon="📌" label="Assigned to Me" />
           <QuickActionLink to="/department/dashboard/reports?status=In%20Progress" icon="🔄" label="In Progress" />
+          <QuickActionLink to="/department/dashboard/complaints" icon="📝" label="Citizen Complaints" />
+          <QuickActionLink to="/department/dashboard/complaints?status=Awaiting%20Verification" icon="🔍" label="Verify Work" />
+          <QuickActionLink to="/department/dashboard/complaints?status=Resolved" icon="✅" label="Close Resolved" />
         </div>
       </div>
     </div>

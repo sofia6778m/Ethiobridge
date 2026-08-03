@@ -58,11 +58,20 @@ const publicComplaintSchema = new mongoose.Schema(
       type: String,
       enum: [
         'Pending', 'Submitted', 'Under Review', 'Assigned', 'Inspector Assigned',
-        'Technician Assigned', 'In Progress', 'Escalated to Subcity',
+        'Technician Assigned', 'Technician Requested', 'In Progress',
+        'Awaiting Verification', 'Rework Required', 'Escalated to Subcity',
         'Resolved', 'Rejected', 'Closed', 'Reopened',
       ],
       default: 'Pending',
     },
+    // Technician work-order lifecycle. Independent of the complaint status:
+    //   ASSIGNED → ACCEPTED → ON_THE_WAY → WORK_STARTED → WORK_PAUSED → WORK_COMPLETED
+    technicianWorkState: {
+      type: String,
+      enum: ['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY', 'WORK_STARTED', 'WORK_PAUSED', 'WORK_COMPLETED'],
+      default: null,
+    },
+    technicianWorkStateUpdatedAt: { type: Date },
     assignedOrganization: { type: String, default: '' },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedAt: { type: Date },
@@ -71,11 +80,35 @@ const publicComplaintSchema = new mongoose.Schema(
     assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedOfficerName: { type: String, default: '' },
     assignedOfficerAt: { type: Date },
+    officerAccepted: { type: Boolean, default: false },
+    officerAcceptedAt: { type: Date },
     assignedTechnicianId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedTechnicianName: { type: String, default: '' },
     assignedTechnicianAt: { type: Date },
+    technicianRequested: { type: Boolean, default: false },
+    technicianRequestedAt: { type: Date },
     dueDate: { type: Date },
     workInstruction: { type: String, default: '' },
+    // ── Verification (performed by the assigned officer) ────────────────────
+    verifiedByOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    verifiedAt: { type: Date },
+    verificationNote: { type: String, default: '' },
+    // ── Closure (performed by the department admin) ─────────────────────────
+    closedByAdminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    closedByAdminName: { type: String, default: '' },
+    // ── Field evidence ───────────────────────────────────────────────────────
+    inspectionPhotos: [{ type: String }],
+    beforePhotos: [{ type: String }],
+    afterPhotos: [{ type: String }],
+    workNotes: [
+      {
+        note: { type: String, required: true },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        byName: { type: String, default: '' },
+        byRole: { type: String, default: '' },
+        at: { type: Date, default: Date.now },
+      },
+    ],
     // Routing level — 'WOREDA' normally, 'SUBCITY' once escalated upward.
     assignedLevel: { type: String, enum: ['WOREDA', 'SUBCITY'], default: 'WOREDA' },
     escalationReason: { type: String, default: '' },

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { complaintAPI } from '../../../services/api';
+import { complaintAPI, userAPI } from '../../../services/api';
 import { useSocket } from '../../../context/SocketContext';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import EmptyState from '../../../components/common/EmptyState';
@@ -12,7 +12,8 @@ import {
 
 const STATUSES = [
   'Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned',
-  'Technician Assigned', 'In Progress', 'Escalated to Subcity',
+  'Technician Assigned', 'Technician Requested', 'In Progress',
+  'Awaiting Verification', 'Rework Required', 'Escalated to Subcity',
   'Resolved', 'Rejected', 'Closed', 'Reopened',
 ];
 
@@ -25,7 +26,10 @@ const STATUS_STYLES = {
   'Assigned':             'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
   'Inspector Assigned':   'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
   'Technician Assigned':  'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300',
+  'Technician Requested': 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300',
   'In Progress':          'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
+  'Awaiting Verification': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
+  'Rework Required':      'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
   'Escalated to Subcity': 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
   'Resolved':             'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
   'Rejected':             'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
@@ -95,6 +99,7 @@ export default function AdminComplaints() {
   const [escalating, setEscalating] = useState(null);
   const [noteModal, setNoteModal] = useState(null);
   const [assignable, setAssignable] = useState({ officers: [], technicians: [] });
+  const [assignableLoading, setAssignableLoading] = useState(false);
 
   const [form, setForm] = useState({ officerId: '', technicianId: '', dueDate: '', workInstruction: '', reason: '', targetDepartment: '', note: '' });
   const [saving, setSaving] = useState(false);
@@ -146,13 +151,49 @@ export default function AdminComplaints() {
 
   const refreshBoth = () => { fetchList(); fetchStats(); };
 
-  const openAssignable = async (setter, type) => {
+  const openAssignable = async (complaint, type) => {
+    setAssignableLoading(true);
+    setAssignable({ officers: [], technicians: [] });
     try {
-      const r = await complaintAPI.getAssignableUsers();
-      setAssignable(r.data?.data || { officers: [], technicians: [] });
+      const params = { complaintId: complaint._id };
+      // Load the two dropdowns in parallel from the role-scoped user endpoints.
+      // These must NEVER come from the full user list — only OFFICER and
+      // TECHNICIAN / CONTRACTOR accounts are returned by the server.
+      const [officersRes, techniciansRes] = await Promise.all([
+        userAPI.getOfficers(params),
+        userAPI.getTechnicians(params),
+      ]);
+      const officers = officersRes.data?.data?.officers || [];
+      const technicians = techniciansRes.data?.data?.technicians || [];
+
+      console.log('Officer API result', officers);
+      console.log('Technician API result', technicians);
+      officers.forEach(o => console.log('Officer role check:', o.fullName, o.role));
+      technicians.forEach(t => console.log('Technician role check:', t.fullName, t.role));
+
+      // Dropdowns must only ever present the role-filtered lists. Any legacy
+      // assignment value is cleared so a valid selection is required.
+      setAssignable({ officers, technicians });
       setForm(f => ({ ...f, officerId: '', technicianId: '', dueDate: '', workInstruction: '' }));
-      setter();
-    } catch (err) { toast.error(err.response?.data?.message || 'Failed to load assignable users'); }
+      if (type === 'officer') setAssignOfficer(complaint);
+      else setAssignTechnician(complaint);
+    } catch (err) {
+      console.error('Failed to load assignable users:', err);
+      toast.error(err.response?.data?.message || 'Failed to load assignable users');
+    } finally {
+      setAssignableLoading(false);
+    }
+  };
+
+  const handleCloseComplaint = async (complaint) => {
+    setSaving(true);
+    try {
+      await complaintAPI.closeComplaint(complaint._id, {});
+      toast.success('Complaint closed');
+      setDetail(null);
+      refreshBoth();
+    } catch (err) { toast.error(err.response?.data?.message || 'Failed to close complaint'); }
+    finally { setSaving(false); }
   };
 
   const handleAssignOfficer = async () => {
@@ -161,6 +202,7 @@ export default function AdminComplaints() {
     try {
       await complaintAPI.assignOfficer(assignOfficer._id, { officerId: form.officerId });
       toast.success('Officer assigned');
+      if (detail && detail._id === assignOfficer._id) openDetail(assignOfficer._id);
       setAssignOfficer(null);
       refreshBoth();
     } catch (err) { toast.error(err.response?.data?.message || 'Failed to assign officer'); }
@@ -177,6 +219,7 @@ export default function AdminComplaints() {
         workInstruction: form.workInstruction || undefined,
       });
       toast.success('Technician assigned');
+      if (detail && detail._id === assignTechnician._id) openDetail(assignTechnician._id);
       setAssignTechnician(null);
       refreshBoth();
     } catch (err) { toast.error(err.response?.data?.message || 'Failed to assign technician'); }
@@ -457,20 +500,38 @@ export default function AdminComplaints() {
                 <Field label="Closed At"><p className="text-gray-700 dark:text-gray-300">{detail.closedAt ? fmtDateTime(detail.closedAt) : '—'}</p></Field>
               </div>
 
-              {(detail.assignedOfficerName || detail.assignedTechnicianName) && (
+              {(detail.assignedOfficerName || detail.assignedTechnicianName || detail.technicianWorkState) && (
                 <div className="grid grid-cols-2 gap-3 text-sm bg-gray-50 dark:bg-gray-700/40 rounded-xl p-3">
                   <div>
                     <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Officer</p>
                     <p className="text-gray-800 dark:text-gray-200">{detail.assignedOfficerName || '—'}</p>
+                    {detail.officerAccepted && <p className="text-xs text-green-600 dark:text-green-400 mt-0.5">Accepted</p>}
                   </div>
                   <div>
                     <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Technician</p>
                     <p className="text-gray-800 dark:text-gray-200">{detail.assignedTechnicianName || '—'}</p>
+                    {detail.technicianWorkState && (
+                      <p className="text-xs text-gray-500 mt-0.5">Work: {String(detail.technicianWorkState).replace(/_/g, ' ')}</p>
+                    )}
                   </div>
                   {detail.workInstruction && (
                     <div className="col-span-2">
                       <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Work instruction</p>
                       <p className="text-gray-800 dark:text-gray-200">{detail.workInstruction}</p>
+                    </div>
+                  )}
+                  {detail.verifiedByOfficerId?.fullName && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Verified by</p>
+                      <p className="text-gray-800 dark:text-gray-200">{detail.verifiedByOfficerId.fullName}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{fmtDateTime(detail.verifiedAt)}</p>
+                    </div>
+                  )}
+                  {detail.closedByAdminName && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Closed by</p>
+                      <p className="text-gray-800 dark:text-gray-200">{detail.closedByAdminName}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{fmtDateTime(detail.closedAt)}</p>
                     </div>
                   )}
                   {detail.escalationReason && (
@@ -534,9 +595,12 @@ export default function AdminComplaints() {
                   className="input-field w-auto text-sm">
                   {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
-                <button onClick={() => openAssignable(() => setAssignOfficer(detail), 'officer')} className="btn-secondary px-3 py-1.5 text-sm">👤 Assign Officer</button>
-                <button onClick={() => openAssignable(() => setAssignTechnician(detail), 'technician')} className="btn-secondary px-3 py-1.5 text-sm">🔧 Assign Technician</button>
+                <button onClick={() => openAssignable(detail, 'officer')} className="btn-secondary px-3 py-1.5 text-sm">👤 Assign Officer</button>
+                <button onClick={() => openAssignable(detail, 'technician')} className="btn-secondary px-3 py-1.5 text-sm">🔧 Assign Technician</button>
                 <button onClick={() => { setNoteModal(detail); setForm(f => ({ ...f, note: '' })); }} className="btn-secondary px-3 py-1.5 text-sm">📝 Add Note</button>
+                {detail.status === 'Resolved' && (
+                  <button onClick={() => handleCloseComplaint(detail)} disabled={saving} className="btn-secondary px-3 py-1.5 text-sm text-green-700 dark:text-green-300">✅ Close Complaint</button>
+                )}
                 {detail.status !== 'Escalated to Subcity' && (
                   <button onClick={() => { setEscalating(detail); setForm(f => ({ ...f, reason: '', targetDepartment: '' })); }} className="btn-secondary px-3 py-1.5 text-sm text-orange-600 dark:text-orange-300">↗️ Forward to Subcity</button>
                 )}
@@ -552,17 +616,27 @@ export default function AdminComplaints() {
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">{assignOfficer.title} ({assignOfficer.trackingNumber})</p>
           <div className="space-y-3">
             <Field label="Officer">
-              <select value={form.officerId} onChange={e => setForm(f => ({ ...f, officerId: e.target.value }))} className="input-field">
-                <option value="">Select officer…</option>
-                {assignable.officers.map(o => (
-                  <option key={o._id} value={o._id}>{o.fullName} {o.department ? `— ${o.department}` : ''}</option>
-                ))}
-              </select>
+              {assignableLoading ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/40 rounded-lg px-3 py-2.5">
+                  Loading officers…
+                </p>
+              ) : assignable.officers.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/40 rounded-lg px-3 py-2.5">
+                  No officer available for this department.
+                </p>
+              ) : (
+                <select value={form.officerId} onChange={e => setForm(f => ({ ...f, officerId: e.target.value }))} className="input-field">
+                  <option value="">Select officer…</option>
+                  {assignable.officers.map(o => (
+                    <option key={o._id} value={o._id}>{o.fullName} {o.department ? `— ${o.department}` : ''}</option>
+                  ))}
+                </select>
+              )}
             </Field>
           </div>
           <div className="flex gap-3 mt-5">
             <button onClick={() => setAssignOfficer(null)} className="btn-secondary flex-1">{'Cancel'}</button>
-            <button onClick={handleAssignOfficer} disabled={saving} className="btn-primary flex-1">{saving ? '…' : 'Assign'}</button>
+            <button onClick={handleAssignOfficer} disabled={saving || assignableLoading || assignable.officers.length === 0} className="btn-primary flex-1 disabled:opacity-50">{saving ? '…' : 'Assign'}</button>
           </div>
         </Modal>
       )}
@@ -573,12 +647,22 @@ export default function AdminComplaints() {
           <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">{assignTechnician.title} ({assignTechnician.trackingNumber})</p>
           <div className="space-y-3">
             <Field label="Technician">
-              <select value={form.technicianId} onChange={e => setForm(f => ({ ...f, technicianId: e.target.value }))} className="input-field">
-                <option value="">Select technician…</option>
-                {assignable.technicians.map(t => (
-                  <option key={t._id} value={t._id}>{t.fullName} {t.department ? `— ${t.department}` : ''}</option>
-                ))}
-              </select>
+              {assignableLoading ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/40 rounded-lg px-3 py-2.5">
+                  Loading technicians…
+                </p>
+              ) : assignable.technicians.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/40 rounded-lg px-3 py-2.5">
+                  No technician available for this department.
+                </p>
+              ) : (
+                <select value={form.technicianId} onChange={e => setForm(f => ({ ...f, technicianId: e.target.value }))} className="input-field">
+                  <option value="">Select technician…</option>
+                  {assignable.technicians.map(t => (
+                    <option key={t._id} value={t._id}>{t.fullName} {t.department ? `— ${t.department}` : ''}</option>
+                  ))}
+                </select>
+              )}
             </Field>
             <Field label="Due date">
               <input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} className="input-field" />
@@ -590,7 +674,7 @@ export default function AdminComplaints() {
           </div>
           <div className="flex gap-3 mt-5">
             <button onClick={() => setAssignTechnician(null)} className="btn-secondary flex-1">{'Cancel'}</button>
-            <button onClick={handleAssignTechnician} disabled={saving} className="btn-primary flex-1">{saving ? '…' : 'Assign'}</button>
+            <button onClick={handleAssignTechnician} disabled={saving || assignableLoading || assignable.technicians.length === 0} className="btn-primary flex-1 disabled:opacity-50">{saving ? '…' : 'Assign'}</button>
           </div>
         </Modal>
       )}

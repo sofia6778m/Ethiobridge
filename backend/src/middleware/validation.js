@@ -97,8 +97,10 @@ const COMPLAINT_CATEGORIES = [
 ];
 const COMPLAINT_PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
 const COMPLAINT_STATUSES = [
-  'Pending', 'Submitted', 'Under Review', 'Assigned', 'In Progress',
-  'Resolved', 'Rejected', 'Closed',
+  'Pending', 'Submitted', 'Under Review', 'Assigned', 'Technician Assigned',
+  'Technician Requested', 'In Progress', 'Awaiting Verification',
+  'Rework Required', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed',
+  'Reopened',
 ];
 
 // ── Public complaint submission validation ─────────────────────────────────────

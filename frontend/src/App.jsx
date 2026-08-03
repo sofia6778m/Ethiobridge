@@ -108,9 +108,9 @@ const AppRoutes = () => {
         </PublicOnlyRoute>
       } />
 
-      {/* Shared Dashboard — subcity, woreda, inspector & technician roles */}
+      {/* Shared Dashboard — subcity, woreda, inspector, technician & complaint-management roles */}
       <Route path="/dashboard/*" element={
-        <ProtectedRoute roles={['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'inspector', 'technician']}>
+        <ProtectedRoute roles={['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'inspector', 'technician', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'OFFICER', 'TECHNICIAN']}>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
             <SharedDashboard />
           </ErrorBoundary>
@@ -155,7 +155,7 @@ const AppRoutes = () => {
 
       {/* Admin Dashboard */}
       <Route path="/dashboard/admin/*" element={
-        <ProtectedRoute roles={['admin']}>
+        <ProtectedRoute roles={['admin', 'ADMIN']}>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
             <AdminDashboard />
           </ErrorBoundary>
@@ -164,7 +164,7 @@ const AppRoutes = () => {
 
       {/* Department Dashboard */}
       <Route path="/department/dashboard/*" element={
-        <ProtectedRoute roles={['department']}>
+        <ProtectedRoute roles={['department', 'DEPARTMENT_ADMIN']}>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
             <DepartmentDashboard />
           </ErrorBoundary>

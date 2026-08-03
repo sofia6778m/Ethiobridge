@@ -19,13 +19,25 @@ const PROVISIONABLE_ROLES = [
   'citizen', 'government', 'ngo', 'volunteer', 'admin',
   'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
   'woreda', 'department',
+  'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
 ];
 
 // Roles whose uniqueness is enforced per-location at the application layer
 // (in addition to the DB partial indexes) so we can return a human-readable
 // 409 message before Mongoose ever throws an 11000 error.
-const SUBCITY_SCOPED_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura'];
-const WOREDA_SCOPED_ROLES  = ['woreda', 'department'];
+const SUBCITY_SCOPED_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD'];
+
+// Roles that require a woreda selection.
+const WOREDA_SCOPED_ROLES = ['woreda', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CONTRACTOR'];
+
+// Roles that require a department selection.
+const DEPARTMENT_SCOPED_ROLES = ['department', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CONTRACTOR'];
+
+// One account per woreda (woreda manager / woreda head).
+const UNIQUE_WOREDA_ROLES = ['woreda', 'WOREDA_HEAD'];
+
+// One account per woreda + department (department manager / department admin).
+const UNIQUE_DEPARTMENT_ROLES = ['department', 'DEPARTMENT_ADMIN'];
 
 /**
  * Check for a duplicate subcity-admin account.
@@ -40,14 +52,16 @@ const findSubcityConflict = (role, subcity, excludeId = null) => {
 };
 
 /**
- * Check for a duplicate woreda account.
- * For the 'woreda' role: unique per woredaId.
- * For the 'department' role: unique per woredaId + department.
+ * Check for a duplicate woreda-scoped account.
+ * For woreda/WOREDA_HEAD roles: unique per woredaId.
+ * For department/DEPARTMENT_ADMIN roles: unique per woredaId + department.
+ * OFFICER and TECHNICIAN are intentionally NOT unique — a woreda department
+ * can have many officers and technicians.
  */
 const findWoredaConflict = (role, woredaId, department, excludeId = null) => {
   if (!WOREDA_SCOPED_ROLES.includes(role)) return Promise.resolve(null);
   const filter = { role, woredaId };
-  if (role === 'department' && department) filter.department = department;
+  if (UNIQUE_DEPARTMENT_ROLES.includes(role) && department) filter.department = department;
   if (excludeId) filter._id = { $ne: excludeId };
   return User.findOne(filter).select('fullName email').lean();
 };
@@ -133,6 +147,7 @@ const createUser = async (req, res) => {
       fullName, email, password, phone, role,
       organizationName, organizationType,
       skills, subcity, woredaId, woredaName, department,
+      employeeId, subcityId, departmentId,
     } = req.body;
 
     if (!fullName || !email || !password) {
@@ -158,15 +173,16 @@ const createUser = async (req, res) => {
 
     // ── Location field requirements ──────────────────────────────────────────
     if (WOREDA_SCOPED_ROLES.includes(finalRole) && !woredaId) {
-      return res.status(400).json({ success: false, message: 'A woreda must be selected for woreda and department accounts' });
+      return res.status(400).json({ success: false, message: 'A woreda must be selected for woreda, department, officer and technician accounts' });
     }
-    if (finalRole === 'department' && !department) {
-      return res.status(400).json({ success: false, message: 'A department must be selected for department accounts' });
+    if (DEPARTMENT_SCOPED_ROLES.includes(finalRole) && !department) {
+      return res.status(400).json({ success: false, message: 'A department must be selected for department, officer and technician accounts' });
     }
 
     // ── Validate subcity against the live Subcity collection ────────────────
     // Subcity-role accounts derive their subcity from their role and are always
     // valid; only explicitly supplied subcityValues need DB checking.
+    let subcityIdValue = subcityId || null;
     if (subcityValue && !SUBCITY_ROLE_MAP[finalRole]) {
       const Subcity = require('../models/Subcity');
       const scRecord = await Subcity.findOne({ nameLower: subcityValue.trim().toLowerCase() });
@@ -179,13 +195,15 @@ const createUser = async (req, res) => {
         });
       }
       subcityValue = scRecord.name; // Normalise to canonical casing
+      subcityIdValue = scRecord._id;
     }
 
     // ── Validate department against the woreda's own department list ─────────
-    // For department-role accounts we fetch the woreda up-front; this also
+    // For department-scoped accounts we fetch the woreda up-front; this also
     // serves as the "woreda exists" check and is reused in the conflict block.
     let woredaDocForDept = null;
-    if (finalRole === 'department') {
+    let departmentIdValue = departmentId || null;
+    if (DEPARTMENT_SCOPED_ROLES.includes(finalRole)) {
       const Woreda = require('../models/Woreda');
       woredaDocForDept = await Woreda.findById(woredaId).select('name subcity departments').lean();
       if (!woredaDocForDept) {
@@ -205,6 +223,10 @@ const createUser = async (req, res) => {
       }
       // Normalise to the canonical casing stored in the woreda record.
       req.body.department = matched;
+      // Capture the live Department record id when one exists for this woreda.
+      const Department = require('../models/Department');
+      const deptRec = await Department.findOne({ woredaId: new mongoose.Types.ObjectId(woredaId), name: matched }).select('_id').lean();
+      if (deptRec) departmentIdValue = deptRec._id;
     }
 
     // ── Duplicate checks (application layer — 409 before 11000) ─────────────
@@ -230,7 +252,7 @@ const createUser = async (req, res) => {
       }
       const conflict = await findWoredaConflict(finalRole, woredaId, department);
       if (conflict) {
-        const label = finalRole === 'department'
+        const label = UNIQUE_DEPARTMENT_ROLES.includes(finalRole)
           ? `A ${department} department account`
           : 'A woreda manager account';
         return res.status(409).json({
@@ -249,9 +271,12 @@ const createUser = async (req, res) => {
       organizationName: organizationName || '',
       organizationType: organizationType || '',
       subcity: subcityValue || undefined,
+      subcityId: subcityIdValue || undefined,
       woredaId: woredaId || undefined,
       woredaName: woredaName || '',
       department: department || undefined,
+      departmentId: departmentIdValue || undefined,
+      employeeId: employeeId || undefined,
       skills: skills || [],
       isActive: true,
       isApproved: true,
@@ -293,6 +318,7 @@ const updateUser = async (req, res) => {
       fullName, email, phone, role,
       organizationName, organizationType,
       isApproved, isActive, subcity, woredaId, woredaName, department,
+      employeeId, subcityId, departmentId,
     } = req.body;
 
     if (phone && !/^09\d{8}$/.test(phone)) {
@@ -314,6 +340,9 @@ const updateUser = async (req, res) => {
     if (department     !== undefined) {
       updateFields.department = department || null;
     }
+    if (employeeId     !== undefined) updateFields.employeeId     = employeeId || null;
+    if (subcityId      !== undefined) updateFields.subcityId      = subcityId || null;
+    if (departmentId   !== undefined) updateFields.departmentId   = departmentId || null;
 
     // ── Duplicate checks on edit (merge incoming fields with current document) ─
     // Fetch the current record once; we need it for merging missing fields.
@@ -347,7 +376,7 @@ const updateUser = async (req, res) => {
     const effectiveDept     = updateFields.department !== undefined ? updateFields.department  : currentUser.department;
 
     // Validate department against the effective woreda's own department list.
-    if (effectiveRole === 'department' && effectiveDept && effectiveWoredaId) {
+    if (DEPARTMENT_SCOPED_ROLES.includes(effectiveRole) && effectiveDept && effectiveWoredaId) {
       const Woreda = require('../models/Woreda');
       const woredaForValidation = await Woreda.findById(effectiveWoredaId).select('name subcity departments').lean();
       if (woredaForValidation) {
@@ -365,6 +394,9 @@ const updateUser = async (req, res) => {
         }
         // Normalise to canonical casing and write it back into updateFields
         updateFields.department = matched;
+        const Department = require('../models/Department');
+        const deptRec = await Department.findOne({ woredaId: effectiveWoredaId, name: matched }).select('_id').lean();
+        if (deptRec) updateFields.departmentId = deptRec._id;
       }
     }
 
@@ -386,7 +418,7 @@ const updateUser = async (req, res) => {
         const Woreda = require('../models/Woreda');
         const woredaDoc = await Woreda.findById(effectiveWoredaId).select('name subcity').lean();
         const location = woredaDoc ? `${woredaDoc.subcity} - ${woredaDoc.name}` : String(effectiveWoredaId);
-        const label = effectiveRole === 'department' ? `A ${effectiveDept} department account` : 'A woreda manager account';
+        const label = UNIQUE_DEPARTMENT_ROLES.includes(effectiveRole) ? `A ${effectiveDept} department account` : 'A woreda manager account';
         return res.status(409).json({
           success: false,
           message: `${label} already exists for ${location}`,

@@ -350,6 +350,8 @@ const getComplaintById = async (req, res) => {
       .populate('assignedTo', 'fullName organizationName')
       .populate('assignedOfficerId', 'fullName email phone role department')
       .populate('assignedTechnicianId', 'fullName email phone role department')
+      .populate('verifiedByOfficerId', 'fullName email phone role department')
+      .populate('closedByAdminId', 'fullName email phone role department')
       .populate('timeline.performedBy', 'fullName role')
       .populate('internalNotes.author', 'fullName role');
 
@@ -393,7 +395,8 @@ const updateStatus = async (req, res) => {
     const { status, comment } = req.body;
     const validStatuses = [
       'Pending', 'Submitted', 'Under Review', 'Assigned', 'Inspector Assigned',
-      'Technician Assigned', 'In Progress', 'Escalated to Subcity',
+      'Technician Assigned', 'Technician Requested', 'In Progress',
+      'Awaiting Verification', 'Rework Required', 'Escalated to Subcity',
       'Resolved', 'Rejected', 'Closed', 'Reopened',
     ];
 
@@ -471,15 +474,39 @@ const updateStatus = async (req, res) => {
   }
 };
 
-// Roles eligible to be assigned as the complaint "officer" (managers).
-const OFFICER_ASSIGNABLE_ROLES = [
-  'admin', 'government', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
-  'woreda', 'department',
-];
+// Roles eligible to be assigned as the complaint "officer". Only dedicated
+// OFFICER accounts may fill this role — managers and legacy department
+// accounts are never offered in the dropdown.
+const OFFICER_ASSIGNABLE_ROLES = ['OFFICER'];
 
-// Roles eligible to be assigned as the field "technician". Department accounts
-// do the physical work, so they are eligible alongside dedicated technicians.
-const TECHNICIAN_ASSIGNABLE_ROLES = ['technician', 'department'];
+// Roles eligible to be assigned as the field "technician". Only dedicated
+// TECHNICIAN / CONTRACTOR accounts may fill this role — a Department Admin is
+// never offered in the dropdown.
+const TECHNICIAN_ASSIGNABLE_ROLES = ['TECHNICIAN', 'CONTRACTOR'];
+
+// Does a field-staff member (officer / technician) belong to the same
+// administrative scope as the complaint?
+//   • Woreda-level staff  — must share the complaint's woredaId, and the
+//     department when both sides carry one.
+//   • Subcity-level staff — no woredaId; must share the complaint's subcity.
+//   • Locationless staff  — allowed (legacy / global accounts).
+const matchesComplaintLocation = (user, complaint) => {
+  if (!user || !complaint) return false;
+
+  if (!user.woredaId) {
+    if (user.subcity && complaint.subcity) {
+      return normalizeSubcity(user.subcity) === normalizeSubcity(complaint.subcity);
+    }
+    return true;
+  }
+
+  if (!complaint.woredaId) return false;
+  if (String(user.woredaId) !== String(complaint.woredaId)) return false;
+  if (user.department && complaint.department) {
+    return String(user.department).toLowerCase() === String(complaint.department).toLowerCase();
+  }
+  return true;
+};
 
 // @desc  Assign an officer to a complaint
 // @route PUT /api/public-complaints/:id/assign-officer
@@ -506,13 +533,21 @@ const assignOfficer = async (req, res) => {
     if (!complaint) {
       return res.status(403).json({ success: false, message: 'Not authorized to assign this complaint.' });
     }
+    if (!matchesComplaintLocation(officer, complaint)) {
+      return res.status(400).json({
+        success: false,
+        message: 'The selected officer does not cover this complaint\'s woreda / department.',
+      });
+    }
 
     const previousStatus = complaint.status;
     complaint.assignedOfficerId = officer._id;
     complaint.assignedOfficerName = officer.fullName;
     complaint.assignedOfficerAt = new Date();
+    complaint.officerAccepted = false;
+    complaint.officerAcceptedAt = null;
     if (['Pending', 'Submitted', 'Under Review'].includes(previousStatus)) {
-      complaint.status = 'Assigned';
+      complaint.status = 'Under Review';
     }
     complaint.timeline.push({
       action: 'officer_assigned',
@@ -581,11 +616,20 @@ const assignTechnician = async (req, res) => {
     if (!complaint) {
       return res.status(403).json({ success: false, message: 'Not authorized to assign this complaint.' });
     }
+    if (!matchesComplaintLocation(technician, complaint)) {
+      return res.status(400).json({
+        success: false,
+        message: 'The selected technician does not cover this complaint\'s woreda / department.',
+      });
+    }
 
     const previousStatus = complaint.status;
     complaint.assignedTechnicianId = technician._id;
     complaint.assignedTechnicianName = technician.fullName;
     complaint.assignedTechnicianAt = new Date();
+    complaint.technicianWorkState = 'ASSIGNED';
+    complaint.technicianWorkStateUpdatedAt = new Date();
+    complaint.technicianRequested = false;
     if (dueDate) complaint.dueDate = new Date(dueDate);
     if (workInstruction) complaint.workInstruction = String(workInstruction).trim();
     complaint.status = 'Technician Assigned';
@@ -628,6 +672,356 @@ const assignTechnician = async (req, res) => {
   } catch (err) {
     console.error('[PublicComplaint] Assign technician error:', err);
     res.status(500).json({ success: false, message: 'Failed to assign technician' });
+  }
+};
+
+// ── Officer acceptance ────────────────────────────────────────────────────────
+
+// @desc  Officer accepts their assignment on a complaint
+// @route PUT /api/public-complaints/:id/accept-officer
+// @access Assigned officer
+const acceptOfficerAssignment = async (req, res) => {
+  try {
+    const complaint = await PublicComplaint.findById(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ success: false, message: 'Complaint not found' });
+    }
+    if (String(complaint.assignedOfficerId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'You are not the assigned officer for this complaint.' });
+    }
+    if (complaint.officerAccepted) {
+      return res.status(400).json({ success: false, message: 'Assignment already accepted.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.officerAccepted = true;
+    complaint.officerAcceptedAt = new Date();
+    complaint.timeline.push({
+      action: 'officer_accepted',
+      description: `${req.user.fullName || 'Officer'} accepted the assignment.`,
+      performedBy: req.user._id,
+      performedByName: req.user.fullName || 'System',
+      performedByRole: req.user.role || 'OFFICER',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+
+    // Notify the department admin / woreda office that the officer is on it.
+    if (complaint.woredaId && complaint.department) {
+      const managers = await User.find({
+        role: { $in: ['DEPARTMENT_ADMIN', 'department'] },
+        woredaId: complaint.woredaId,
+        department: complaint.department,
+      }).select('_id');
+      for (const m of managers) {
+        await createNotification({
+          recipient: m._id,
+          title: 'Officer Accepted Complaint',
+          message: `${req.user.fullName} accepted complaint ${complaint.trackingNumber}.`,
+          type: 'info',
+          relatedReport: complaint._id,
+          relatedReportType: 'public_complaint',
+          io,
+        });
+      }
+    }
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Assignment accepted', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Accept officer error:', err);
+    res.status(500).json({ success: false, message: 'Failed to accept assignment' });
+  }
+};
+
+// ── Technician work-order state machine ───────────────────────────────────────
+
+// Allowed work-order transitions for a technician:
+//   ASSIGNED → ACCEPTED → ON_THE_WAY → WORK_STARTED → WORK_PAUSED ⇄ WORK_STARTED
+//                                                              → WORK_COMPLETED
+const WORK_STATE_TRANSITIONS = {
+  ASSIGNED: ['ACCEPTED'],
+  ACCEPTED: ['ON_THE_WAY'],
+  ON_THE_WAY: ['WORK_STARTED'],
+  WORK_STARTED: ['WORK_PAUSED', 'WORK_COMPLETED'],
+  WORK_PAUSED: ['WORK_STARTED'],
+  WORK_COMPLETED: [],
+};
+
+// @desc  Technician advances / pauses their work order
+// @route PUT /api/public-complaints/:id/technician-work-state
+// @access Assigned technician
+const updateTechnicianWorkState = async (req, res) => {
+  try {
+    const { workState, note } = req.body;
+    if (!workState || !WORK_STATE_TRANSITIONS[workState]) {
+      return res.status(400).json({ success: false, message: 'Invalid work state.' });
+    }
+
+    const complaint = await PublicComplaint.findById(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ success: false, message: 'Complaint not found' });
+    }
+    if (String(complaint.assignedTechnicianId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'You are not the assigned technician for this complaint.' });
+    }
+
+    const current = complaint.technicianWorkState || 'ASSIGNED';
+    if (!WORK_STATE_TRANSITIONS[current].includes(workState)) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot move from ${current} to ${workState}.`,
+      });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.technicianWorkState = workState;
+    complaint.technicianWorkStateUpdatedAt = new Date();
+    complaint.workNotes.push({
+      note: note || `Work state changed to ${workState}.`,
+      by: req.user._id,
+      byName: req.user.fullName || 'System',
+      byRole: req.user.role || 'TECHNICIAN',
+    });
+    complaint.timeline.push({
+      action: 'technician_work_state',
+      description: `${req.user.fullName || 'Technician'} ${workState === 'WORK_COMPLETED' ? 'completed the work' : `moved the work to ${workState}`}${note ? ` — ${note}` : ''}.`,
+      performedBy: req.user._id,
+      performedByName: req.user.fullName || 'System',
+      performedByRole: req.user.role || 'TECHNICIAN',
+      previousStatus,
+      newStatus: previousStatus,
+    });
+
+    // Completing the work moves the complaint to officer verification.
+    if (workState === 'WORK_COMPLETED') {
+      complaint.status = 'Awaiting Verification';
+      complaint.technicianRequested = true;
+      complaint.technicianRequestedAt = new Date();
+      complaint.timeline[complaint.timeline.length - 1].newStatus = 'Awaiting Verification';
+    }
+
+    await complaint.save();
+
+    const io = getIo(req);
+    if (workState === 'WORK_COMPLETED') {
+      const recipients = [];
+      if (complaint.assignedOfficerId) recipients.push(complaint.assignedOfficerId);
+      if (complaint.woredaId && complaint.department) {
+        const managers = await User.find({
+          role: { $in: ['DEPARTMENT_ADMIN', 'department'] },
+          woredaId: complaint.woredaId,
+          department: complaint.department,
+        }).select('_id');
+        managers.forEach((m) => recipients.push(m._id));
+      }
+      const seen = new Set();
+      for (const r of recipients) {
+        if (seen.has(String(r))) continue;
+        seen.add(String(r));
+        await createNotification({
+          recipient: r,
+          title: 'Work Completed — Awaiting Verification',
+          message: `Complaint ${complaint.trackingNumber} work is complete and awaiting your verification.`,
+          type: 'info',
+          relatedReport: complaint._id,
+          relatedReportType: 'public_complaint',
+          io,
+        });
+      }
+    }
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Work state updated', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Work state error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update work state' });
+  }
+};
+
+// ── Verification (assigned officer) ───────────────────────────────────────────
+
+// @desc  Officer verifies the completed work (approves or sends back for rework)
+// @route PUT /api/public-complaints/:id/verify
+// @access Assigned officer
+const verifyWork = async (req, res) => {
+  try {
+    const { verified, note } = req.body;
+    if (verified === undefined) {
+      return res.status(400).json({ success: false, message: 'A verification decision is required.' });
+    }
+    if (!note || !String(note).trim()) {
+      return res.status(400).json({ success: false, message: 'A verification note is required.' });
+    }
+
+    const complaint = await PublicComplaint.findById(req.params.id);
+    if (!complaint) {
+      return res.status(404).json({ success: false, message: 'Complaint not found' });
+    }
+    if (String(complaint.assignedOfficerId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'You are not the assigned officer for this complaint.' });
+    }
+    if (complaint.status !== 'Awaiting Verification' && complaint.status !== 'Technician Assigned' && complaint.status !== 'Assigned') {
+      return res.status(400).json({ success: false, message: `Cannot verify a complaint in "${complaint.status}" status.` });
+    }
+
+    const previousStatus = complaint.status;
+    const isApproved = verified === true || verified === 'true';
+    complaint.verifiedByOfficerId = req.user._id;
+    complaint.verifiedAt = new Date();
+    complaint.verificationNote = String(note).trim();
+
+    let notifyRecipients = [];
+    if (isApproved) {
+      complaint.status = 'Resolved';
+      complaint.resolvedAt = new Date();
+      if (complaint.assignedTechnicianId) notifyRecipients.push(complaint.assignedTechnicianId);
+      if (complaint.reporter) notifyRecipients.push(complaint.reporter);
+      complaint.timeline.push({
+        action: 'verified',
+        description: `${req.user.fullName || 'Officer'} verified the work. Complaint resolved.`,
+        performedBy: req.user._id,
+        performedByName: req.user.fullName || 'System',
+        performedByRole: req.user.role || 'OFFICER',
+        previousStatus,
+        newStatus: 'Resolved',
+      });
+    } else {
+      complaint.status = 'Rework Required';
+      complaint.technicianWorkState = 'ASSIGNED';
+      complaint.technicianWorkStateUpdatedAt = new Date();
+      complaint.technicianRequested = false;
+      complaint.technicianRequestedAt = null;
+      if (complaint.assignedTechnicianId) notifyRecipients.push(complaint.assignedTechnicianId);
+      complaint.timeline.push({
+        action: 'rework_required',
+        description: `${req.user.fullName || 'Officer'} requested rework: ${String(note).trim()}.`,
+        performedBy: req.user._id,
+        performedByName: req.user.fullName || 'System',
+        performedByRole: req.user.role || 'OFFICER',
+        previousStatus,
+        newStatus: 'Rework Required',
+      });
+    }
+
+    await complaint.save();
+
+    const io = getIo(req);
+    const seen = new Set();
+    for (const r of notifyRecipients) {
+      if (!r || seen.has(String(r))) continue;
+      seen.add(String(r));
+      await createNotification({
+        recipient: r,
+        title: isApproved ? 'Complaint Resolved' : 'Rework Required',
+        message: isApproved
+          ? `Complaint ${complaint.trackingNumber} has been verified and resolved.`
+          : `Complaint ${complaint.trackingNumber} was sent back for rework: ${String(note).trim()}`,
+        type: isApproved ? 'success' : 'warning',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({
+      success: true,
+      message: isApproved ? 'Complaint verified and resolved' : 'Rework requested',
+      data: { complaint },
+    });
+  } catch (err) {
+    console.error('[PublicComplaint] Verify error:', err);
+    res.status(500).json({ success: false, message: 'Failed to verify complaint' });
+  }
+};
+
+// ── Closure (department admin) ────────────────────────────────────────────────
+
+// @desc  Department admin closes a resolved complaint
+// @route PUT /api/public-complaints/:id/close
+// @access Complaint managers (department admin + admins)
+const closeComplaint = async (req, res) => {
+  try {
+    const { note } = req.body;
+    const complaint = await PublicComplaint.findOne({
+      _id: req.params.id,
+      ...buildComplaintScope(req.user),
+    });
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to close this complaint.' });
+    }
+    if (!['Resolved', 'Closed'].includes(complaint.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Only a resolved complaint can be closed (current status: ${complaint.status}).`,
+      });
+    }
+    if (complaint.status === 'Closed') {
+      return res.status(400).json({ success: false, message: 'Complaint is already closed.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.status = 'Closed';
+    complaint.closedAt = new Date();
+    complaint.closedByAdminId = req.user._id;
+    complaint.closedByAdminName = req.user.fullName || 'System';
+    complaint.timeline.push({
+      action: 'closed',
+      description: note || `Complaint closed by ${req.user.fullName || 'department admin'}.`,
+      performedBy: req.user._id,
+      performedByName: req.user.fullName || 'System',
+      performedByRole: req.user.role || 'DEPARTMENT_ADMIN',
+      previousStatus,
+      newStatus: 'Closed',
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    if (complaint.reporter) {
+      await createNotification({
+        recipient: complaint.reporter,
+        title: 'Complaint Closed',
+        message: `Your complaint ${complaint.trackingNumber} has been closed. Thank you for reporting.`,
+        type: 'success',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (complaint.assignedOfficerId) {
+      await createNotification({
+        recipient: complaint.assignedOfficerId,
+        title: 'Complaint Closed',
+        message: `Complaint ${complaint.trackingNumber} you handled has been closed.`,
+        type: 'info',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (complaint.assignedTechnicianId) {
+      await createNotification({
+        recipient: complaint.assignedTechnicianId,
+        title: 'Complaint Closed',
+        message: `Complaint ${complaint.trackingNumber} you worked on has been closed.`,
+        type: 'info',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint closed', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Close error:', err);
+    res.status(500).json({ success: false, message: 'Failed to close complaint' });
   }
 };
 
@@ -769,19 +1163,45 @@ const addInternalNote = async (req, res) => {
 };
 
 // @desc  List users eligible for officer / technician assignment
-// @route GET /api/public-complaints/assignable-users
+// @route GET /api/public-complaints/assignable-users?complaintId=<id>
 // @access Complaint managers
+// When a complaintId is supplied the lists are filtered to field staff that
+// cover that complaint's woreda / department, so the dropdowns only ever
+// present eligible officers and technicians.
 const getAssignableUsers = async (req, res) => {
   try {
+    let complaintFilter = null;
+    if (req.query.complaintId) {
+      complaintFilter = await PublicComplaint.findById(req.query.complaintId)
+        .select('subcity woredaId department')
+        .lean();
+      if (!complaintFilter) {
+        return res.status(404).json({ success: false, message: 'Complaint not found' });
+      }
+    }
+
     const [officers, technicians] = await Promise.all([
       User.find({ role: { $in: OFFICER_ASSIGNABLE_ROLES }, isActive: true })
-        .select('_id fullName email phone role department subcity woredaName')
-        .sort({ fullName: 1 }),
+        .select('_id fullName email phone role department subcity woredaId woredaName')
+        .sort({ fullName: 1 })
+        .lean(),
       User.find({ role: { $in: TECHNICIAN_ASSIGNABLE_ROLES }, isActive: true })
-        .select('_id fullName email phone role department subcity woredaName')
-        .sort({ fullName: 1 }),
+        .select('_id fullName email phone role department subcity woredaId woredaName')
+        .sort({ fullName: 1 })
+        .lean(),
     ]);
-    res.json({ success: true, data: { officers, technicians } });
+
+    const eligible = complaintFilter
+      ? (u) => matchesComplaintLocation(u, complaintFilter)
+      : () => true;
+
+    res.json({
+      success: true,
+      data: {
+        officers: officers.filter(eligible),
+        technicians: technicians.filter(eligible),
+      },
+    });
   } catch (err) {
     console.error('[PublicComplaint] Assignable users error:', err);
     res.status(500).json({ success: false, message: 'Failed to load assignable users' });
@@ -1005,6 +1425,10 @@ module.exports = {
   updateStatus,
   assignOfficer,
   assignTechnician,
+  acceptOfficerAssignment,
+  updateTechnicianWorkState,
+  verifyWork,
+  closeComplaint,
   escalateToSubcityManual,
   addInternalNote,
   getAssignableUsers,

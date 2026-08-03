@@ -15,7 +15,10 @@ const STATUS_STYLES = {
   'Assigned': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
   'Inspector Assigned': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
   'Technician Assigned': 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300',
+  'Technician Requested': 'bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300',
   'In Progress': 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+  'Awaiting Verification': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  'Rework Required': 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
   'Escalated to Subcity': 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
   'Resolved': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   'Rejected': 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
@@ -23,7 +26,20 @@ const STATUS_STYLES = {
   'Reopened': 'bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300',
 };
 
-const STATUS_OPTIONS = ['Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned', 'Technician Assigned', 'In Progress', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed', 'Reopened'];
+const STATUS_OPTIONS = ['Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned', 'Technician Assigned', 'Technician Requested', 'In Progress', 'Awaiting Verification', 'Rework Required', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed', 'Reopened'];
+
+// Technician work-order actions available per current work state.
+const TECH_ACTIONS = {
+  ASSIGNED: [{ key: 'ACCEPTED', label: 'Accept Work Order' }],
+  ACCEPTED: [{ key: 'ON_THE_WAY', label: 'On My Way' }],
+  ON_THE_WAY: [{ key: 'WORK_STARTED', label: 'Start Work' }],
+  WORK_STARTED: [
+    { key: 'WORK_PAUSED', label: 'Pause Work' },
+    { key: 'WORK_COMPLETED', label: 'Complete Work' },
+  ],
+  WORK_PAUSED: [{ key: 'WORK_STARTED', label: 'Resume Work' }],
+  WORK_COMPLETED: [],
+};
 
 export default function SharedComplaints() {
   const { user } = useAuth();
@@ -32,7 +48,12 @@ export default function SharedComplaints() {
 
   // Only these roles may change complaint status — the backend enforces the
   // same rule and their scope, returning 403 otherwise.
-  const canUpdateStatus = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda'].includes(user?.role);
+  const canUpdateStatus = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'ADMIN'].includes(user?.role);
+  const isOfficer = user?.role === 'OFFICER';
+  const isTechnician = user?.role === 'TECHNICIAN';
+
+  const isAssignedOfficer = (c) => isOfficer && c.assignedOfficerId && String(c.assignedOfficerId) === user?._id;
+  const isAssignedTechnician = (c) => isTechnician && c.assignedTechnicianId && String(c.assignedTechnicianId) === user?._id;
 
   const params = useMemo(() => {
     const p = { page, limit: 20 };
@@ -71,6 +92,51 @@ export default function SharedComplaints() {
       reload();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to update status');
+    }
+  };
+
+  const handleAcceptOfficer = async (id) => {
+    try {
+      await complaintAPI.acceptOfficer(id);
+      toast.success('Assignment accepted');
+      reload();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to accept assignment');
+    }
+  };
+
+  const handleWorkState = async (id, ws) => {
+    try {
+      await complaintAPI.updateTechnicianWorkState(id, { workState: ws });
+      toast.success('Work order updated');
+      reload();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update work order');
+    }
+  };
+
+  const handleVerify = async (id, verified) => {
+    let note = 'Work verified on site.';
+    if (!verified) {
+      note = window.prompt('Rework reason (required):');
+      if (!note) return;
+    }
+    try {
+      await complaintAPI.verifyWork(id, { verified, note });
+      toast.success(verified ? 'Complaint verified and resolved' : 'Rework requested');
+      reload();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to verify complaint');
+    }
+  };
+
+  const handleClose = async (id) => {
+    try {
+      await complaintAPI.closeComplaint(id, {});
+      toast.success('Complaint closed');
+      reload();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to close complaint');
     }
   };
 
@@ -130,6 +196,40 @@ export default function SharedComplaints() {
                       {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </div>
+                )}
+              </div>
+
+              {/* Role-aware workflow actions */}
+              <div className="flex flex-wrap gap-2 mt-3">
+                {isAssignedOfficer(c) && !c.officerAccepted && (
+                  <button onClick={() => handleAcceptOfficer(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-medium">
+                    Accept Assignment
+                  </button>
+                )}
+                {isAssignedOfficer(c) && c.status === 'Awaiting Verification' && (
+                  <>
+                    <button onClick={() => handleVerify(c._id, true)} className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium">
+                      Approve Work
+                    </button>
+                    <button onClick={() => handleVerify(c._id, false)} className="text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 font-medium">
+                      Request Rework
+                    </button>
+                  </>
+                )}
+                {isAssignedTechnician(c) && (TECH_ACTIONS[c.technicianWorkState] || []).map(a => (
+                  <button key={a.key} onClick={() => handleWorkState(c._id, a.key)} className="text-xs px-3 py-1.5 rounded-lg bg-cyan-600 text-white hover:bg-cyan-700 font-medium">
+                    {a.label}
+                  </button>
+                ))}
+                {isTechnician && isAssignedTechnician(c) && c.technicianWorkState === 'WORK_COMPLETED' && (
+                  <span className="text-xs px-3 py-1.5 rounded-lg bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 font-medium">
+                    Work Completed — awaiting officer verification
+                  </span>
+                )}
+                {canUpdateStatus && c.status === 'Resolved' && (
+                  <button onClick={() => handleClose(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-900 dark:bg-gray-200 dark:text-gray-800 dark:hover:bg-white font-medium">
+                    Close Complaint
+                  </button>
                 )}
               </div>
             </div>

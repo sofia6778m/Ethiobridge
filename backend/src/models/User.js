@@ -9,13 +9,26 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     role: {
       type: String,
-      enum: ['citizen', 'government', 'ngo', 'volunteer', 'admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'inspector', 'technician'],
+      enum: [
+        // Legacy roles (kept for existing accounts and the municipal/workflow systems)
+        'citizen', 'government', 'ngo', 'volunteer', 'admin',
+        'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
+        'woreda', 'department', 'inspector', 'technician',
+        // Complaint-management roles
+        'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+      ],
       default: 'citizen',
     },
     subcity: {
       type: String,
       // No enum — accepts any subcity name stored in the Subcity collection
     },
+    // Optional ObjectId references to the live Subcity / Department master data
+    // (used by the new complaint-management roles; the string fields above stay
+    // for display and legacy records).
+    subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity' },
+    departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+    employeeId: { type: String, trim: true },
     woredaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Woreda' },
     woredaName: { type: String },
     department: { type: String },
@@ -44,7 +57,12 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.pre('save', function (next) {
-  if (['citizen', 'volunteer', 'admin', 'ngo', 'government', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'inspector', 'technician'].includes(this.role)) {
+  if ([
+    'citizen', 'volunteer', 'admin', 'ngo', 'government',
+    'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
+    'woreda', 'department', 'inspector', 'technician',
+    'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+  ].includes(this.role)) {
     this.isApproved = true;
   }
   next();
