@@ -2,6 +2,8 @@ const InfrastructureReport = require('../models/InfrastructureReport');
 const Assignment = require('../models/Assignment');
 const createNotification = require('../utils/createNotification');
 const User = require('../models/User');
+const Woreda = require('../models/Woreda');
+const Department = require('../models/Department');
 const { cloudinary } = require('../config/cloudinary');
 const { logAction } = require('../middleware/auditLog');
 const { generateReportPDF, generateBulkPDF } = require('../utils/pdfExport');
@@ -9,6 +11,8 @@ const { generateExcelXML } = require('../utils/excelExport');
 const { resolveDepartment } = require('../config/departmentRouting');
 const { verifySubmissionPassword } = require('../utils/verifySubmissionPassword');
 const { createInfrastructureReport } = require('../utils/reportIdGenerator');
+const { normalizeDepartmentName } = require('../utils/departmentNames');
+const { findDepartmentRecipients } = require('../utils/departmentRecipients');
 
 const CATEGORY_ORG_MAP = {
   'road_issue':         resolveDepartment('infrastructure', 'road_issue'),
@@ -55,6 +59,45 @@ const emitToReportChannels = (req, event, data) => {
 };
 
 const getIo = (req) => req.app?.get('io') || null;
+
+// Resolves the subcityId / departmentId ObjectIds for an infrastructure report
+// from the selected woreda + department (mirrors the public-complaint flow).
+// Also canonicalises the department name against the woreda's own department
+// list so the stored value always matches the department account names.
+const resolveScopeRefs = async (woredaId, woredaName, subcity, departmentName) => {
+  let woredaDoc = null;
+  if (woredaId) {
+    woredaDoc = await Woreda.findById(woredaId).select('_id subcity subcityId departments').lean();
+  } else if (woredaName) {
+    const nameRe = new RegExp(`^${woredaName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const filter = { name: nameRe };
+    if (subcity) filter.subcity = new RegExp(`^${String(subcity).trim().toUpperCase().replace(/\s+/g, '_').replace(/[ _]+/g, '[ _]')}$`, 'i');
+    woredaDoc = await Woreda.findOne(filter).select('_id subcity subcityId departments').lean();
+  }
+
+  // Normalise the department against the woreda's own department list (the
+  // same source used when provisioning department accounts).
+  let canonicalDept = String(departmentName || '').trim();
+  if (woredaDoc && Array.isArray(woredaDoc.departments) && woredaDoc.departments.length) {
+    const wanted = canonicalDept.toLowerCase();
+    const match = woredaDoc.departments.find((d) => String(d).toLowerCase() === wanted);
+    if (match) canonicalDept = match;
+  }
+
+  const subcityId = woredaDoc ? woredaDoc.subcityId || undefined : undefined;
+  let departmentId = undefined;
+  if (canonicalDept && woredaDoc && woredaDoc.subcityId) {
+    const nameRe = new RegExp(`^${escapeRegexForDepartment(normalizeDepartmentName(canonicalDept))}$`, 'i');
+    const base = { status: 'Active', subcityId: woredaDoc.subcityId, $or: [{ normalizedDepartmentName: nameRe }, { name: nameRe }] };
+    let deptRef = await Department.findOne({ ...base, woredaId: woredaDoc._id }).select('_id').lean();
+    if (!deptRef) deptRef = await Department.findOne({ ...base, woredaId: null }).select('_id').lean();
+    departmentId = deptRef ? deptRef._id : undefined;
+  }
+
+  return { woredaDoc, subcityId, departmentId, departmentName: canonicalDept || undefined };
+};
+
+const escapeRegexForDepartment = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const notifyAllStakeholders = async (req, { report, title, message, type, excludeUser }) => {
   const io = getIo(req);
@@ -119,7 +162,11 @@ const createReport = async (req, res) => {
     // reportId is assigned atomically by the pre-save hook (counters
     // collection). createInfrastructureReport retries on the rare duplicate-key
     // case, pulling the next sequential number each attempt.
+    const { woredaDoc, subcityId, departmentId, departmentName } = await resolveScopeRefs(woredaId, woredaName, subcity, dept);
+    const finalDept = departmentName || dept;
+
     const report = await createInfrastructureReport({
+      report_type: 'infrastructure',
       title, description, category: reportCategory, severityLevel, region, zone, woreda, kebele,
       city, subcity, specificLocation,
       latitude: latitude ? Number(latitude) : undefined,
@@ -130,19 +177,22 @@ const createReport = async (req, res) => {
       reporterName: reporterName || '',
       reporterEmail: reporterEmail || '',
       reporterPhone: reporterPhone || '',
-      department: dept,
-      autoAssignedOrganization: dept,
-      // Store the woreda scope fields so the woreda/department dashboard
-      // queries ({woredaId, department}) find this report immediately.
-      woredaId: woredaId || undefined,
+      department: finalDept,
+      autoAssignedOrganization: finalDept,
+      // Store the woreda/subcity/department scope fields so the dashboard
+      // queries ({woredaId, department}) find this report immediately and role
+      // scoping can match on ObjectIds.
+      woredaId: woredaDoc ? woredaDoc._id : (woredaId || undefined),
       woredaName: woredaName || '',
+      subcityId,
+      departmentId,
       currentLevel: 'kebele',
-      status: 'Assigned',
+      status: 'Submitted',
     });
 
     report.timeline.push({
       action: 'created',
-      description: `Report "${title}" submitted and routed to ${dept}`,
+      description: `Report "${title}" submitted and routed to ${finalDept}`,
       performedBy: req.user._id,
       performedByName: req.user.fullName,
       performedByRole: req.user.role,
@@ -152,15 +202,18 @@ const createReport = async (req, res) => {
 
     const io = getIo(req);
 
-    // Notify the department user(s) that match this exact woreda + department.
-    // This is what makes the report appear in the department dashboard.
-    if (woredaId && dept) {
-      const deptUsers = await User.find({ role: 'department', woredaId, department: dept }).select('_id');
+    // Notify the department account(s) that match this exact woreda +
+    // department. This is what makes the report appear in the department
+    // dashboard. Both the legacy `department` role and the canonical
+    // `department_officer` role are notified, matching on departmentId when
+    // present or the department name case-insensitively.
+    if ((woredaDoc || woredaId) && finalDept) {
+      const deptUsers = await findDepartmentRecipients({ woredaId: woredaDoc ? woredaDoc._id : woredaId, department: finalDept, departmentId: report.departmentId });
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
           title: 'New Report Assigned to Your Department',
-          message: `A new report "${title}" has been submitted for ${dept} department.`,
+          message: `A new report "${title}" has been submitted for ${finalDept} department.`,
           type: 'new_report',
           relatedReport: report._id,
           relatedReportType: 'infrastructure',
@@ -170,13 +223,13 @@ const createReport = async (req, res) => {
     }
 
     // Also notify the woreda manager for this woreda.
-    if (woredaId) {
-      const woredaUsers = await User.find({ role: 'woreda', woredaId }).select('_id');
+    if (woredaDoc || woredaId) {
+      const woredaUsers = await User.find({ role: 'woreda', woredaId: woredaDoc ? woredaDoc._id : woredaId }).select('_id');
       for (const u of woredaUsers) {
         await createNotification({
           recipient: u._id,
           title: 'New Infrastructure Report in Your Woreda',
-          message: `New ${dept} report: "${title}"`,
+          message: `New ${finalDept} report: "${title}"`,
           type: 'new_report',
           relatedReport: report._id,
           relatedReportType: 'infrastructure',
@@ -202,7 +255,7 @@ const createReport = async (req, res) => {
     await createNotification({
       recipient: report.submittedBy,
       title: 'Report Submitted',
-      message: `Your report "${title}" has been submitted and routed to the ${dept} department.`,
+      message: `Your report "${title}" has been submitted and routed to the ${finalDept} department.`,
       type: 'report_status',
       relatedReport: report._id,
       relatedReportType: 'infrastructure',
@@ -317,7 +370,9 @@ const getPublicAutocomplete = async (req, res) => {
 const getAllReports = async (req, res) => {
   try {
     const { category, region, status, severityLevel, search, page = 1, limit = 10, assignedOrganization, dateFrom, dateTo } = req.query;
-    const query = {};
+    // Hard discriminator: this admin list serves the Infrastructure Reports tab
+    // only, so it must never surface records from any other report type.
+    const query = { report_type: 'infrastructure' };
 
     if (category) query.category = category;
     if (region) query.region = region;
@@ -373,7 +428,7 @@ const getReport = async (req, res) => {
 const getMyReports = async (req, res) => {
   try {
     const { status, category, page = 1, limit = 10 } = req.query;
-    const query = { submittedBy: req.user._id };
+    const query = { submittedBy: req.user._id, report_type: 'infrastructure' };
     if (status) query.status = status;
     if (category) query.category = category;
 

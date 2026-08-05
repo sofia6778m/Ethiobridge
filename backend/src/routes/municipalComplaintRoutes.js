@@ -30,11 +30,12 @@ const {
   submitFeedback,
 } = require('../controllers/municipalComplaintController');
 
-const SUB_CITY_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura'];
-const VIEWER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department', 'inspector', 'technician', 'citizen'];
-const MANAGER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department'];
-const OFFICER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department'];
-const FIELD_ROLES = [...OFFICER_ROLES, 'technician'];
+const SUB_CITY_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'subcity_admin'];
+const HIERARCHY_ROLES = ['ADMIN', 'SUBCITY_ADMIN', 'subcity_admin', 'WOREDA_ADMIN', 'woreda_admin', 'OFFICER', 'TECHNICIAN'];
+const VIEWER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'woreda_admin', 'department', 'department_officer', 'inspector', 'technician', 'citizen', ...HIERARCHY_ROLES];
+const MANAGER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'woreda_admin', 'department', 'department_officer', 'ADMIN', 'SUBCITY_ADMIN', 'WOREDA_ADMIN', 'woreda_admin', 'OFFICER'];
+const OFFICER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'woreda_admin', 'department', 'department_officer', 'ADMIN', 'SUBCITY_ADMIN', 'WOREDA_ADMIN', 'woreda_admin', 'OFFICER'];
+const FIELD_ROLES = [...OFFICER_ROLES, 'technician', 'TECHNICIAN'];
 
 // Public / shared
 router.get('/issue-templates', protectOptional, getIssueTemplates);
@@ -49,7 +50,7 @@ router.get('/', protect, authorize(...VIEWER_ROLES), getComplaints);
 router.post('/', protect, authorize('citizen'), requireApproved, upload.array('media', 8), createComplaint);
 
 // Admin manual escalation trigger
-router.post('/admin/run-escalation', protect, authorize('admin'), async (req, res) => {
+router.post('/admin/run-escalation', protect, authorize('admin', 'ADMIN'), async (req, res) => {
   await runEscalationPass(req.app?.get('io') || null);
   res.json({ success: true, message: 'Escalation pass completed.' });
 });

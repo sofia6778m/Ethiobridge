@@ -8,6 +8,9 @@
     "dev": "nodemon src/index.js",
     "seed": "node src/utils/seed.js",
     "migrate:departments": "node src/utils/migrateDepartments.js",
+    "migrate:passwords": "node scripts/migratePasswords.js",
+    "migrate:roles": "node scripts/migrateRoles.js",
+    "migrate:report-type": "node scripts/backfillReportType.js",
     "test": "node --test"
   },
   "dependencies": {
@@ -27,6 +30,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.10.1",
     "pdfkit": "^0.19.1",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.7.4"
   },
   "devDependencies": {

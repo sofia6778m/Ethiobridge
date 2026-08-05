@@ -1,6 +1,8 @@
 const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
 const { logAction } = require('../middleware/auditLog');
+const { logDebug } = require('../utils/debug');
+const { normalizeRole } = require('../utils/normalizeRole');
 const {
   normalizeEmail,
   findUserByEmail,
@@ -44,7 +46,7 @@ const register = async (req, res) => {
       skills: skills || [],
     });
 
-    console.log(`[REGISTER] New user: ${user.email} (role: ${user.role})`);
+    logDebug(`[REGISTER] New user: ${user.email} (role: ${user.role})`);
     logAction({ user, action: 'user_register', resource: 'User', resourceId: user._id, details: { email, role: user.role }, req });
 
     res.status(201).json({
@@ -67,11 +69,11 @@ const login = async (req, res) => {
   try {
     const { email, password } = req.body;
     const logEmail = email || '(empty)';
-    console.log(`\n[LOGIN] ====== Login Attempt ======`);
-    console.log(`[LOGIN] Email: ${logEmail}`);
+    logDebug(`\n[LOGIN] ====== Login Attempt ======`);
+    logDebug(`[LOGIN] Email: ${logEmail}`);
 
     if (!email || !password) {
-      console.log('[LOGIN] Result: REJECTED — Missing email or password');
+      logDebug('[LOGIN] Result: REJECTED — Missing email or password');
       return res.status(400).json({ success: false, message: 'Please provide email and password' });
     }
 
@@ -81,9 +83,9 @@ const login = async (req, res) => {
     const enteredEmail = normalizeEmail(email);
     const lookupEmail  = resolveAdminEmailAlias(enteredEmail);
     if (lookupEmail !== enteredEmail) {
-      console.log(`[LOGIN] ℹ️  "${enteredEmail}" is a legacy admin alias → authenticating as "${lookupEmail}"`);
+      logDebug(`[LOGIN] ℹ️  "${enteredEmail}" is a legacy admin alias → authenticating as "${lookupEmail}"`);
     }
-    console.log(`[LOGIN] Normalized Email: ${lookupEmail}`);
+    logDebug(`[LOGIN] Normalized Email: ${lookupEmail}`);
 
     // Case-insensitive lookup so legacy mixed-case records still match.
     let user = await findUserByEmail(lookupEmail);
@@ -92,18 +94,18 @@ const login = async (req, res) => {
     // admin email is owned by a non-admin user, fall back to the email the
     // user actually typed.
     if (user && lookupEmail !== enteredEmail && user.role !== 'admin') {
-      console.log(`[LOGIN] ℹ️  "${lookupEmail}" is not an admin — falling back to "${enteredEmail}"`);
+      logDebug(`[LOGIN] ℹ️  "${lookupEmail}" is not an admin — falling back to "${enteredEmail}"`);
       user = await findUserByEmail(enteredEmail);
     }
 
     if (!user) {
-      console.log('[LOGIN] Result: REJECTED — User not found');
+      logDebug('[LOGIN] Result: REJECTED — User not found');
       // If someone is using the old project-name email, tell the operator which
       // email actually works (log only — never leak the admin email to clients).
       if (isReservedAdminEmail(enteredEmail)) {
         const { CANONICAL_ADMIN_EMAIL } = getAdminConfig();
-        console.log(`[LOGIN] ℹ️  Reserved admin email "${enteredEmail}" attempted but no matching admin exists.`);
-        console.log(`[LOGIN]    The admin account email is now: ${CANONICAL_ADMIN_EMAIL}`);
+        logDebug(`[LOGIN] ℹ️  Reserved admin email "${enteredEmail}" attempted but no matching admin exists.`);
+        logDebug(`[LOGIN]    The admin account email is now: ${CANONICAL_ADMIN_EMAIL}`);
       }
       // Do NOT increment the lockout counter for unknown emails
       return res.status(401).json({
@@ -112,21 +114,21 @@ const login = async (req, res) => {
       });
     }
 
-    console.log(`[LOGIN] User Found: ${user.email}`);
-    console.log(`[LOGIN] Role: ${user.role}`);
-    console.log(`[LOGIN] Account Active: ${user.isActive}`);
-    console.log(`[LOGIN] Account Approved: ${user.isApproved}`);
+    logDebug(`[LOGIN] User Found: ${user.email}`);
+    logDebug(`[LOGIN] Role: ${user.role}`);
+    logDebug(`[LOGIN] Account Active: ${user.isActive}`);
+    logDebug(`[LOGIN] Account Approved: ${user.isApproved}`);
 
     // ── Password check FIRST — correct password always wins ─────────────────
     // We verify the password BEFORE checking the lockout so that a user who
     // knows the correct password is never permanently blocked.
     const isMatch = await user.matchPassword(password);
-    console.log(`[LOGIN] Password Match: ${isMatch}`);
+    logDebug(`[LOGIN] Password Match: ${isMatch}`);
 
     if (!isMatch) {
       // Record the failure and possibly start a lockout
       const result = req.loginLockout?.fail() ?? {};
-      console.log('[LOGIN] Result: REJECTED — Invalid password');
+      logDebug('[LOGIN] Result: REJECTED — Invalid password');
 
       if (result.locked) {
         return res.status(429).json({
@@ -136,8 +138,6 @@ const login = async (req, res) => {
         });
       }
 
-      // Check remaining attempts so the user knows how many they have left
-      const { isLocked, remainingMin } = req.loginLockout?.check() ?? {};
       const rec = require('../middleware/rateLimiter').loginAttempts?.get(enteredEmail);
       const attemptsLeft = rec ? Math.max(0, parseInt(process.env.MAX_LOGIN_ATTEMPTS || '5', 10) - rec.count) : null;
       const hint = attemptsLeft !== null ? ` (${attemptsLeft} attempt${attemptsLeft !== 1 ? 's' : ''} left before lockout)` : '';
@@ -154,7 +154,7 @@ const login = async (req, res) => {
     // with the correct password silently reactivates it instead of locking the
     // whole system out with a dead-end "contact an administrator" message.
     if (!user.isActive && isCanonicalAdminUser(user)) {
-      console.log('[LOGIN] 🔄 Default admin was deactivated — reactivating automatically');
+      logDebug('[LOGIN] 🔄 Default admin was deactivated — reactivating automatically');
       await reactivateAdminAccount(user);
       await logAction({
         user,
@@ -167,7 +167,7 @@ const login = async (req, res) => {
     }
 
     if (!user.isActive) {
-      console.log('[LOGIN] Result: REJECTED — Account deactivated');
+      logDebug('[LOGIN] Result: REJECTED — Account deactivated');
       // Do NOT increment the lockout counter — this is not a brute-force attempt
       return res.status(401).json({ success: false, message: 'Your account has been deactivated. Please contact an administrator.' });
     }
@@ -175,37 +175,40 @@ const login = async (req, res) => {
     // ── If there was an active lockout, clear it — correct password wins ─────
     const { isLocked, remainingMin } = req.loginLockout?.check() ?? {};
     if (isLocked) {
-      console.log(`[LOGIN] Lockout was active for ${enteredEmail} but correct password provided — lifting lockout`);
+      logDebug(`[LOGIN] Lockout was active for ${enteredEmail} but correct password provided — lifting lockout`);
     }
     req.loginLockout?.clear();
 
     if (!user.isApproved) {
-      console.log(`[LOGIN] ${user.role} ${email} was not approved — auto-approving now`);
+      logDebug(`[LOGIN] ${user.role} ${email} was not approved — auto-approving now`);
       user.isApproved = true;
       await user.save();
     }
 
     const token = generateToken(user);
-    console.log(`[LOGIN] JWT Generated: true`);
-    console.log(`[LOGIN] Redirect: ${user.role}`);
+    logDebug(`[LOGIN] JWT Generated: true`);
+    logDebug(`[LOGIN] Redirect: ${user.role}`);
 
     logAction({ user, action: 'user_login', resource: 'User', resourceId: user._id, details: { email, role: user.role }, req });
 
-    console.log(`[LOGIN] Result: SUCCESS — ${user.email} (role: ${user.role})`);
-    console.log(`[LOGIN] ====== End Login ======\n`);
+    logDebug(`[LOGIN] Result: SUCCESS — ${user.email} (role: ${user.role})`);
+    logDebug(`[LOGIN] ====== End Login ======\n`);
 
     res.json({
       success: true,
       token,
       user: {
+        id: user._id,
         _id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
+        role: normalizeRole(user.role),
         subcity: user.subcity,
+        subcityId: user.subcityId,
         woredaId: user.woredaId,
         woredaName: user.woredaName,
         department: user.department,
+        departmentId: user.departmentId,
         isApproved: user.isApproved,
         isActive: user.isActive,
         profileImage: user.profileImage,
@@ -282,7 +285,7 @@ const reactivateAdmin = async (req, res) => {
       req,
     });
 
-    console.log(`[ADMIN-REACTIVATE] ✅ Default admin reactivated via endpoint: ${user.email}`);
+    logDebug(`[ADMIN-REACTIVATE] ✅ Default admin reactivated via endpoint: ${user.email}`);
     res.json({
       success: true,
       message: 'The default administrator account has been reactivated. You can now log in.',
@@ -302,7 +305,8 @@ const getMe = async (req, res) => {  try {
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    console.log(`[GETME] User: ${user.email} (role: ${user.role})`);
+    user.role = normalizeRole(user.role);
+    logDebug(`[GETME] User: ${user.email} (role: ${user.role})`);
     res.json({ success: true, user });
   } catch (error) {
     console.error('[GETME] Error:', error);

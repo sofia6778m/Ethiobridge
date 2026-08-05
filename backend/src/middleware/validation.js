@@ -97,10 +97,11 @@ const COMPLAINT_CATEGORIES = [
 ];
 const COMPLAINT_PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
 const COMPLAINT_STATUSES = [
-  'Pending', 'Submitted', 'Under Review', 'Assigned', 'Technician Assigned',
-  'Technician Requested', 'In Progress', 'Awaiting Verification',
-  'Rework Required', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed',
-  'Reopened',
+  'Pending', 'Submitted', 'Accepted', 'Under Review', 'Assigned',
+  'Technician Assigned', 'Technician Requested', 'In Progress', 'Waiting for Parts',
+  'More Info Requested', 'Awaiting Verification', 'Rework Required',
+  'Escalated to Subcity', 'Forwarded to Subcity', 'Resolved by Subcity',
+  'Resolved', 'Rejected', 'Closed', 'Reopened',
 ];
 
 // ── Public complaint submission validation ─────────────────────────────────────
@@ -128,6 +129,33 @@ const validateComplaint = [
   handleValidation,
 ];
 
+// ── Public infrastructure report submission validation ───────────────────────
+// Runs AFTER multer has parsed the multipart body. Mirrors validateReport but
+// allows anonymous submissions (no citizen password / auth requirement).
+const validatePublicInfrastructureReport = [
+  body('title').trim().notEmpty().withMessage('Title is required')
+    .isLength({ max: 200 }).withMessage('Title must be under 200 characters'),
+  body('description').trim().notEmpty().withMessage('Description is required')
+    .isLength({ max: 5000 }).withMessage('Description must be under 5000 characters'),
+  body('category').optional({ values: 'falsy' }).trim()
+    .isIn(['road_issue', 'electricity_issue', 'water_supply_issue', 'other']).withMessage('Invalid category'),
+  body('severityLevel').optional()
+    .isIn(['Low', 'Medium', 'High', 'Critical']).withMessage('Invalid severity level'),
+  body('region').trim().notEmpty().withMessage('Region is required'),
+  body('subcity').optional({ values: 'falsy' }).trim().isLength({ max: 100 }).withMessage('Subcity too long'),
+  body('woredaId').optional({ values: 'falsy' }).isMongoId().withMessage('Invalid woreda'),
+  body('woredaName').optional({ values: 'falsy' }).trim().isLength({ max: 100 }).withMessage('Woreda name too long'),
+  body('department').optional({ values: 'falsy' }).trim().isLength({ max: 100 }).withMessage('Department too long'),
+  body('reporterName').optional({ values: 'falsy' }).trim().isLength({ max: 100 }).withMessage('Reporter name too long'),
+  body('reporterPhone').optional({ values: 'falsy' })
+    .matches(/^\+?\d{9,15}$/).withMessage('Please provide a valid phone number'),
+  body('reporterEmail').optional({ values: 'falsy' }).isEmail().withMessage('Please provide a valid email'),
+  body('latitude').optional({ values: 'falsy' }).isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
+  body('longitude').optional({ values: 'falsy' }).isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
+  body('incidentDate').optional({ values: 'falsy' }).isISO8601().withMessage('Invalid date format'),
+  handleValidation,
+];
+
 // ── Public complaint status update validation ────────────────────────────────
 const validateComplaintStatus = [
   body('status').notEmpty().withMessage('Status is required')
@@ -151,4 +179,5 @@ module.exports = {
   validateLogin,
   validateComplaint,
   validateComplaintStatus,
+  validatePublicInfrastructureReport,
 };

@@ -15,26 +15,27 @@ const mongoose = require('mongoose');
 
 // Every role that a system administrator may provision. Only the admin role
 // can create accounts — enforced by the admin route middleware (authorize('admin')).
+// In the real government hierarchy, woredas, departments and officer/technician
+// accounts are provisioned by SUBCITY_ADMIN / WOREDA_ADMIN accounts through the
+// /api/hierarchy/* endpoints, so the admin no longer creates those directly.
 const PROVISIONABLE_ROLES = [
   'citizen', 'government', 'ngo', 'volunteer', 'admin',
-  'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
-  'woreda', 'department',
-  'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+  'ADMIN', 'SUBCITY_ADMIN', 'subcity_admin', 'CITIZEN', 'OFFICER', 'woreda_admin', 'department_officer',
 ];
 
 // Roles whose uniqueness is enforced per-location at the application layer
 // (in addition to the DB partial indexes) so we can return a human-readable
 // 409 message before Mongoose ever throws an 11000 error.
-const SUBCITY_SCOPED_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD'];
+const SUBCITY_SCOPED_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD', 'SUBCITY_ADMIN', 'subcity_admin'];
 
 // Roles that require a woreda selection.
-const WOREDA_SCOPED_ROLES = ['woreda', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CONTRACTOR'];
+const WOREDA_SCOPED_ROLES = ['woreda', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CONTRACTOR', 'woreda_admin'];
 
 // Roles that require a department selection.
 const DEPARTMENT_SCOPED_ROLES = ['department', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CONTRACTOR'];
 
-// One account per woreda (woreda manager / woreda head).
-const UNIQUE_WOREDA_ROLES = ['woreda', 'WOREDA_HEAD'];
+// One account per woreda (woreda manager / woreda head / woreda admin).
+const UNIQUE_WOREDA_ROLES = ['woreda', 'WOREDA_HEAD', 'woreda_admin'];
 
 // One account per woreda + department (department manager / department admin).
 const UNIQUE_DEPARTMENT_ROLES = ['department', 'DEPARTMENT_ADMIN'];
@@ -46,7 +47,12 @@ const UNIQUE_DEPARTMENT_ROLES = ['department', 'DEPARTMENT_ADMIN'];
  */
 const findSubcityConflict = (role, subcity, excludeId = null) => {
   if (!SUBCITY_SCOPED_ROLES.includes(role)) return Promise.resolve(null);
-  const filter = { role, subcity };
+  // Case-insensitive subcity match so 'BOLE' / 'Bole' / 'bole' are all
+  // treated as the same location when checking for an existing admin.
+  const filter = {
+    role,
+    subcity: { $regex: `^${escapeRegExp(subcity)}$`, $options: 'i' },
+  };
   if (excludeId) filter._id = { $ne: excludeId };
   return User.findOne(filter).select('fullName email').lean();
 };
@@ -59,11 +65,19 @@ const findSubcityConflict = (role, subcity, excludeId = null) => {
  * can have many officers and technicians.
  */
 const findWoredaConflict = (role, woredaId, department, excludeId = null) => {
-  if (!WOREDA_SCOPED_ROLES.includes(role)) return Promise.resolve(null);
-  const filter = { role, woredaId };
-  if (UNIQUE_DEPARTMENT_ROLES.includes(role) && department) filter.department = department;
-  if (excludeId) filter._id = { $ne: excludeId };
-  return User.findOne(filter).select('fullName email').lean();
+  // OFFICER, TECHNICIAN and CONTRACTOR are intentionally NOT unique — a woreda
+  // department can hold many of them — so they never produce a conflict here.
+  if (UNIQUE_WOREDA_ROLES.includes(role)) {
+    const filter = { role, woredaId };
+    if (excludeId) filter._id = { $ne: excludeId };
+    return User.findOne(filter).select('fullName email').lean();
+  }
+  if (UNIQUE_DEPARTMENT_ROLES.includes(role) && department) {
+    const filter = { role, woredaId, department };
+    if (excludeId) filter._id = { $ne: excludeId };
+    return User.findOne(filter).select('fullName email').lean();
+  }
+  return Promise.resolve(null);
 };
 
 // All woreda records allowed for the given subcity, formatted for dropdowns.
@@ -178,12 +192,52 @@ const createUser = async (req, res) => {
     if (DEPARTMENT_SCOPED_ROLES.includes(finalRole) && !department) {
       return res.status(400).json({ success: false, message: 'A department must be selected for department, officer and technician accounts' });
     }
+    if (['SUBCITY_ADMIN', 'subcity_admin'].includes(finalRole) && !subcity) {
+      return res.status(400).json({ success: false, message: 'A subcity must be selected for subcity admin accounts' });
+    }
+
+    const isOfficer = finalRole === 'OFFICER';
+
+    let subcityIdValue = subcityId || null;
+    let woredaDocForDept = null;
+    let departmentIdValue = departmentId || null;
+
+    // ── Officer accounts: require live subcityId + departmentId ─────────────
+    // Officers are matched to complaints by subcityId + departmentId, so both
+    // must be supplied explicitly and resolve to records in the Subcity /
+    // Department collections.
+    if (isOfficer) {
+      if (!subcityId) {
+        return res.status(400).json({ success: false, message: 'A subcity must be selected for officer accounts' });
+      }
+      if (!mongoose.isValidObjectId(subcityId)) {
+        return res.status(400).json({ success: false, message: 'Selected subcity is invalid' });
+      }
+      const officerSubcity = await Subcity.findById(subcityId).select('_id name').lean();
+      if (!officerSubcity) {
+        return res.status(400).json({ success: false, message: 'Selected subcity not found' });
+      }
+      subcityIdValue = officerSubcity._id;
+      subcityValue = officerSubcity.name; // Normalise to canonical casing
+
+      if (!departmentId) {
+        return res.status(400).json({ success: false, message: 'A department must be selected for officer accounts' });
+      }
+      if (!mongoose.isValidObjectId(departmentId)) {
+        return res.status(400).json({ success: false, message: 'Selected department is invalid' });
+      }
+      const officerDept = await Department.findById(departmentId).select('_id').lean();
+      if (!officerDept) {
+        return res.status(400).json({ success: false, message: 'Selected department not found' });
+      }
+      departmentIdValue = officerDept._id;
+    }
 
     // ── Validate subcity against the live Subcity collection ────────────────
     // Subcity-role accounts derive their subcity from their role and are always
-    // valid; only explicitly supplied subcityValues need DB checking.
-    let subcityIdValue = subcityId || null;
-    if (subcityValue && !SUBCITY_ROLE_MAP[finalRole]) {
+    // valid; only explicitly supplied subcityValues need DB checking. Officers
+    // are validated above via their subcityId.
+    if (!isOfficer && subcityValue && !SUBCITY_ROLE_MAP[finalRole]) {
       const Subcity = require('../models/Subcity');
       const scRecord = await Subcity.findOne({ nameLower: subcityValue.trim().toLowerCase() });
       if (!scRecord) {
@@ -201,9 +255,8 @@ const createUser = async (req, res) => {
     // ── Validate department against the woreda's own department list ─────────
     // For department-scoped accounts we fetch the woreda up-front; this also
     // serves as the "woreda exists" check and is reused in the conflict block.
-    let woredaDocForDept = null;
-    let departmentIdValue = departmentId || null;
-    if (DEPARTMENT_SCOPED_ROLES.includes(finalRole)) {
+    // Officers resolve their department via departmentId above.
+    if (!isOfficer && DEPARTMENT_SCOPED_ROLES.includes(finalRole)) {
       const Woreda = require('../models/Woreda');
       woredaDocForDept = await Woreda.findById(woredaId).select('name subcity departments').lean();
       if (!woredaDocForDept) {
@@ -223,9 +276,24 @@ const createUser = async (req, res) => {
       }
       // Normalise to the canonical casing stored in the woreda record.
       req.body.department = matched;
-      // Capture the live Department record id when one exists for this woreda.
-      const Department = require('../models/Department');
-      const deptRec = await Department.findOne({ woredaId: new mongoose.Types.ObjectId(woredaId), name: matched }).select('_id').lean();
+      // Capture the live Department record id when one exists. Departments are
+      // stored per-subcity (subcityId) with an optional woredaId, so prefer the
+      // subcity scope and fall back to a woreda scope for older records. Names
+      // are compared via the normalized field so casing never hides a match.
+      const normalizedName = normalizeDepartmentName(matched);
+      let deptRec = null;
+      if (subcityIdValue) {
+        deptRec = await Department.findOne({
+          subcityId: subcityIdValue,
+          normalizedDepartmentName: normalizedName,
+        }).select('_id').lean();
+      }
+      if (!deptRec) {
+        deptRec = await Department.findOne({
+          woredaId: new mongoose.Types.ObjectId(woredaId),
+          normalizedDepartmentName: normalizedName,
+        }).select('_id').lean();
+      }
       if (deptRec) departmentIdValue = deptRec._id;
     }
 
@@ -370,10 +438,30 @@ const updateUser = async (req, res) => {
       }
     }
 
-    const effectiveRole     = updateFields.role       !== undefined ? updateFields.role       : currentUser.role;
+    let effectiveRole     = updateFields.role       !== undefined ? updateFields.role       : currentUser.role;
     const effectiveSubcity  = updateFields.subcity    !== undefined ? updateFields.subcity    : currentUser.subcity;
     const effectiveWoredaId = updateFields.woredaId   !== undefined ? updateFields.woredaId   : currentUser.woredaId;
     const effectiveDept     = updateFields.department !== undefined ? updateFields.department  : currentUser.department;
+
+    // Re-resolve subcityId from the effective subcity string so edits to an
+    // account's subcity stay consistent with the live Subcity collection.
+    if (effectiveSubcity && updateFields.subcityId === undefined) {
+      const Subcity = require('../models/Subcity');
+      const sc = await Subcity.findOne({
+        nameLower: String(effectiveSubcity).trim().toLowerCase(),
+      }).select('_id').lean();
+      if (sc) updateFields.subcityId = sc._id;
+    }
+
+    // Subcity-admin accounts derive their role from the selected subcity — the
+    // admin never picks a role manually. Re-derive it whenever the subcity is
+    // edited so the role and location always stay consistent. (The canonical
+    // `subcity_admin` role is NOT re-derived — it is location-independent.)
+    if (effectiveRole && String(effectiveRole).startsWith('subcity_') && effectiveRole !== 'subcity_admin' && effectiveSubcity) {
+      const derivedRole = `subcity_${String(effectiveSubcity).trim().toLowerCase().replace(/\s+/g, '_')}`;
+      updateFields.role = derivedRole;
+      effectiveRole = derivedRole;
+    }
 
     // Validate department against the effective woreda's own department list.
     if (DEPARTMENT_SCOPED_ROLES.includes(effectiveRole) && effectiveDept && effectiveWoredaId) {
@@ -394,8 +482,22 @@ const updateUser = async (req, res) => {
         }
         // Normalise to canonical casing and write it back into updateFields
         updateFields.department = matched;
-        const Department = require('../models/Department');
-        const deptRec = await Department.findOne({ woredaId: effectiveWoredaId, name: matched }).select('_id').lean();
+        // Capture the live Department record id when one exists — prefer the
+        // subcity scope, then fall back to a woreda scope for older records.
+        const normalizedName = normalizeDepartmentName(matched);
+        let deptRec = null;
+        if (updateFields.subcityId) {
+          deptRec = await Department.findOne({
+            subcityId: updateFields.subcityId,
+            normalizedDepartmentName: normalizedName,
+          }).select('_id').lean();
+        }
+        if (!deptRec) {
+          deptRec = await Department.findOne({
+            woredaId: effectiveWoredaId,
+            normalizedDepartmentName: normalizedName,
+          }).select('_id').lean();
+        }
         if (deptRec) updateFields.departmentId = deptRec._id;
       }
     }
@@ -503,6 +605,33 @@ const getDepartments = async (req, res) => {
   }
 };
 
+// @desc  Get active departments for a subcity (cascading dropdown source)
+// @route GET /api/departments/by-subcity/:subcityId
+// @access Private (admin)
+const getDepartmentsBySubcity = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.subcityId)) {
+      return res.status(400).json({ success: false, message: 'Invalid subcity id' });
+    }
+
+    const subcity = await Subcity.findById(req.params.subcityId);
+    if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found' });
+
+    // Primary: live subcityId reference. Fallback: legacy departments created
+    // before subcityId was populated still match by their subcity name.
+    const departments = await Department.find({
+      status: 'Active',
+      $or: [
+        { subcityId: subcity._id },
+        { subcityName: { $regex: `^${escapeRegExp(subcity.name)}$`, $options: 'i' } },
+      ],
+    }).select('name code subcityName subcityId status').sort({ name: 1 });
+
+    res.json({ success: true, departments });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 // Shared duplicate check scoped to a subcity + woreda.
 // (subcityId null + woredaId null = legacy/global).
 const findScopedDepartmentDup = (subcityId, woredaId, normalizedName, excludeId) => {
@@ -530,7 +659,7 @@ const findScopedDepartmentDup = (subcityId, woredaId, normalizedName, excludeId)
 // @access Private (admin)
 const createDepartment = async (req, res) => {
   try {
-    const { name, description, status, subcityId, woredaId } = req.body;
+    const { name, code, description, status, subcityId, woredaId } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, message: 'Department name is required' });
@@ -591,6 +720,7 @@ const createDepartment = async (req, res) => {
     const department = await Department.create({
       name: normalizedName,
       normalizedDepartmentName: normalizedName,
+      code: (code || '').trim(),
       subcityId: subcity?._id || null,
       subcityName: subcity?.name || '',
       woredaId: woreda?._id || null,
@@ -618,7 +748,7 @@ const createDepartment = async (req, res) => {
 // @access Private (admin)
 const updateDepartment = async (req, res) => {
   try {
-    const { name, description, status, subcityId, woredaId } = req.body;
+    const { name, code, description, status, subcityId, woredaId } = req.body;
     const updateFields = {};
 
     const current = await Department.findById(req.params.id);
@@ -696,6 +826,7 @@ const updateDepartment = async (req, res) => {
 
     if (description !== undefined) updateFields.description = String(description).trim();
     if (status      !== undefined) updateFields.status      = status === 'Inactive' ? 'Inactive' : 'Active';
+    if (code        !== undefined) updateFields.code        = (code || '').trim();
 
     const department = await Department.findByIdAndUpdate(req.params.id, updateFields, { new: true, runValidators: true });
     if (!department) return res.status(404).json({ success: false, message: 'Department not found' });
@@ -766,10 +897,17 @@ const getUsers = async (req, res) => {
     const { role, isActive, isApproved, search, subcity, woredaId, department, page = 1, limit = 15 } = req.query;
     const query = {};
 
-    if (role) query.role = role;
+    // role=subcity is the shared sentinel for subcity-admin accounts — it
+    // matches every role derived from the Subcity collection (subcity_bole,
+    // subcity_yeka, subcity_koye, …).
+    if (role === 'subcity') {
+      query.role = { $regex: '^subcity_' };
+    } else if (role) {
+      query.role = role;
+    }
     if (isActive !== undefined) query.isActive = isActive === 'true';
     if (isApproved !== undefined) query.isApproved = isApproved === 'true';
-    if (subcity) query.subcity = subcity;
+    if (subcity) query.subcity = { $regex: `^${escapeRegExp(subcity)}$`, $options: 'i' };
     if (woredaId) query.woredaId = woredaId;
     if (department) query.department = department;
     if (search) {
@@ -995,6 +1133,37 @@ const getAdminWoredas = async (req, res) => {
   }
 };
 
+// @desc  Get active woredas for a subcity (cascading dropdown source)
+// @route GET /api/woredas/by-subcity/:subcityId
+// @access Private (admin)
+const getWoredasBySubcity = async (req, res) => {
+  try {
+    const Woreda = require('../models/Woreda');
+    const Subcity = require('../models/Subcity');
+
+    if (!mongoose.isValidObjectId(req.params.subcityId)) {
+      return res.status(400).json({ success: false, message: 'Invalid subcity id' });
+    }
+
+    const subcity = await Subcity.findById(req.params.subcityId);
+    if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found' });
+
+    // Primary: live subcityId reference. Fallback: legacy woredas created before
+    // subcityId was populated still match by their subcity name.
+    const woredas = await Woreda.find({
+      status: 'Active',
+      $or: [
+        { subcityId: subcity._id },
+        { subcity: { $regex: `^${escapeRegExp(subcity.name)}$`, $options: 'i' } },
+      ],
+    }).select('name code subcity status').sort({ name: 1 });
+
+    res.json({ success: true, woredas });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // @desc  Create a woreda (admin only). Master data only — never creates user accounts.
 // @route POST /api/admin/woredas
 // @access Private (admin)
@@ -1002,24 +1171,32 @@ const createWoreda = async (req, res) => {
   try {
     const Woreda  = require('../models/Woreda');
     const Subcity = require('../models/Subcity');
-    const { name, subcity, description, status } = req.body;
+    const { name, code, subcity, subcityId, description, status } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, message: 'Woreda name is required' });
     }
-    if (!subcity || !subcity.trim()) {
-      return res.status(400).json({ success: false, message: 'Subcity is required' });
-    }
 
-    // Validate subcity against live DB records (case-insensitive)
-    const subcityRecord = await Subcity.findOne({ nameLower: subcity.trim().toLowerCase() });
-    if (!subcityRecord) {
-      return res.status(400).json({ success: false, message: `Subcity "${subcity}" does not exist. Create it in Subcity Management first.` });
+    // Resolve the owning subcity. Prefer the live ObjectId reference; fall back
+    // to a case-insensitive name lookup for legacy callers.
+    let subcityRecord = null;
+    if (subcityId && mongoose.isValidObjectId(subcityId)) {
+      subcityRecord = await Subcity.findById(subcityId);
     }
-    // Use the canonical casing stored in the DB
+    if (!subcityRecord && subcity && subcity.trim()) {
+      subcityRecord = await Subcity.findOne({ nameLower: subcity.trim().toLowerCase() });
+    }
+    if (!subcityRecord) {
+      return res.status(400).json({ success: false, message: 'A valid subcity is required. Create it in Subcity Management first.' });
+    }
     const canonicalSubcity = subcityRecord.name;
 
-    const existing = await Woreda.findOne({ name: name.trim(), subcity: canonicalSubcity });
+    // Case-insensitive duplicate check per subcity (the DB index is
+    // case-sensitive, so this returns a readable 400 before any 11000).
+    const existing = await Woreda.findOne({
+      subcity: { $regex: `^${escapeRegExp(canonicalSubcity)}$`, $options: 'i' },
+      name: { $regex: `^${escapeRegExp(name.trim())}$`, $options: 'i' },
+    });
     if (existing) {
       return res.status(400).json({ success: false, message: 'A woreda with this name already exists in this subcity' });
     }
@@ -1027,11 +1204,12 @@ const createWoreda = async (req, res) => {
     const active = status !== 'Inactive';
     const woreda = await Woreda.create({
       name: name.trim(),
+      code: (code || '').trim(),
       subcity: canonicalSubcity,
+      subcityId: subcityRecord._id,
       description: description || '',
       status: active ? 'Active' : 'Inactive',
       isActive: active,
-      subcityId: null,
       departments: DEPARTMENTS,
     });
 
@@ -1050,20 +1228,27 @@ const createWoreda = async (req, res) => {
 const updateWoreda = async (req, res) => {
   try {
     const Woreda = require('../models/Woreda');
-    const { name, subcity, description, status } = req.body;
+    const { name, code, subcity, subcityId, description, status } = req.body;
 
     const woreda = await Woreda.findById(req.params.id);
     if (!woreda) return res.status(404).json({ success: false, message: 'Woreda not found' });
 
     const updateFields = {};
     if (name !== undefined) updateFields.name = name.trim();
-    if (subcity !== undefined) {
+    if (code !== undefined) updateFields.code = (code || '').trim();
+    if (subcityId !== undefined || subcity !== undefined) {
       const Subcity = require('../models/Subcity');
-      const subcityRecord = await Subcity.findOne({ nameLower: subcity.trim().toLowerCase() });
+      let subcityRecord = null;
+      if (subcityId && mongoose.isValidObjectId(subcityId)) {
+        subcityRecord = await Subcity.findById(subcityId);
+      } else if (subcity && subcity.trim()) {
+        subcityRecord = await Subcity.findOne({ nameLower: subcity.trim().toLowerCase() });
+      }
       if (!subcityRecord) {
-        return res.status(400).json({ success: false, message: `Subcity "${subcity}" does not exist. Create it in Subcity Management first.` });
+        return res.status(400).json({ success: false, message: `Subcity "${subcity || subcityId}" does not exist. Create it in Subcity Management first.` });
       }
       updateFields.subcity = subcityRecord.name;
+      updateFields.subcityId = subcityRecord._id;
     }
     if (description !== undefined) updateFields.description = description;
     if (status !== undefined) {
@@ -1073,7 +1258,11 @@ const updateWoreda = async (req, res) => {
 
     const finalName = updateFields.name || woreda.name;
     const finalSubcity = updateFields.subcity || woreda.subcity;
-    const existing = await Woreda.findOne({ name: finalName, subcity: finalSubcity, _id: { $ne: woreda._id } });
+    const existing = await Woreda.findOne({
+      subcity: { $regex: `^${escapeRegExp(finalSubcity)}$`, $options: 'i' },
+      name: { $regex: `^${escapeRegExp(finalName)}$`, $options: 'i' },
+      _id: { $ne: woreda._id },
+    });
     if (existing) {
       return res.status(400).json({ success: false, message: 'A woreda with this name already exists in this subcity' });
     }
@@ -1228,7 +1417,18 @@ const getAdminSubcities = async (req, res) => {
   try {
     const Subcity = require('../models/Subcity');
     const subcities = await Subcity.find().sort({ createdAt: -1 });
-    res.json({ success: true, subcities, total: subcities.length });
+    // Attach the SUBCITY_ADMIN account so the admin UI can show / manage it.
+    const adminIds = subcities.map((s) => s.adminId).filter(Boolean);
+    const admins = await User.find({ _id: { $in: adminIds }, role: 'SUBCITY_ADMIN' })
+      .select('fullName email phone isActive')
+      .lean();
+    const adminMap = new Map(admins.map((a) => [String(a._id), a]));
+    const data = subcities.map((s) => {
+      const plain = s.toObject();
+      plain.admin = plain.adminId ? adminMap.get(String(plain.adminId)) || null : null;
+      return plain;
+    });
+    res.json({ success: true, subcities: data, total: data.length });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -1262,11 +1462,17 @@ const createSubcity = async (req, res) => {
       status: status === 'Inactive' ? 'Inactive' : 'Active',
     });
 
+    // Auto-provision the governance workspace (default offices + categories) so
+    // every new subcity starts with a working complaint-management setup.
+    const { provisionGovernanceWorkspace } = require('./governanceManagementController');
+    const provisioned = await provisionGovernanceWorkspace(subcity);
+
     res.status(201).json({
       success: true,
       message: 'Subcity created successfully',
       data: { id: subcity._id, name: subcity.name },
       subcity,
+      governanceProvisioned: provisioned,
     });
   } catch (error) {
     if (error.code === 11000) {
@@ -1349,13 +1555,471 @@ const resetUserPassword = async (req, res) => {
   }
 };
 
+// @desc  Create a SUBCITY_ADMIN account for a subcity (admin only)
+// @route POST /api/admin/subcity-admins
+// @access Private (admin)
+const createSubcityAdmin = async (req, res) => {
+  try {
+    const { subcityId, fullName, email, password, phone } = req.body;
+
+    if (!subcityId) {
+      return res.status(400).json({ success: false, message: 'A subcity must be selected.' });
+    }
+    if (!fullName || !email || !password) {
+      return res.status(400).json({ success: false, message: 'Full name, email, and password are required.' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+    if (phone && !/^09\d{8}$/.test(phone)) {
+      return res.status(400).json({ success: false, message: 'Phone number must start with 09 and contain 10 digits.' });
+    }
+
+    const subcity = await Subcity.findById(subcityId);
+    if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found.' });
+
+    const existingEmail = await User.findOne({ email: String(email).toLowerCase().trim() });
+    if (existingEmail) return res.status(400).json({ success: false, message: 'Email already registered.' });
+
+    const existingAdmin = await User.findOne({
+      subcityId: subcity._id,
+      isActive: true,
+      $or: [
+        { role: 'SUBCITY_ADMIN' },
+        { role: 'subcity_admin' },
+        { role: { $regex: /^subcity_/ } },
+      ],
+    }).select('fullName email').lean();
+    if (existingAdmin) {
+      return res.status(409).json({
+        success: false,
+        message: `A subcity admin (${existingAdmin.fullName}) already exists for ${subcity.name} Subcity.`,
+      });
+    }
+
+    const user = await User.create({
+      fullName: String(fullName).trim(),
+      email: String(email).toLowerCase().trim(),
+      password,
+      phone: phone || '',
+      role: 'subcity_admin',
+      subcity: subcity.name,
+      subcityId: subcity._id,
+      isActive: true,
+      isApproved: true,
+    });
+
+    subcity.adminId = user._id;
+    await subcity.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Subcity admin account created successfully.',
+      user: { _id: user._id, fullName: user.fullName, email: user.email, role: user.role, subcity: subcity.name },
+    });
+  } catch (error) {
+    console.error('[ADMIN] createSubcityAdmin error:', error.message);
+    if (error.code === 11000) return res.status(400).json({ success: false, message: 'Email already registered.' });
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc  Reset a SUBCITY_ADMIN account password (admin only)
+// @route PUT /api/admin/subcity-admins/:id/reset-password
+// @access Private (admin)
+const resetSubcityAdminPassword = async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (user.role !== 'SUBCITY_ADMIN') {
+      return res.status(400).json({ success: false, message: 'Account is not a subcity admin.' });
+    }
+    user.password = newPassword;
+    await user.save();
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc  Create a subcity admin account (admin only). The role is derived
+//        automatically from the selected subcity (Bole → subcity_bole) and
+//        stored in the database — the admin never supplies it. The subcity is
+//        validated against the live Subcity collection (Subcity Management).
+// @route POST /api/admin/subcity-users
+// @access Private (admin)
+const createSubcityUser = async (req, res) => {
+  try {
+    const { fullName, email, phone, password, subcity } = req.body;
+
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ success: false, message: 'Full name is required.' });
+    }
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Email is required.' });
+    }
+    if (!password) {
+      return res.status(400).json({ success: false, message: 'Password is required.' });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+    if (!phone || !/^09\d{8}$/.test(String(phone).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must start with 09 and contain 10 digits (e.g. 0912345678).',
+      });
+    }
+    if (!subcity || !String(subcity).trim()) {
+      return res.status(400).json({ success: false, message: 'Subcity is required.' });
+    }
+
+    const existingEmail = await User.findOne({ email: String(email).toLowerCase().trim() });
+    if (existingEmail) {
+      return res.status(400).json({ success: false, message: 'Email already registered.' });
+    }
+
+    const Subcity = require('../models/Subcity');
+    const scRecord = await Subcity.findOne({ nameLower: String(subcity).trim().toLowerCase() });
+    if (!scRecord) {
+      return res.status(400).json({
+        success: false,
+        message: `Subcity "${subcity}" does not exist. Create it in Subcity Management first.`,
+      });
+    }
+    if (scRecord.status === 'Inactive') {
+      return res.status(400).json({
+        success: false,
+        message: `Subcity "${scRecord.name}" is inactive. Activate it before creating an admin account.`,
+      });
+    }
+
+    const role = 'subcity_admin';
+
+    // One subcity admin per subcity — match the canonical subcity_admin role,
+    // the legacy SUBCITY_ADMIN, and any previously-derived subcity_<name> role.
+    const existingAdmin = await User.findOne({
+      subcityId: scRecord._id,
+      $or: [
+        { role: 'subcity_admin' },
+        { role: 'SUBCITY_ADMIN' },
+        { role: { $regex: /^subcity_/ }, subcity: { $regex: `^${escapeRegExp(scRecord.name)}$`, $options: 'i' } },
+      ],
+    }).select('fullName email role').lean();
+    if (existingAdmin) {
+      return res.status(409).json({
+        success: false,
+        message: `A subcity admin account already exists for ${scRecord.name} Subcity.`,
+      });
+    }
+
+    const user = await User.create({
+      fullName: String(fullName).trim(),
+      email: String(email).toLowerCase().trim(),
+      password,
+      phone: String(phone).trim(),
+      role,
+      subcity: scRecord.name,
+      subcityId: scRecord._id,
+      isActive: true,
+      isApproved: true,
+    });
+
+    console.log(`[ADMIN] Created subcity admin: ${user.email} (role: ${user.role}, subcity: ${scRecord.name})`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Subcity admin created successfully',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        subcity: scRecord.name,
+      },
+    });
+  } catch (error) {
+    console.error('[ADMIN] createSubcityUser error:', error.message);
+    if (error.code === 11000) {
+      if (error.keyPattern?.subcity) {
+        return res.status(409).json({ success: false, message: 'A subcity admin account already exists for this subcity.' });
+      }
+      return res.status(400).json({ success: false, message: 'Email already registered.' });
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc  Create a woreda_admin account for a woreda (admin only).
+//        The account is scoped to its subcity + woreda and lands on the shared
+//        /dashboard. One woreda_admin per woreda. Email and phone must be unique.
+// @route POST /api/admin/woreda-admins
+// @access Private (admin)
+const createWoredaAdmin = async (req, res) => {
+  try {
+    const { subcityId, woredaId, fullName, email, password, phone } = req.body;
+
+    if (!subcityId) {
+      return res.status(400).json({ success: false, message: 'A subcity must be selected.' });
+    }
+    if (!woredaId) {
+      return res.status(400).json({ success: false, message: 'A woreda must be selected.' });
+    }
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ success: false, message: 'Full name is required.' });
+    }
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Email is required.' });
+    }
+    if (!password) {
+      return res.status(400).json({ success: false, message: 'Password is required.' });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+    if (!phone || !/^09\d{8}$/.test(String(phone).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must start with 09 and contain 10 digits (e.g. 0912345678).',
+      });
+    }
+
+    if (!mongoose.isValidObjectId(subcityId)) {
+      return res.status(400).json({ success: false, message: 'Selected subcity is invalid.' });
+    }
+    if (!mongoose.isValidObjectId(woredaId)) {
+      return res.status(400).json({ success: false, message: 'Selected woreda is invalid.' });
+    }
+
+    const subcity = await Subcity.findById(subcityId);
+    if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found.' });
+    if (subcity.status === 'Inactive') {
+      return res.status(400).json({ success: false, message: `Subcity "${subcity.name}" is inactive. Activate it before creating a woreda admin.` });
+    }
+
+    const Woreda = require('../models/Woreda');
+    const woreda = await Woreda.findById(woredaId);
+    if (!woreda) return res.status(404).json({ success: false, message: 'Woreda not found.' });
+    if (woreda.status === 'Inactive') {
+      return res.status(400).json({ success: false, message: `Woreda "${woreda.name}" is inactive. Activate it before creating a woreda admin.` });
+    }
+
+    // The woreda must belong to the selected subcity. Legacy woredas may have a
+    // null subcityId — then compare the subcity name (case-insensitive).
+    const sameSubcity =
+      String(woreda.subcityId || '') === String(subcity._id) ||
+      (woreda.subcity || '').toLowerCase() === subcity.name.toLowerCase();
+    if (!sameSubcity) {
+      return res.status(400).json({ success: false, message: `"${woreda.name}" does not belong to ${subcity.name} Subcity.` });
+    }
+
+    const emailLower = String(email).toLowerCase().trim();
+    const existingEmail = await User.findOne({ email: emailLower });
+    if (existingEmail) return res.status(400).json({ success: false, message: 'Email already registered.' });
+
+    const phoneTrim = String(phone).trim();
+    const existingPhone = await User.findOne({ phone: phoneTrim });
+    if (existingPhone) {
+      return res.status(400).json({ success: false, message: 'Phone number already registered. Each account must use a unique phone number.' });
+    }
+
+    const existingAdmin = await User.findOne({ woredaId: woreda._id, role: 'woreda_admin' }).select('fullName email').lean();
+    if (existingAdmin) {
+      return res.status(409).json({
+        success: false,
+        message: `A woreda admin (${existingAdmin.fullName}) already exists for ${woreda.name}.`,
+      });
+    }
+
+    const user = await User.create({
+      fullName: String(fullName).trim(),
+      email: emailLower,
+      password,
+      phone: phoneTrim,
+      role: 'woreda_admin',
+      subcity: subcity.name,
+      subcityId: subcity._id,
+      woredaId: woreda._id,
+      woredaName: woreda.name,
+      isActive: true,
+      isApproved: true,
+    });
+
+    woreda.adminId = user._id;
+    await woreda.save();
+
+    console.log(`[ADMIN] Created woreda admin: ${user.email} (woreda: ${woreda.name}, subcity: ${subcity.name})`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Woreda admin account created successfully.',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        subcity: subcity.name,
+        woredaId: woreda._id,
+        woredaName: woreda.name,
+      },
+    });
+  } catch (error) {
+    console.error('[ADMIN] createWoredaAdmin error:', error.message);
+    if (error.code === 11000) return res.status(400).json({ success: false, message: 'Email or phone already registered.' });
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc  Create a department_officer account for a subcity + woreda + department
+//        (admin only). Scoped on the shared /dashboard to their subcity, woreda
+//        and department. Multiple officers per department are allowed.
+// @route POST /api/admin/department-officers
+// @access Private (admin)
+const createDepartmentOfficer = async (req, res) => {
+  try {
+    const { subcityId, woredaId, departmentId, fullName, email, password, phone } = req.body;
+
+    if (!subcityId) {
+      return res.status(400).json({ success: false, message: 'A subcity must be selected.' });
+    }
+    if (!woredaId) {
+      return res.status(400).json({ success: false, message: 'A woreda must be selected.' });
+    }
+    if (!departmentId) {
+      return res.status(400).json({ success: false, message: 'A department must be selected.' });
+    }
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ success: false, message: 'Full name is required.' });
+    }
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ success: false, message: 'Email is required.' });
+    }
+    if (!password) {
+      return res.status(400).json({ success: false, message: 'Password is required.' });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+    if (!phone || !/^09\d{8}$/.test(String(phone).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must start with 09 and contain 10 digits (e.g. 0912345678).',
+      });
+    }
+
+    if (!mongoose.isValidObjectId(subcityId)) {
+      return res.status(400).json({ success: false, message: 'Selected subcity is invalid.' });
+    }
+    if (!mongoose.isValidObjectId(woredaId)) {
+      return res.status(400).json({ success: false, message: 'Selected woreda is invalid.' });
+    }
+    if (!mongoose.isValidObjectId(departmentId)) {
+      return res.status(400).json({ success: false, message: 'Selected department is invalid.' });
+    }
+
+    const subcity = await Subcity.findById(subcityId);
+    if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found.' });
+    if (subcity.status === 'Inactive') {
+      return res.status(400).json({ success: false, message: `Subcity "${subcity.name}" is inactive. Activate it before creating a department officer.` });
+    }
+
+    const Woreda = require('../models/Woreda');
+    const woreda = await Woreda.findById(woredaId);
+    if (!woreda) return res.status(404).json({ success: false, message: 'Woreda not found.' });
+    if (woreda.status === 'Inactive') {
+      return res.status(400).json({ success: false, message: `Woreda "${woreda.name}" is inactive. Activate it before creating a department officer.` });
+    }
+
+    // The woreda must belong to the selected subcity. Legacy woredas may have a
+    // null subcityId — then compare the subcity name (case-insensitive).
+    const sameSubcity =
+      String(woreda.subcityId || '') === String(subcity._id) ||
+      (woreda.subcity || '').toLowerCase() === subcity.name.toLowerCase();
+    if (!sameSubcity) {
+      return res.status(400).json({ success: false, message: `"${woreda.name}" does not belong to ${subcity.name} Subcity.` });
+    }
+
+    const department = await Department.findById(departmentId);
+    if (!department) return res.status(404).json({ success: false, message: 'Department not found.' });
+    if (department.status === 'Inactive') {
+      return res.status(400).json({ success: false, message: `Department "${department.name}" is inactive. Activate it before creating a department officer.` });
+    }
+
+    // The department must belong to the selected subcity. Prefer the live
+    // subcityId; fall back to the denormalized subcityName (case-insensitive).
+    const departmentSameSubcity =
+      String(department.subcityId || '') === String(subcity._id) ||
+      (department.subcityName || '').toLowerCase() === subcity.name.toLowerCase();
+    if (!departmentSameSubcity) {
+      return res.status(400).json({ success: false, message: `"${department.name}" does not belong to ${subcity.name} Subcity.` });
+    }
+
+    const emailLower = String(email).toLowerCase().trim();
+    const existingEmail = await User.findOne({ email: emailLower });
+    if (existingEmail) return res.status(400).json({ success: false, message: 'Email already registered.' });
+
+    const phoneTrim = String(phone).trim();
+    const existingPhone = await User.findOne({ phone: phoneTrim });
+    if (existingPhone) {
+      return res.status(400).json({ success: false, message: 'Phone number already registered. Each account must use a unique phone number.' });
+    }
+
+    const user = await User.create({
+      fullName: String(fullName).trim(),
+      email: emailLower,
+      password,
+      phone: phoneTrim,
+      role: 'department_officer',
+      subcity: subcity.name,
+      subcityId: subcity._id,
+      woredaId: woreda._id,
+      woredaName: woreda.name,
+      departmentId: department._id,
+      department: department.name,
+      isActive: true,
+      isApproved: true,
+    });
+
+    console.log(`[ADMIN] Created department officer: ${user.email} (department: ${department.name}, woreda: ${woreda.name}, subcity: ${subcity.name})`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Department officer account created successfully.',
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        subcity: subcity.name,
+        woredaId: woreda._id,
+        woredaName: woreda.name,
+        departmentId: department._id,
+        department: department.name,
+      },
+    });
+  } catch (error) {
+    console.error('[ADMIN] createDepartmentOfficer error:', error.message);
+    if (error.code === 11000) return res.status(400).json({ success: false, message: 'Email or phone already registered.' });
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getStats, getUsers, createUser, updateUser, approveUser, toggleUserActive, deleteUser,
   getPendingApprovals,
   getRegionStats, getActivityLogs, getDepartments, getLocations, resetUserPassword,
-  createDepartment, updateDepartment, deleteDepartment,
-  getAdminWoredas, createWoreda, updateWoreda, deleteWoreda, getWoredaDeps,
+  createDepartment, updateDepartment, deleteDepartment, getDepartmentsBySubcity,
+  getAdminWoredas, createWoreda, updateWoreda, deleteWoreda, getWoredaDeps, getWoredasBySubcity,
   getAdminSubcities, createSubcity, updateSubcity, deleteSubcity,
+  createSubcityAdmin, resetSubcityAdminPassword,
+  createSubcityUser, createWoredaAdmin, createDepartmentOfficer,
 };
 
 // ── IssueType CRUD ────────────────────────────────────────────────────────────
@@ -1386,8 +2050,11 @@ const getIssueTypes = async (req, res) => {
   try {
     const { department, subcity, isActive, search, page = 1, limit = 50 } = req.query;
     const query = {};
-    if (department) query.department = department;
-    if (subcity)    query.subcity    = subcity;
+    // Case-insensitive: master-data department/subcity lists may be lowercase
+    // while stored issue types are title-cased, so exact-case filters would
+    // silently empty the list.
+    if (department) query.department = { $regex: `^${escapeRegExp(department)}$`, $options: 'i' };
+    if (subcity)    query.subcity    = { $regex: `^${escapeRegExp(subcity)}$`, $options: 'i' };
     if (isActive !== undefined) query.isActive = isActive === 'true';
     if (search) query.name = { $regex: search.trim(), $options: 'i' };
 
@@ -1425,7 +2092,7 @@ const createIssueType = async (req, res) => {
 
     const existing = await IssueType.findOne({
       name: { $regex: `^${name.trim()}$`, $options: 'i' },
-      department: deptName,
+      department: { $regex: `^${escapeRegExp(deptName)}$`, $options: 'i' },
       subcity: subcityKey,
     });
     if (existing)
@@ -1483,7 +2150,7 @@ const updateIssueType = async (req, res) => {
 
     const dup = await IssueType.findOne({
       name: { $regex: `^${checkName}$`, $options: 'i' },
-      department: checkDept,
+      department: { $regex: `^${escapeRegExp(checkDept)}$`, $options: 'i' },
       subcity: checkSC,
       _id: { $ne: req.params.id },
     });
@@ -1604,7 +2271,11 @@ const seedIssueTypes = async (req, res) => {
     let created = 0;
     let skipped = 0;
     for (const item of SEED_DATA) {
-      const exists = await IssueType.findOne({ name: item.name, department: item.department, subcity: item.subcity });
+      const exists = await IssueType.findOne({
+        name: { $regex: `^${escapeRegExp(item.name)}$`, $options: 'i' },
+        department: { $regex: `^${escapeRegExp(item.department)}$`, $options: 'i' },
+        subcity: item.subcity,
+      });
       if (exists) { skipped++; continue; }
       await IssueType.create({ ...item, isActive: true });
       created++;

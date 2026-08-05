@@ -90,7 +90,7 @@ export default function AdminOverview() {
           { to:'/dashboard/admin/approvals',  icon:'✅', label: t('admin.pendingApprovals'),  color:'bg-amber-50' },
           { to:'/dashboard/admin/reports',    icon:'📋', label: t('admin.allReports'),        color:'bg-red-50' },
           { to:'/dashboard/admin/activity',   icon:'📜', label: t('admin.activityLog'),       color:'bg-indigo-50' },
-          { to:'/dashboard/admin/departments',icon:'🏛️', label: t('admin.deptManagement'),    color:'bg-teal-50' },
+          { to:'/dashboard/admin/subcities',  icon:'🏙️', label:'Subcity Management',       color:'bg-teal-50' },
           { to:'/dashboard/admin/news',       icon:'📰', label: t('admin.newsTitle'),         color:'bg-green-50' },
           { to:'/dashboard/admin/analytics',  icon:'📈', label: t('dashboard.analyticsTitle'),color:'bg-purple-50' },
         ].map(a => (

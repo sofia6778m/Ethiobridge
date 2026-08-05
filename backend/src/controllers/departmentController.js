@@ -1,13 +1,26 @@
 const InfrastructureReport = require('../models/InfrastructureReport');
 const PublicComplaint = require('../models/PublicComplaint');
-const User = require('../models/User');
-const Notification = require('../models/Notification');
 const createNotification = require('../utils/createNotification');
+const { departmentMatchFilter } = require('../utils/departmentRecipients');
+
+// Department scope filter for records owned by this department account.
+// Matches the department name case-insensitively (survives "water" vs "Water")
+// AND on the live departmentId ObjectId when the account has one, so both
+// legacy `department` accounts and canonical `department_officer` accounts see
+// the same dashboard data.
+const departmentScope = (user) => {
+  const scope = {};
+  if (user.woredaId) scope.woredaId = user.woredaId;
+  const match = departmentMatchFilter(user.department, user.departmentId);
+  if (match) Object.assign(scope, match);
+  return scope;
+};
 
 const getDepartmentStats = async (req, res) => {
   try {
-    const department = req.user.department;
-    const woredaId = req.user.woredaId;
+    const scope = departmentScope(req.user);
+    const infra = { ...scope, report_type: 'infrastructure' };
+    const complaints = { ...scope, report_type: 'public_complaint' };
 
     const [
       total, pending, assigned, inProgress, completed, resolved, rejected,
@@ -15,18 +28,18 @@ const getDepartmentStats = async (req, res) => {
       totalComplaints, submittedComplaints, reviewingComplaints,
       resolvedComplaints, rejectedComplaints,
     ] = await Promise.all([
-      InfrastructureReport.countDocuments({ woredaId, department }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'Pending' }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'Assigned' }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'In Progress' }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'Completed' }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'Resolved' }),
-      InfrastructureReport.countDocuments({ woredaId, department, status: 'Rejected' }),
-      PublicComplaint.countDocuments({ woredaId, department }),
-      PublicComplaint.countDocuments({ woredaId, department, status: 'Submitted' }),
-      PublicComplaint.countDocuments({ woredaId, department, status: 'Under Review' }),
-      PublicComplaint.countDocuments({ woredaId, department, status: 'Resolved' }),
-      PublicComplaint.countDocuments({ woredaId, department, status: 'Rejected' }),
+      InfrastructureReport.countDocuments(infra),
+      InfrastructureReport.countDocuments({ ...infra, status: { $in: ['Pending', 'Submitted'] } }),
+      InfrastructureReport.countDocuments({ ...infra, status: 'Assigned' }),
+      InfrastructureReport.countDocuments({ ...infra, status: 'In Progress' }),
+      InfrastructureReport.countDocuments({ ...infra, status: 'Completed' }),
+      InfrastructureReport.countDocuments({ ...infra, status: 'Resolved' }),
+      InfrastructureReport.countDocuments({ ...infra, status: 'Rejected' }),
+      PublicComplaint.countDocuments(complaints),
+      PublicComplaint.countDocuments({ ...complaints, status: 'Submitted' }),
+      PublicComplaint.countDocuments({ ...complaints, status: 'Under Review' }),
+      PublicComplaint.countDocuments({ ...complaints, status: 'Resolved' }),
+      PublicComplaint.countDocuments({ ...complaints, status: 'Rejected' }),
     ]);
 
     res.json({
@@ -40,6 +53,26 @@ const getDepartmentStats = async (req, res) => {
           resolved: resolvedComplaints,
           rejected: rejectedComplaints,
         },
+        // Split analytics — count infrastructure reports and public complaints
+        // separately so dashboards can report each flow independently.
+        analytics: {
+          infrastructure: {
+            total,
+            pending,
+            assigned,
+            inProgress,
+            completed,
+            resolved,
+            rejected,
+          },
+          publicComplaints: {
+            total: totalComplaints,
+            submitted: submittedComplaints,
+            reviewing: reviewingComplaints,
+            resolved: resolvedComplaints,
+            rejected: rejectedComplaints,
+          },
+        },
       },
     });
   } catch (error) {
@@ -49,18 +82,18 @@ const getDepartmentStats = async (req, res) => {
 
 const getDepartmentReports = async (req, res) => {
   try {
-    const department = req.user.department;
-    const woredaId = req.user.woredaId;
+    const scope = departmentScope(req.user);
     const { status, search, page = 1, limit = 20 } = req.query;
-    const query = { woredaId, department };
+    const query = { ...scope, report_type: 'infrastructure' };
 
     if (status) query.status = status;
     if (search) {
-      query.$or = [
+      const filters = [
         { title: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
         { reportId: { $regex: search, $options: 'i' } },
       ];
+      query.$or = scope.$or ? scope.$or.concat(filters) : filters;
     }
 
     const total = await InfrastructureReport.countDocuments(query);
@@ -78,9 +111,7 @@ const getDepartmentReports = async (req, res) => {
 
 const getDepartmentReportDetail = async (req, res) => {
   try {
-    const department = req.user.department;
-    const woredaId = req.user.woredaId;
-    const report = await InfrastructureReport.findOne({ _id: req.params.id, woredaId, department })
+    const report = await InfrastructureReport.findOne({ _id: req.params.id, ...departmentScope(req.user) })
       .populate('submittedBy', 'fullName email phone')
       .populate('assignedTo', 'fullName email');
     if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
@@ -92,7 +123,7 @@ const getDepartmentReportDetail = async (req, res) => {
 
 const acceptReport = async (req, res) => {
   try {
-    const report = await InfrastructureReport.findOne({ _id: req.params.id, woredaId: req.user.woredaId, department: req.user.department });
+    const report = await InfrastructureReport.findOne({ _id: req.params.id, ...departmentScope(req.user) });
     if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
 
     report.status = 'Assigned';
@@ -114,7 +145,7 @@ const acceptReport = async (req, res) => {
 const rejectReport = async (req, res) => {
   try {
     const { note } = req.body;
-    const report = await InfrastructureReport.findOne({ _id: req.params.id, woredaId: req.user.woredaId, department: req.user.department });
+    const report = await InfrastructureReport.findOne({ _id: req.params.id, ...departmentScope(req.user) });
     if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
 
     report.status = 'Rejected';
@@ -137,7 +168,7 @@ const rejectReport = async (req, res) => {
 
 const startWorking = async (req, res) => {
   try {
-    const report = await InfrastructureReport.findOne({ _id: req.params.id, woredaId: req.user.woredaId, department: req.user.department });
+    const report = await InfrastructureReport.findOne({ _id: req.params.id, ...departmentScope(req.user) });
     if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
 
     report.status = 'In Progress';
@@ -158,7 +189,7 @@ const startWorking = async (req, res) => {
 const markComplete = async (req, res) => {
   try {
     const { note } = req.body;
-    const report = await InfrastructureReport.findOne({ _id: req.params.id, woredaId: req.user.woredaId, department: req.user.department });
+    const report = await InfrastructureReport.findOne({ _id: req.params.id, ...departmentScope(req.user) });
     if (!report) return res.status(404).json({ success: false, message: 'Report not found' });
 
     report.status = 'Completed';
@@ -204,21 +235,21 @@ const markComplete = async (req, res) => {
 // @access Private (department)
 const getDepartmentComplaints = async (req, res) => {
   try {
-    const department = req.user.department;
-    const woredaId   = req.user.woredaId;
+    const scope = departmentScope(req.user);
     const { status, search, page = 1, limit = 20 } = req.query;
 
     // Hard-scope: the department user can ONLY see complaints for their
     // exact woreda + department combination, regardless of query params.
-    const query = { woredaId, department };
+    const query = { ...scope, report_type: 'public_complaint' };
     if (status) query.status = status;
     if (search) {
-      query.$or = [
+      const filters = [
         { title:          { $regex: search, $options: 'i' } },
         { description:    { $regex: search, $options: 'i' } },
         { trackingNumber: { $regex: search, $options: 'i' } },
         { reporterName:   { $regex: search, $options: 'i' } },
       ];
+      query.$or = scope.$or ? scope.$or.concat(filters) : filters;
     }
 
     const total = await PublicComplaint.countDocuments(query);
@@ -246,8 +277,6 @@ const getDepartmentComplaints = async (req, res) => {
 // @access Private (department)
 const updateDepartmentComplaintStatus = async (req, res) => {
   try {
-    const department = req.user.department;
-    const woredaId   = req.user.woredaId;
     const { status, comment } = req.body;
 
     const VALID = ['Submitted', 'Under Review', 'In Progress', 'Resolved', 'Rejected', 'Closed'];
@@ -256,7 +285,7 @@ const updateDepartmentComplaintStatus = async (req, res) => {
     }
 
     // Enforce scope: the complaint must belong to this exact dept+woreda.
-    const complaint = await PublicComplaint.findOne({ _id: req.params.id, woredaId, department });
+    const complaint = await PublicComplaint.findOne({ _id: req.params.id, ...departmentScope(req.user) });
     if (!complaint) {
       return res.status(404).json({ success: false, message: 'Complaint not found or not in your scope' });
     }
@@ -283,7 +312,7 @@ const updateDepartmentComplaintStatus = async (req, res) => {
       await createNotification({
         recipient: complaint.reporter,
         title: 'Complaint Status Updated',
-        message: `Your complaint ${complaint.trackingNumber} has been updated to "${status}" by the ${department} department.`,
+        message: `Your complaint ${complaint.trackingNumber} has been updated to "${status}" by the ${req.user.department} department.`,
         type: 'info',
         relatedReport:     complaint._id,
         relatedReportType: 'public_complaint',

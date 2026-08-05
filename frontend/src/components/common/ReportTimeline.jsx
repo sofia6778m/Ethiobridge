@@ -17,6 +17,21 @@ const ACTION_CONFIG = {
   forwarded: { icon: '➡️', color: 'bg-blue-100 text-blue-600' },
   received: { icon: '📥', color: 'bg-teal-100 text-teal-600' },
   resolved_at_level: { icon: '✅', color: 'bg-green-100 text-green-600' },
+  accepted: { icon: '👍', color: 'bg-green-100 text-green-600' },
+  officer_assigned: { icon: '👤', color: 'bg-purple-100 text-purple-600' },
+  technician_assigned: { icon: '🔧', color: 'bg-cyan-100 text-cyan-600' },
+  officer_accepted: { icon: '✅', color: 'bg-green-100 text-green-600' },
+  technician_work_state: { icon: '🛠️', color: 'bg-orange-100 text-orange-600' },
+  verified: { icon: '✅', color: 'bg-green-100 text-green-600' },
+  rework_required: { icon: '🔁', color: 'bg-rose-100 text-rose-600' },
+  closed: { icon: '🔒', color: 'bg-gray-100 text-gray-600' },
+  escalated_to_subcity: { icon: '⬆️', color: 'bg-orange-100 text-orange-600' },
+  escalated_to_subcity_admin: { icon: '🚨', color: 'bg-red-100 text-red-600' },
+  note_added: { icon: '📌', color: 'bg-gray-100 text-gray-600' },
+  info_requested: { icon: '❓', color: 'bg-amber-100 text-amber-600' },
+  waiting_parts: { icon: '📦', color: 'bg-orange-100 text-orange-600' },
+  forwarded_to_subcity: { icon: '➡️', color: 'bg-blue-100 text-blue-600' },
+  resolved_by_subcity: { icon: '✅', color: 'bg-green-100 text-green-600' },
 };
 
 export default function ReportTimeline({ timeline = [] }) {

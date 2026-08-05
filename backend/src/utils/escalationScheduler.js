@@ -25,6 +25,7 @@ const {
   escalateToSubcityAdmin,
 } = require('../controllers/publicComplaintController');
 const { runEscalationPass: runMunicipalEscalationPass } = require('../controllers/municipalComplaintController');
+const { runGovernanceEscalationPass } = require('../controllers/governanceComplaintController');
 
 let _io = null;
 
@@ -104,6 +105,11 @@ async function runEscalationPass(io) {
     // Stage 1: 48h no response at Woreda level -> Subcity Department.
     // Stage 2: 5 days no action after escalation -> Subcity Administrator.
     await runMunicipalEscalationPass(io);
+
+    // ── Pass 5: service governance complaints ────────────────────────────────
+    // Flags complaints past their response deadline and woreda requests whose
+    // due date has elapsed (notifies the subcity governance office).
+    await runGovernanceEscalationPass(io);
   } catch (err) {
     console.error('[Escalation] Pass error:', err.message);
   }

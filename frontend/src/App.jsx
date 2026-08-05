@@ -1,10 +1,8 @@
-import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { SocketProvider } from './context/SocketContext';
-import { toast } from 'react-toastify';
 import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Public Layout & Pages
@@ -21,10 +19,19 @@ import PrivacyPolicy from './pages/public/PrivacyPolicy';
 import Terms from './pages/public/Terms';
 import ReportDetail from './pages/public/ReportDetail';
 import TrackReport from './pages/public/TrackReport';
-import PublicComplaintPage from './pages/public/PublicComplaintPage';
+import ComplaintTrack from './pages/public/ComplaintTrack';
+import PublicReportSelection from './pages/public/PublicReportSelection';
+import PublicInfrastructureReport from './pages/public/PublicInfrastructureReport';
+import PublicGovernanceComplaint from './pages/public/PublicGovernanceComplaint';
+import GovernanceTrack from './pages/public/GovernanceTrack';
 import WorkflowComplaintSubmit from './pages/public/WorkflowComplaintSubmit';
 import Fundraising from './pages/public/Fundraising';
 import FundraisingDetail from './pages/public/FundraisingDetail';
+import Donate from './pages/public/Donate';
+import DonateNew from './pages/public/DonateNew';
+import DonationTrack from './pages/public/DonationTrack';
+import Alerts from './pages/public/Alerts';
+import AlertDetail from './pages/public/AlertDetail';
 
 // Auth
 import Login from './pages/auth/Login';
@@ -36,19 +43,16 @@ import GovernmentDashboard from './pages/dashboard/government/GovDashboard';
 import NGODashboard from './pages/dashboard/ngo/NGODashboard';
 import VolunteerDashboard from './pages/dashboard/volunteer/VolunteerDashboard';
 import AdminDashboard from './pages/dashboard/admin/AdminDashboard';
-import SharedDashboard from './pages/dashboard/shared/SharedDashboard';
 import DepartmentDashboard from './pages/dashboard/department/DepartmentDashboard';
+import SubcityDashboard from './pages/dashboard/subcity/SubcityDashboard';
+import WoredaDashboard from './pages/dashboard/woreda/WoredaDashboard';
+import OfficerDashboard from './pages/dashboard/officer/OfficerDashboard';
+import TechnicianDashboard from './pages/dashboard/technician/TechnicianDashboard';
 
 import LoadingSpinner from './components/common/LoadingSpinner';
+import DashboardRouter from './pages/dashboard/DashboardRouter';
+import UnauthorizedPage from './pages/dashboard/UnauthorizedPage';
 import { getRoleDashboard } from './utils/roleRoutes';
-
-const RoleRedirect = ({ message }) => {
-  const { user } = useAuth();
-  useEffect(() => {
-    if (message) toast.error(message);
-  }, [message]);
-  return <Navigate to={getRoleDashboard(user)} replace />;
-};
 
 // Guest-only pages (login/register): an authenticated user who navigates to one
 // of these is immediately sent to their own dashboard.
@@ -59,14 +63,28 @@ const PublicOnlyRoute = ({ children }) => {
   return children;
 };
 
-const ProtectedRoute = ({ children, roles, accessDeniedMessage }) => {
+// Authenticated-only route guard. Optional `roles` list: when provided and the
+// user's role isn't allowed, show a friendly UnauthorizedPage instead of an
+// "Access Denied" toast. Role mismatches redirect back to the user's own
+// dashboard via getRoleDashboard.
+const ProtectedRoute = ({ children, roles }) => {
   const { isAuthenticated, user, loading } = useAuth();
   if (loading) return <LoadingSpinner fullPage />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(user?.role)) {
-    return <RoleRedirect message={accessDeniedMessage || `Access Denied.`} />;
+    console.warn(`[AUTH] Role '${user?.role}' is not allowed for this route`);
+    return <UnauthorizedPage />;
   }
   return children;
+};
+
+// Catch-all for unknown paths: send authenticated users to their own dashboard
+// instead of a blank page, and unauthenticated users to login.
+const FallbackRoute = () => {
+  const { isAuthenticated, user, loading } = useAuth();
+  if (loading) return <LoadingSpinner fullPage />;
+  if (isAuthenticated) return <Navigate to={getRoleDashboard(user)} replace />;
+  return <Navigate to="/login" replace />;
 };
 
 const AppRoutes = () => {
@@ -90,10 +108,19 @@ const AppRoutes = () => {
         <Route path="/privacy-policy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/track-report" element={<TrackReport />} />
-        <Route path="/report/public-complaint" element={<PublicComplaintPage />} />
+        <Route path="/track-complaint" element={<ComplaintTrack />} />
+        <Route path="/report" element={<PublicReportSelection />} />
+        <Route path="/report/infrastructure" element={<PublicInfrastructureReport />} />
+        <Route path="/report/governance-complaint" element={<PublicGovernanceComplaint />} />
+        <Route path="/track/governance/:trackingId" element={<GovernanceTrack />} />
         <Route path="/report/workflow-complaint" element={<WorkflowComplaintSubmit />} />
         <Route path="/fundraising" element={<Fundraising />} />
         <Route path="/fundraising/:id" element={<FundraisingDetail />} />
+        <Route path="/donate" element={<Donate />} />
+        <Route path="/donate/new" element={<DonateNew />} />
+        <Route path="/donate/track" element={<DonationTrack />} />
+        <Route path="/alerts" element={<Alerts />} />
+        <Route path="/alerts/:id" element={<AlertDetail />} />
       </Route>
 
       {/* Auth Routes — guest only: authenticated users are auto-redirected */}
@@ -108,11 +135,13 @@ const AppRoutes = () => {
         </PublicOnlyRoute>
       } />
 
-      {/* Shared Dashboard — subcity, woreda, inspector, technician & complaint-management roles */}
+      {/* Unified Dashboard entry — any authenticated user lands here and is
+          dispatched to the correct dashboard for their role. No role lists or
+          block lists on this route: DashboardRouter handles the dispatch. */}
       <Route path="/dashboard/*" element={
-        <ProtectedRoute roles={['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'inspector', 'technician', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'OFFICER', 'TECHNICIAN']}>
+        <ProtectedRoute>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
-            <SharedDashboard />
+            <DashboardRouter />
           </ErrorBoundary>
         </ProtectedRoute>
       } />
@@ -162,16 +191,52 @@ const AppRoutes = () => {
         </ProtectedRoute>
       } />
 
-      {/* Department Dashboard */}
+      {/* Subcity Admin Dashboard — legacy SUBCITY_ADMIN and canonical subcity_admin */}
+      <Route path="/dashboard/subcity/*" element={
+        <ProtectedRoute roles={['SUBCITY_ADMIN', 'subcity_admin']}>
+          <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
+            <SubcityDashboard />
+          </ErrorBoundary>
+        </ProtectedRoute>
+      } />
+
+      {/* Woreda Admin Dashboard — legacy WOREDA_ADMIN and canonical woreda_admin */}
+      <Route path="/dashboard/woreda/*" element={
+        <ProtectedRoute roles={['WOREDA_ADMIN', 'woreda_admin']}>
+          <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
+            <WoredaDashboard />
+          </ErrorBoundary>
+        </ProtectedRoute>
+      } />
+
+      {/* Officer Dashboard */}
+      <Route path="/dashboard/officer/*" element={
+        <ProtectedRoute roles={['OFFICER']}>
+          <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
+            <OfficerDashboard />
+          </ErrorBoundary>
+        </ProtectedRoute>
+      } />
+
+      {/* Technician Dashboard */}
+      <Route path="/dashboard/technician/*" element={
+        <ProtectedRoute roles={['TECHNICIAN']}>
+          <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
+            <TechnicianDashboard />
+          </ErrorBoundary>
+        </ProtectedRoute>
+      } />
+
+      {/* Department Dashboard — legacy department + canonical department_officer */}
       <Route path="/department/dashboard/*" element={
-        <ProtectedRoute roles={['department', 'DEPARTMENT_ADMIN']}>
+        <ProtectedRoute roles={['department', 'DEPARTMENT_ADMIN', 'department_officer']}>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
             <DepartmentDashboard />
           </ErrorBoundary>
         </ProtectedRoute>
       } />
 
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<FallbackRoute />} />
     </Routes>
   );
 };

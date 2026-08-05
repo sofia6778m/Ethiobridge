@@ -20,15 +20,13 @@ export default function ReportSelection() {
           <h3 className="font-bold text-gray-900 dark:text-gray-100 text-lg mb-1">{t('home.infraTitle') || 'Infrastructure Report'}</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">Report damaged roads, water, electricity, and more</p>
         </Link>
+      </div>
 
-        <Link
-          to="/dashboard/citizen/create-report/complaint"
-          className="group border-2 border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 hover:border-amber-400 hover:shadow-lg rounded-2xl p-6 text-left transition-all duration-200"
-        >
-          <div className="w-14 h-14 rounded-xl bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center text-3xl mb-4 group-hover:scale-110 transition-transform">📋</div>
-          <h3 className="font-bold text-gray-900 dark:text-gray-100 text-lg mb-1">Public Complaint Report</h3>
-          <p className="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">File a complaint about government services or public issues</p>
-        </Link>
+      <div className="mt-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4 text-sm text-emerald-700 dark:text-emerald-300">
+        To submit a <strong>Governance Complaint</strong> (government service delays, misconduct, corruption), use the{' '}
+        <Link to="/report/governance-complaint" className="font-semibold underline">public governance complaint form</Link>.
+        Track all your reports and complaints from{' '}
+        <Link to="/dashboard/citizen/my-complaints" className="font-semibold underline">My Complaints</Link>.
       </div>
     </div>
   );

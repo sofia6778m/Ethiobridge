@@ -330,6 +330,13 @@ export default function FundraisingDetail() {
               <FaHeart /> Donate Now
             </button>
 
+            <Link
+              to={`/donate/new?campaign=${campaign._id}`}
+              className="w-full btn-secondary py-3 text-sm flex items-center justify-center gap-2 rounded-xl mb-2.5"
+            >
+              💳 Donate with QR & verified tracking
+            </Link>
+
             <button
               onClick={handleShare}
               className="w-full btn-secondary py-3 text-sm flex items-center justify-center gap-2 rounded-xl"

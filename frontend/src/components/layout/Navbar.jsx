@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import LanguageSelector from '../common/LanguageSelector';
 import ThemeToggle from '../common/ThemeToggle';
+import { getRoleDashboard } from '../../utils/roleRoutes';
 
 export default function Navbar() {
   const { isAuthenticated, user, logout } = useAuth();
@@ -16,7 +17,8 @@ export default function Navbar() {
   const navLinks = [
     { to: '/',               label: t('nav.home') },
     { to: '/about',          label: t('nav.about') },
-    { to: '/fundraising',    label: '❤️ Fundraising' },
+    { to: '/donate',         label: `❤️ ${t('donate.navLabel')}` },
+    { to: '/fundraising',    label: '🏆 Fundraising' },
     { to: '/news',           label: t('nav.news') },
     { to: '/faq',            label: t('nav.faq') },
     { to: '/contact',        label: t('nav.contact') },
@@ -29,20 +31,10 @@ export default function Navbar() {
     setDropOpen(false);
   };
 
-  const dashboardPath = {
-    citizen: '/dashboard/citizen',
-    government: '/dashboard/government',
-    ngo: '/dashboard/ngo',
-    volunteer: '/dashboard/volunteer',
-    admin: '/dashboard/admin',
-    subcity_bole: '/dashboard',
-    subcity_yeka: '/dashboard',
-    subcity_lemmi_kura: '/dashboard',
-    woreda: '/dashboard',
-    department: '/department/dashboard',
-    inspector: '/dashboard',
-    technician: '/dashboard',
-  }[user?.role] || '/dashboard';
+  // Single source of truth for the "Dashboard" link — mirrors roleRoutes.js so
+  // every role (including subcity_admin / woreda_admin / department_officer)
+  // is routed to the dashboard it actually has access to.
+  const dashboardPath = getRoleDashboard(user);
 
   return (
     <nav className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-100 dark:border-gray-700 sticky top-0 z-40 transition-colors">

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import LanguageSelector from '../common/LanguageSelector';
 import ThemeToggle from '../common/ThemeToggle';
+import NotificationBell from '../common/NotificationBell';
 
 export default function DashboardLayout({ children, navItems, title }) {
   const { user, logout } = useAuth();
@@ -90,6 +91,7 @@ export default function DashboardLayout({ children, navItems, title }) {
             <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{title}</h1>
           </div>
           <div className="flex items-center gap-3">
+            <NotificationBell />
             <ThemeToggle />
             <LanguageSelector variant="dashboard" />
             <span className="text-sm text-gray-500 dark:text-gray-400 hidden sm:block capitalize">{user?.role} {t('dashboard.portalSuffix')}</span>

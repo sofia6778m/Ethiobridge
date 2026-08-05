@@ -142,18 +142,29 @@ export const adminAPI = {
   getStats: () => API.get('/admin/stats'),
   getRegionStats: () => API.get('/admin/region-stats'),
   getDepartments: (params) => API.get('/admin/departments', { params }),
-  createDepartment: (data) => API.post('/admin/departments', data),
-  updateDepartment: (id, data) => API.put(`/admin/departments/${id}`, data),
-  deleteDepartment: (id) => API.delete(`/admin/departments/${id}`),
-  // Subcity-scoped department management (Admin)
-  getSubcityDepartments: (subcityId) => API.get(`/admin/subcities/${subcityId}/departments`),
-  createSubcityDepartment: (subcityId, data) => API.post(`/admin/subcities/${subcityId}/departments`, data),
-  updateSubcityDepartment: (subcityId, deptId, data) => API.put(`/admin/subcities/${subcityId}/departments/${deptId}`, data),
-  deleteSubcityDepartment: (subcityId, deptId) => API.delete(`/admin/subcities/${subcityId}/departments/${deptId}`),
-  getWoredas: (params) => API.get('/admin/woredas', { params }),
-  createWoreda: (data) => API.post('/admin/woredas', data),
-  updateWoreda: (id, data) => API.put(`/admin/woredas/${id}`, data),
-  deleteWoreda: (id) => API.delete(`/admin/woredas/${id}`),
+  // Subcity admin account provisioning (admin only)
+  createSubcityAdmin: (data) => API.post('/admin/subcity-admins', data),
+  // Create a subcity admin account — role (subcity_bole, …) is derived from the
+  // selected subcity on the server, never chosen manually.
+  createSubcityUser: (data) => API.post('/admin/subcity-users', data),
+  resetSubcityAdminPassword: (id, data) => API.put(`/admin/subcity-admins/${id}/reset-password`, data),
+  // Woreda admin accounts (admin only) — scoped to a subcity + woreda.
+  createWoredaAdmin: (data) => API.post('/admin/woreda-admins', data),
+  // Department officer accounts (admin only) — scoped to subcity + woreda + department.
+  createDepartmentOfficer: (data) => API.post('/admin/department-officers', data),
+  // Woreda master data (admin only)
+  getWoredas: (params) => API.get('/woredas', { params }),
+  getWoredasBySubcity: (subcityId) => API.get(`/woredas/by-subcity/${subcityId}`),
+  createWoreda: (data) => API.post('/woredas', data),
+  updateWoreda: (id, data) => API.put(`/woredas/${id}`, data),
+  deleteWoreda: (id, params) => API.delete(`/woredas/${id}`, { params }),
+  getWoredaDeps: (id) => API.get(`/woredas/${id}/deps`),
+  // Department master data (admin only)
+  getManagedDepartments: (params) => API.get('/departments', { params }),
+  getDepartmentsBySubcity: (subcityId) => API.get(`/departments/by-subcity/${subcityId}`),
+  createDepartment: (data) => API.post('/departments', data),
+  updateDepartment: (id, data) => API.put(`/departments/${id}`, data),
+  deleteDepartment: (id) => API.delete(`/departments/${id}`),
   getSubcities: () => API.get('/admin/subcities'),
   createSubcity: (data) => API.post('/admin/subcities', data),
   updateSubcity: (id, data) => API.put(`/admin/subcities/${id}`, data),
@@ -176,6 +187,21 @@ export const adminAPI = {
   toggleIssueType:  (id)     => API.patch(`/admin/issue-types/${id}/toggle`),
   deleteIssueType:  (id)     => API.delete(`/admin/issue-types/${id}`),
   seedIssueTypes:   ()       => API.post('/admin/issue-types/seed'),
+};
+
+// ---- Unified Report Submission (public, anonymous allowed) ----
+// The single source of truth for SUBMISSION forms. Each form posts to its own
+// endpoint so the backend always stores the report under the correct collection
+// with the correct report_type — for logged-in and anonymous citizens alike:
+//   POST /api/reports/infrastructure   → InfrastructureReport (IR-… reportId)
+//   POST /api/reports/public-complaint → PublicComplaint     (trackingNumber)
+export const reportAPI = {
+  createInfrastructure: (data) => API.post('/reports/infrastructure', data, {
+    headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+  }),
+  createPublicComplaint: (data) => API.post('/reports/public-complaint', data, {
+    headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+  }),
 };
 
 // ---- Public ----
@@ -204,7 +230,7 @@ export const complaintAPI = {  create: (data) => API.post('/public-complaints', 
   }),
   getAll: (params) => API.get('/public-complaints', { params }),
   getOne: (id) => API.get(`/public-complaints/${id}`),
-  track: (trackingNumber) => API.get(`/public-complaints/track/${trackingNumber}`),
+  track: (trackingNumber, params) => API.get(`/public-complaints/track/${trackingNumber}`, { params }),
   updateStatus: (id, data) => API.patch(`/public-complaints/${id}/status`, data),
   getStats: () => API.get('/public-complaints/stats'),
   getAssignableUsers: (params) => API.get('/public-complaints/assignable-users', { params }),
@@ -216,17 +242,38 @@ export const complaintAPI = {  create: (data) => API.post('/public-complaints', 
   closeComplaint: (id, data) => API.put(`/public-complaints/${id}/close`, data),
   escalate: (id, data) => API.put(`/public-complaints/${id}/escalate`, data),
   addInternalNote: (id, data) => API.post(`/public-complaints/${id}/internal-notes`, data),
+  // Citizen complaint workflow — department officer actions
+  acceptComplaint: (id) => API.post(`/public-complaints/${id}/accept`),
+  rejectComplaint: (id, data) => API.post(`/public-complaints/${id}/reject`, data),
+  requestMoreInfo: (id, data) => API.post(`/public-complaints/${id}/request-info`, data),
+  markWaitingParts: (id, data) => API.post(`/public-complaints/${id}/waiting-parts`, data),
+  forwardToSubcity: (id, data) => API.post(`/public-complaints/${id}/forward`, data),
+  resolveBySubcity: (id, data) => API.post(`/public-complaints/${id}/resolve-by-subcity`, data),
+  getAudit: (id) => API.get(`/public-complaints/${id}/audit`),
 };
 
-// ---- Alert Broadcasts ----
+// ---- Public Alerts & Broadcasts ----
 export const alertAPI = {
-  create: (data) => API.post('/alerts', data),
+  // Public
   getActive: (params) => API.get('/alerts', { params }),
   getOne: (id) => API.get(`/alerts/${id}`),
+  // Citizen — location-matched alerts + subscription preferences
+  getMyAlerts: (params) => API.get('/alerts/my', { params }),
+  getSubscriptions: () => API.get('/alerts/subscriptions/me'),
+  updateSubscriptions: (data) => API.put('/alerts/subscriptions/me', data),
+  // Management (role-scoped)
+  getAll: (params) => API.get('/alerts/manage', { params }),
+  getManaged: (id) => API.get(`/alerts/manage/${id}`),
+  create: (data) => API.post('/alerts', data),
+  update: (id, data) => API.put(`/alerts/${id}`, data),
   updateStatus: (id, data) => API.patch(`/alerts/${id}/status`, data),
   delete: (id) => API.delete(`/alerts/${id}`),
+  // Analytics
   getStats: () => API.get('/alerts/stats'),
-  getAll: (params) => API.get('/alerts', { params: { ...params, status: undefined } }),
+  getAnalytics: () => API.get('/alerts/analytics'),
+  getAuditLogs: (params) => API.get('/alerts/audit', { params }),
+  exportAlerts: (format, params) => API.get('/alerts/export', { params: { ...params, format }, responseType: 'blob' }),
+  getComplaintClusters: (params) => API.get('/alerts/complaint-clusters', { params }),
 };
 
 // ---- Workflow (Administrative Levels) ----
@@ -395,6 +442,202 @@ export const municipalComplaintAPI = {
 
   // Admin
   runEscalation: () => API.post('/municipal-complaints/admin/run-escalation'),
+};
+
+// Service Governance complaint system (Public + Citizen submission, Subcity
+// Governance Office investigation, Woreda coordination). One shared workflow.
+export const governanceComplaintAPI = {
+  // Shared submission — anonymous public visitors and logged-in citizens post
+  // to the SAME endpoint so a complaint never creates duplicate records.
+  create: (data) =>
+    API.post('/governance-complaints', data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+
+  // Role-scoped listing / detail
+  getAll: (params) => API.get('/governance-complaints', { params }),
+  getOne: (id) => API.get(`/governance-complaints/${id}`),
+
+  // Public tracking (by trackingId + phone) and reporter reopen
+  track: (trackingId, params) => API.get(`/governance-complaints/track/${trackingId}`, { params }),
+  reopenByTracking: (data) => API.post('/governance-complaints/reopen-by-tracking', data),
+
+  // Citizen actions
+  addEvidence: (id, data) =>
+    API.post(`/governance-complaints/${id}/evidence`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  reopen: (id, data) => API.post(`/governance-complaints/${id}/reopen`, data),
+  acknowledgment: (id) =>
+    API.get(`/governance-complaints/${id}/acknowledgment`, { responseType: 'blob' }),
+
+  // Subcity Governance Office actions
+  updateStatus: (id, data) => API.post(`/governance-complaints/${id}/status`, data),
+  respondToCitizen: (id, data) =>
+    API.post(`/governance-complaints/${id}/respond`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  requestMoreInfo: (id, data) => API.post(`/governance-complaints/${id}/request-info`, data),
+  requestWoredaInfo: (id, data) => API.post(`/governance-complaints/${id}/request-woreda`, data),
+  addNote: (id, data) => API.post(`/governance-complaints/${id}/notes`, data),
+  uploadOfficialDocument: (id, data) =>
+    API.post(`/governance-complaints/${id}/documents`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  recordAdministrativeAction: (id, data) =>
+    API.post(`/governance-complaints/${id}/administrative-action`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  resolve: (id, data) => API.post(`/governance-complaints/${id}/resolve`, data),
+  reject: (id, data) => API.post(`/governance-complaints/${id}/reject`, data),
+  escalate: (id, data) => API.post(`/governance-complaints/${id}/escalate`, data),
+
+  // Woreda coordination
+  respondWoreda: (id, data) =>
+    API.post(`/governance-complaints/${id}/respond-woreda`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+
+  // Dashboard widgets + exports
+  getStats: () => API.get('/governance-complaints/stats'),
+  getAnalytics: (params) => API.get('/governance-complaints/analytics', { params }),
+  getAuditTrail: (id) => API.get(`/governance-complaints/${id}/audit`),
+  exportPDF: (params) =>
+    API.get('/governance-complaints/export/pdf', { params, responseType: 'blob' }),
+  exportExcel: (params) =>
+    API.get('/governance-complaints/export/excel', { params, responseType: 'blob' }),
+};
+
+// Governance Management — DB-driven Government Offices, per-office Complaint
+// Categories and Governance Officers. Public read endpoints serve the dynamic
+// public submission form; the rest are scoped to the Subcity Admin.
+export const governanceManagementAPI = {
+  // ── Public form dropdowns (spec'd alias routes) ──
+  getPublicOffices: (params) => API.get('/government-offices', { params }),
+  getPublicCategories: (params) => API.get('/complaint-categories', { params }),
+
+  // ── Public form dropdowns (management-mounted aliases) ──
+  getOffices: (params) => API.get('/governance-management/offices', { params }),
+  getCategories: (params) => API.get('/governance-management/categories', { params }),
+
+  // ── Subcity Admin — Government Office management ──
+  getManagedOffices: () => API.get('/governance-management/offices'),
+  createOffice: (data) => API.post('/governance-management/offices', data),
+  updateOffice: (id, data) => API.put(`/governance-management/offices/${id}`, data),
+  toggleOffice: (id) => API.patch(`/governance-management/offices/${id}/toggle`),
+  deleteOffice: (id) => API.delete(`/governance-management/offices/${id}`),
+
+  // ── Subcity Admin — Complaint Category management ──
+  getManagedCategories: (officeId) =>
+    API.get('/governance-management/categories', { params: { officeId } }),
+  createCategory: (data) => API.post('/governance-management/categories', data),
+  updateCategory: (id, data) => API.put(`/governance-management/categories/${id}`, data),
+  toggleCategory: (id) => API.patch(`/governance-management/categories/${id}/toggle`),
+  deleteCategory: (id) => API.delete(`/governance-management/categories/${id}`),
+
+  // ── Subcity Admin — Governance Officer user management ──
+  getOfficers: (params) => API.get('/governance-management/officers', { params }),
+  createOfficer: (data) => API.post('/governance-management/officers', data),
+  updateOfficer: (id, data) => API.put(`/governance-management/officers/${id}`, data),
+  toggleOfficer: (id) => API.patch(`/governance-management/officers/${id}/toggle`),
+  resetOfficerPassword: (id, data) =>
+    API.put(`/governance-management/officers/${id}/reset-password`, data),
+
+  // ── Summary widget for the management module ──
+  getSummary: () => API.get('/governance-management/summary'),
+};
+
+// ---- Government hierarchy (SUBCITY_ADMIN / WOREDA_ADMIN / OFFICER / TECHNICIAN) ----
+export const hierarchyAPI = {
+  // ── SUBCITY_ADMIN ──
+  getSubcityMe: () => API.get('/hierarchy/subcity/me'),
+  getSubcityStats: () => API.get('/hierarchy/subcity/stats'),
+  getSubcityWoredas: (params) => API.get('/hierarchy/subcity/woredas', { params }),
+  createSubcityWoreda: (data) => API.post('/hierarchy/subcity/woredas', data),
+  updateSubcityWoreda: (id, data) => API.put(`/hierarchy/subcity/woredas/${id}`, data),
+  deleteSubcityWoreda: (id) => API.delete(`/hierarchy/subcity/woredas/${id}`),
+  createWoredaAdmin: (data) => API.post('/hierarchy/subcity/woreda-admins', data),
+  resetWoredaAdminPassword: (id, data) => API.put(`/hierarchy/subcity/woreda-admins/${id}/reset-password`, data),
+  getSubcityDepartments: (params) => API.get('/hierarchy/subcity/departments', { params }),
+  createSubcityDepartment: (data) => API.post('/hierarchy/subcity/departments', data),
+  updateSubcityDepartment: (id, data) => API.put(`/hierarchy/subcity/departments/${id}`, data),
+  deleteSubcityDepartment: (id) => API.delete(`/hierarchy/subcity/departments/${id}`),
+  getSubcityUsers: (params) => API.get('/hierarchy/subcity/users', { params }),
+  createSubcityUser: (data) => API.post('/hierarchy/subcity/users', data),
+  updateSubcityUser: (id, data) => API.put(`/hierarchy/subcity/users/${id}`, data),
+  toggleSubcityUserActive: (id) => API.put(`/hierarchy/subcity/users/${id}/toggle-active`),
+  deleteSubcityUser: (id) => API.delete(`/hierarchy/subcity/users/${id}`),
+  getSubcityComplaints: (params) => API.get('/hierarchy/subcity/complaints', { params }),
+  getSubcityAnalytics: () => API.get('/hierarchy/subcity/analytics'),
+
+  // ── WOREDA_ADMIN ──
+  getWoredaMe: () => API.get('/hierarchy/woreda/me'),
+  getWoredaStats: () => API.get('/hierarchy/woreda/stats'),
+  getWoredaDepartments: (params) => API.get('/hierarchy/woreda/departments', { params }),
+  createWoredaDepartment: (data) => API.post('/hierarchy/woreda/departments', data),
+  updateWoredaDepartment: (id, data) => API.put(`/hierarchy/woreda/departments/${id}`, data),
+  deleteWoredaDepartment: (id) => API.delete(`/hierarchy/woreda/departments/${id}`),
+  getWoredaStaff: (params) => API.get('/hierarchy/woreda/staff', { params }),
+  createWoredaStaff: (data) => API.post('/hierarchy/woreda/staff', data),
+  updateWoredaStaff: (id, data) => API.put(`/hierarchy/woreda/staff/${id}`, data),
+  toggleWoredaStaffActive: (id) => API.put(`/hierarchy/woreda/staff/${id}/toggle-active`),
+  deleteWoredaStaff: (id) => API.delete(`/hierarchy/woreda/staff/${id}`),
+  getWoredaComplaints: (params) => API.get('/hierarchy/woreda/complaints', { params }),
+  assignOfficer: (id, data) => API.put(`/hierarchy/woreda/complaints/${id}/assign-officer`, data),
+  assignTechnician: (id, data) => API.put(`/hierarchy/woreda/complaints/${id}/assign-technician`, data),
+  escalateComplaint: (id, data) => API.post(`/hierarchy/woreda/complaints/${id}/escalate`, data),
+  closeComplaint: (id) => API.post(`/hierarchy/woreda/complaints/${id}/close`),
+  getWoredaAnalytics: () => API.get('/hierarchy/woreda/analytics'),
+
+  // ── OFFICER ──
+  getOfficerMe: () => API.get('/hierarchy/officer/me'),
+  getOfficerStats: () => API.get('/hierarchy/officer/stats'),
+  getOfficerComplaints: (params) => API.get('/hierarchy/officer/complaints', { params }),
+  verifyComplaint: (id, data) => API.put(`/hierarchy/officer/complaints/${id}/verify`, data),
+  officerAssignTechnician: (id, data) => API.put(`/hierarchy/officer/complaints/${id}/assign-technician`, data),
+  getOfficerTechnicians: (params) => API.get('/hierarchy/officer/technicians', { params }),
+
+  // ── TECHNICIAN ──
+  getTechnicianMe: () => API.get('/hierarchy/technician/me'),
+  getTechnicianStats: () => API.get('/hierarchy/technician/stats'),
+  getTechnicianWorkOrders: (params) => API.get('/hierarchy/technician/work-orders', { params }),
+  startWork: (id) => API.put(`/hierarchy/technician/work-orders/${id}/start`),
+  completeWork: (id, data) => API.put(`/hierarchy/technician/work-orders/${id}/complete`, data),
+};
+
+// ---- Donations (Donation Management System) ----
+export const donationAPI = {
+  // Public
+  getOverview: () => API.get('/donations/overview'),
+  getPaymentMethods: () => API.get('/donations/payment-methods'),
+  create: (data) => API.post('/donations', data),
+  track: (reference) => API.get(`/donations/track/${reference}`),
+  uploadReceipt: (reference, formData) =>
+    API.post(`/donations/${reference}/upload-receipt`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+  // Donor (authenticated)
+  getMy: (params) => API.get('/donations/my', { params }),
+  getMySummary: () => API.get('/donations/my/summary'),
+  getCertificate: (id) => API.get(`/donations/${id}/certificate`, { responseType: 'blob' }),
+  // Subcity / Woreda office dashboards
+  getOffice: (params) => API.get('/donations/office', { params }),
+  getOfficeStats: () => API.get('/donations/office/stats'),
+  exportOffice: (format, params) => API.get('/donations/office/export', { params: { ...params, format }, responseType: 'blob' }),
+  // Admin
+  getAll: (params) => API.get('/donations', { params }),
+  getOne: (id) => API.get(`/donations/${id}`),
+  getStats: () => API.get('/donations/stats'),
+  verify: (id) => API.post(`/donations/${id}/verify`),
+  reject: (id, data) => API.post(`/donations/${id}/reject`, data),
+  exportCsv: (params) => API.get('/donations/export/csv', { params, responseType: 'blob' }),
+  exportExcel: (params) => API.get('/donations/export/excel', { params, responseType: 'blob' }),
+  exportPdf: (params) => API.get('/donations/export/pdf', { params, responseType: 'blob' }),
+  // Payment method management (admin)
+  getAdminPaymentMethods: () => API.get('/donations/payment-methods/manage'),
+  createPaymentMethod: (data) => API.post('/donations/payment-methods', data),
+  updatePaymentMethod: (id, data) => API.put(`/donations/payment-methods/${id}`, data),
+  deletePaymentMethod: (id) => API.delete(`/donations/payment-methods/${id}`),
 };
 
 export default API;

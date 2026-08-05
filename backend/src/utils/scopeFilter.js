@@ -23,9 +23,23 @@ const SUB_CITY_WOREDAS = {
 const DEPARTMENTS = ['Electricity', 'Road', 'Water', 'Health', 'Education', 'Revenue'];
 
 const COMPLAINT_SCOPED_ROLES = [
-  'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'citizen',
-  'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+  'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'subcity_admin', 'woreda', 'department', 'citizen',
+  'ADMIN', 'SUBCITY_HEAD', 'SUBCITY_ADMIN', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+  'woreda_admin', 'department_officer',
 ];
+
+// Helper: is this role a subcity-administrator flavor? Subcity roles are derived
+// from the live Subcity collection (subcity_bole, subcity_koye, …) plus the
+// canonical `subcity_admin` and the legacy `SUBCITY_ADMIN` / `SUBCITY_HEAD`.
+const isSubcityAdminRole = (role) =>
+  !!role &&
+  (role.startsWith('subcity_') || role === 'SUBCITY_ADMIN' || role === 'SUBCITY_HEAD');
+
+// Resolve the subcity name a subcity-admin user is scoped to. Prefers the
+// denormalized `subcity` string on the account, falling back to the legacy
+// hard-coded role map for pre-existing subcity_bole / yeka / lemmi_kura roles.
+const subcityNameFor = (user) =>
+  user.subcity || (user.role && SUBCITY_ROLE_MAP[user.role]) || '';
 
 // Build a Mongo query filter for PublicComplaint based on the logged-in user's role.
 //
@@ -35,7 +49,7 @@ const COMPLAINT_SCOPED_ROLES = [
 // stored at submission time.
 //
 //  - admin / ADMIN        -> all complaints
-//  - subcity_* / SUBCITY_HEAD -> complaints whose subcity matches (case-insensitive)
+//  - subcity_* / SUBCITY_ADMIN / SUBCITY_HEAD -> complaints whose subcity matches (case-insensitive)
 //  - woreda / WOREDA_HEAD -> complaints matching their woredaId (no subcity filter)
 //  - department / DEPARTMENT_ADMIN -> complaints matching woredaId + department (case-insensitive)
 //  - OFFICER              -> complaints assigned to them
@@ -44,25 +58,38 @@ const COMPLAINT_SCOPED_ROLES = [
 function buildComplaintScope(user) {
   if (!user) return {};
 
+  // Subcity-admin roles are derived, never enumerated — this covers subcity_bole,
+  // subcity_koye, subcity_admin, SUBCITY_ADMIN and SUBCITY_HEAD alike.
+  if (isSubcityAdminRole(user.role)) {
+    const subcityName = subcityNameFor(user);
+    const scope = {};
+    if (user.subcityId) scope.subcityId = user.subcityId;
+    if (subcityName) scope.subcity = { $regex: `^${subcityName}$`, $options: 'i' };
+    return scope;
+  }
+
   switch (user.role) {
     case 'admin':
     case 'ADMIN':
       return {};
 
-    case 'subcity_bole':
-    case 'subcity_yeka':
-    case 'subcity_lemmi_kura':
-    case 'SUBCITY_HEAD': {
-      // user.subcity may be 'bole', 'Bole', or 'BOLE' — match all variants
-      const subcityName = user.subcity || SUBCITY_ROLE_MAP[user.role];
-      return { subcity: { $regex: `^${subcityName}$`, $options: 'i' } };
-    }
-
     case 'woreda':
     case 'WOREDA_HEAD':
+    case 'woreda_admin':
       // Scope only by woredaId — do NOT add subcity filter because the
-      // subcity string on the complaint may differ in casing from user.subcity
+      // subcity string on the complaint may differ in casing from user.subcity.
+      // A woreda belongs to exactly one subcity, so woredaId alone fully
+      // satisfies the "subcity + woreda" scope for woreda_admin accounts.
       return { woredaId: user.woredaId };
+
+    case 'department_officer':
+      // Scope on the three live ObjectId references: the complaint must belong
+      // to the officer's subcity AND woreda AND department.
+      return {
+        subcityId: user.subcityId,
+        woredaId: user.woredaId,
+        departmentId: user.departmentId,
+      };
 
     case 'department':
     case 'DEPARTMENT_ADMIN':
@@ -94,21 +121,28 @@ function buildComplaintScope(user) {
 function isComplaintInScope(user, complaint) {
   if (!user || !complaint) return false;
 
+  if (isSubcityAdminRole(user.role)) {
+    const subcityName = subcityNameFor(user);
+    return subcityName
+      ? (complaint.subcity || '').toLowerCase() === subcityName.toLowerCase()
+      : !complaint.subcityId || String(complaint.subcityId) === String(user.subcityId);
+  }
+
   switch (user.role) {
     case 'admin':
     case 'ADMIN': return true;
 
-    case 'subcity_bole':
-    case 'subcity_yeka':
-    case 'subcity_lemmi_kura':
-    case 'SUBCITY_HEAD': {
-      const subcityName = user.subcity || SUBCITY_ROLE_MAP[user.role];
-      return (complaint.subcity || '').toLowerCase() === subcityName.toLowerCase();
-    }
-
     case 'woreda':
     case 'WOREDA_HEAD':
+    case 'woreda_admin':
       return String(complaint.woredaId) === String(user.woredaId);
+
+    case 'department_officer':
+      return (
+        String(complaint.subcityId) === String(user.subcityId) &&
+        String(complaint.woredaId) === String(user.woredaId) &&
+        String(complaint.departmentId) === String(user.departmentId)
+      );
 
     case 'department':
     case 'DEPARTMENT_ADMIN':
@@ -140,12 +174,35 @@ const COMPLAINT_MANAGER_ROLES = [
   'subcity_bole',
   'subcity_yeka',
   'subcity_lemmi_kura',
+  'subcity_admin',
   'woreda',
   'department',
   'ADMIN',
   'SUBCITY_HEAD',
+  'SUBCITY_ADMIN',
   'WOREDA_HEAD',
   'DEPARTMENT_ADMIN',
+  'woreda_admin',
+  'department_officer',
+];
+
+// Roles allowed to drive the operational complaint workflow (assign officer /
+// technician, accept / reject / forward / resolve actions). Woreda admins can
+// view and monitor but never assign or mutate the workflow.
+const COMPLAINT_OFFICER_ROLES = COMPLAINT_MANAGER_ROLES.filter((r) => r !== 'woreda_admin');
+
+// Roles allowed to accept / resolve complaints at the Subcity level.
+const SUBCITY_RESOLVE_ROLES = [
+  'admin',
+  'government',
+  'subcity_bole',
+  'subcity_yeka',
+  'subcity_lemmi_kura',
+  'subcity_admin',
+  'SUBCITY_ADMIN',
+  'SUBCITY_HEAD',
+  'woreda',
+  'WOREDA_HEAD',
 ];
 
 module.exports = {
@@ -155,6 +212,8 @@ module.exports = {
   DEPARTMENTS,
   COMPLAINT_SCOPED_ROLES,
   COMPLAINT_MANAGER_ROLES,
+  COMPLAINT_OFFICER_ROLES,
+  SUBCITY_RESOLVE_ROLES,
   buildComplaintScope,
   isComplaintInScope,
 };

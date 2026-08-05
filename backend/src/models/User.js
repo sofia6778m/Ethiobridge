@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const { hashPassword, verifyPassword } = require('../utils/password');
 
 const userSchema = new mongoose.Schema(
   {
@@ -9,14 +9,40 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     role: {
       type: String,
-      enum: [
-        // Legacy roles (kept for existing accounts and the municipal/workflow systems)
-        'citizen', 'government', 'ngo', 'volunteer', 'admin',
-        'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
-        'woreda', 'department', 'inspector', 'technician',
-        // Complaint-management roles
-        'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
-      ],
+      validate: {
+        validator(value) {
+          const ROLES = [
+            // Legacy roles (kept for existing accounts and the municipal/workflow systems)
+            'citizen', 'government', 'ngo', 'volunteer', 'admin',
+            'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
+            'woreda', 'department', 'inspector', 'technician',
+            // Complaint-management roles
+            'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
+            // Real Addis Ababa government hierarchy
+            'SUBCITY_ADMIN', 'WOREDA_ADMIN',
+            // Woreda admins provisioned by the System Admin (User Management).
+            // They land on the shared /dashboard and are scoped to their subcity
+            // + woreda — distinct from WOREDA_ADMIN (hierarchy dashboard).
+            'woreda_admin',
+            // Department officers provisioned by the System Admin (User
+            // Management). Scoped to their subcity + woreda + department on the
+            // shared /dashboard.
+            'department_officer',
+            // Governance officers provisioned by a Subcity Admin (Governance
+            // Management). Assigned to one GovernmentOffice and scoped to that
+            // office's governance complaints on the shared /dashboard.
+            'GOVERNANCE_OFFICER',
+            // Office supervisors provisioned by a Subcity Admin (Governance
+            // Management). Same single-office scope as GOVERNANCE_OFFICER.
+            'OFFICE_SUPERVISOR',
+          ];
+          // Subcity-admin roles are derived from the live Subcity collection
+          // (Bole → subcity_bole, Koye → subcity_koye, …), so any subcity_<name>
+          // value is accepted — the admin never types the role manually.
+          return ROLES.includes(value) || /^subcity_[a-z0-9_]+$/.test(value || '');
+        },
+        message: 'Invalid role: {VALUE}',
+      },
       default: 'citizen',
     },
     subcity: {
@@ -28,6 +54,9 @@ const userSchema = new mongoose.Schema(
     // for display and legacy records).
     subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity' },
     departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+    // GovernmentOffice a GOVERNANCE_OFFICER is assigned to — scopes their
+    // governance complaint dashboard to that single office.
+    governmentOfficeId: { type: mongoose.Schema.Types.ObjectId, ref: 'GovernmentOffice', default: null },
     employeeId: { type: String, trim: true },
     woredaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Woreda' },
     woredaName: { type: String },
@@ -50,6 +79,18 @@ const userSchema = new mongoose.Schema(
     smsNotifications: { type: Boolean, default: false },
     pushNotifications: { type: Boolean, default: true },
     savedCampaigns: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' }],
+    // Public Alert subscriptions. `enabled` toggles non-emergency alerts only —
+    // emergency alerts are always delivered and cannot be disabled.
+    alertSubscriptions: {
+      enabled: { type: Boolean, default: true },
+      categories: { type: [String], default: [] }, // empty array = all categories
+      channels: {
+        inApp: { type: Boolean, default: true },
+        email: { type: Boolean, default: false },
+        sms: { type: Boolean, default: false },
+        push: { type: Boolean, default: false },
+      },
+    },
     resetPasswordToken: String,
     resetPasswordExpire: Date,
   },
@@ -62,7 +103,8 @@ userSchema.pre('save', function (next) {
     'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
     'woreda', 'department', 'inspector', 'technician',
     'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'OFFICER', 'TECHNICIAN', 'CITIZEN', 'CONTRACTOR',
-  ].includes(this.role)) {
+    'SUBCITY_ADMIN', 'WOREDA_ADMIN', 'woreda_admin', 'department_officer', 'GOVERNANCE_OFFICER', 'OFFICE_SUPERVISOR',
+  ].includes(this.role) || (typeof this.role === 'string' && this.role.startsWith('subcity_'))) {
     this.isApproved = true;
   }
   next();
@@ -70,8 +112,7 @@ userSchema.pre('save', function (next) {
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
+  this.password = await hashPassword(this.password);
   next();
 });
 
@@ -122,7 +163,7 @@ userSchema.pre('findOneAndUpdate', async function (next) {
 });
 
 userSchema.methods.matchPassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  return await verifyPassword(enteredPassword, this.password);
 };
 
 // ── Location-uniqueness indexes ──────────────────────────────────────────────

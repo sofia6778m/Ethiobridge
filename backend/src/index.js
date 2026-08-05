@@ -19,16 +19,24 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const publicRoutes = require('./routes/publicRoutes');
+const dropdownRoutes = require('./routes/dropdownRoutes');
 const workflowRoutes = require('./routes/workflowRoutes');
 const publicComplaintRoutes = require('./routes/publicComplaintRoutes');
-const alertBroadcastRoutes = require('./routes/alertBroadcastRoutes');
+const alertRoutes = require('./routes/alertRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subcityRoutes = require('./routes/subcityRoutes');
 const woredaRoutes = require('./routes/woredaRoutes');
+const adminWoredaRoutes = require('./routes/adminWoredaRoutes');
+const adminDepartmentRoutes = require('./routes/adminDepartmentRoutes');
 const departmentRoutes = require('./routes/departmentRoutes');
 const workflowComplaintRoutes = require('./routes/workflowComplaintRoutes');
 const municipalComplaintRoutes = require('./routes/municipalComplaintRoutes');
+const governanceComplaintRoutes = require('./routes/governanceComplaintRoutes');
+const governanceManagementRoutes = require('./routes/governanceManagementRoutes');
+const hierarchyRoutes = require('./routes/hierarchyRoutes');
 const userRoutes = require('./routes/userRoutes');
+const donationRoutes = require('./routes/donationRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 
 // ── Startup admin account guard ───────────────────────────────────────────────
 // Ensures a working admin account always exists. Runs once after the DB
@@ -60,6 +68,10 @@ console.log('========================================');
 // Start escalation scheduler (auto-escalates overdue complaints every 15 min)
 const { startEscalationScheduler } = require('./utils/escalationScheduler');
 startEscalationScheduler(io);
+
+// Start alert scheduler (publishes scheduled alerts + expires overdue every minute)
+const { startAlertScheduler } = require('./utils/alertScheduler');
+startAlertScheduler(io);
 
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
@@ -100,6 +112,7 @@ app.use((req, res, next) => {
 app.use('/api', generalLimiter);
 
 // Routes
+app.use('/api', dropdownRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/infrastructure', infrastructureRoutes);
 app.use('/api/emergency', emergencyRoutes);
@@ -111,15 +124,30 @@ app.use('/api/workflow', workflowRoutes);
 app.use('/api/public-complaints', publicComplaintRoutes);
 // Alias so /api/complaints/* works alongside /api/public-complaints/*.
 app.use('/api/complaints', publicComplaintRoutes);
-app.use('/api/alerts', alertBroadcastRoutes);
+app.use('/api/alerts', alertRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/subcity', subcityRoutes);
 app.use('/api/woreda', woredaRoutes);
+app.use('/api/woredas', adminWoredaRoutes);
+app.use('/api/departments', adminDepartmentRoutes);
 app.use('/api/department', departmentRoutes);
 app.use('/api/workflow-complaints', workflowComplaintRoutes);
 app.use('/api/municipal-complaints', municipalComplaintRoutes);
+app.use('/api/governance-complaints', governanceComplaintRoutes);
+app.use('/api/governance-management', governanceManagementRoutes);
+// Public alias routes for governance master-data dropdowns (specified as
+// GET /api/government-offices?subcityId= and GET /api/complaint-categories?officeId=).
+const { getOffices, getCategories } = require('./controllers/governanceManagementController');
+app.get('/api/government-offices', getOffices);
+app.get('/api/complaint-categories', getCategories);
+app.use('/api/hierarchy', hierarchyRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/donations', donationRoutes);
+// Unified public submission endpoints — each form posts to its own route so the
+// report_type (and destination collection) is always correct, for logged-in
+// and anonymous citizens alike.
+app.use('/api/reports', reportRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -176,6 +204,25 @@ async function startServer() {
   // Seed the built-in municipal issue templates (Electricity / Water / Road)
   const { seedIssueTemplates } = require('./utils/municipalSeed');
   await seedIssueTemplates();
+
+  // Align governance complaint counters so GOV-YYYY-000001 style IDs never
+  // re-issue an ID that already exists in the database.
+  const { ensureGovernanceCounters } = require('./utils/governanceIdGenerator');
+  await ensureGovernanceCounters();
+
+  // Seed the DB-driven governance master data (GovernmentOffices +
+  // ComplaintCategories per subcity) — idempotent, safe on every boot.
+  const { seedGovernanceMasterData } = require('./utils/governanceSeed');
+  await seedGovernanceMasterData();
+
+  // Seed default donation payment methods (Telebirr, CBE Birr, banks, Amole)
+  const { seedPaymentMethods } = require('./utils/seedPaymentMethods');
+  await seedPaymentMethods();
+
+  // Back-fill DON-YYYY-NNNNNN references and align counters for the donation
+  // management system (idempotent — safe on every boot).
+  const { ensureDonationCounters } = require('./utils/donationReference');
+  await ensureDonationCounters();
 
   const available = await isPortAvailable(PORT);
 

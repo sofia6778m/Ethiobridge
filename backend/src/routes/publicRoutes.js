@@ -32,7 +32,18 @@ router.get('/departments', async (req, res) => {
       .select('name')
       .sort({ name: 1 })
       .lean();
-    res.json({ success: true, departments: departments.map(d => d.name) });
+    // The same department name can exist in several subcities (the collection is
+    // unique per subcity+woreda, not globally), so dedupe so the public dropdown
+    // lists each department once instead of once per subcity.
+    const seen = new Set();
+    const names = [];
+    for (const d of departments) {
+      const key = String(d.name).trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      names.push(d.name);
+    }
+    res.json({ success: true, departments: names });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

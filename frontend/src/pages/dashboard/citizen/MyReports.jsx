@@ -39,7 +39,7 @@ export default function MyReports() {
         <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{t('myReports.title')}</h2>
         <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); setPage(1); }} className="input-field w-auto text-sm">
           <option value="">{t('common.allStatuses')}</option>
-          {[{v:'Pending',l:t('dashboard.statusPending')},{v:'Under Review',l:t('dashboard.statusUnderReview')},{v:'In Progress',l:t('dashboard.statusInProgress')},{v:'Active',l:t('dashboard.statusActive')},{v:'Resolved',l:t('dashboard.statusResolved')},{v:'Rejected',l:t('dashboard.statusRejected')}].map(s => <option key={s.v} value={s.v}>{s.l}</option>)}
+          {[{v:'Pending',l:t('dashboard.statusPending')},{v:'Submitted',l:'Submitted'},{v:'Under Review',l:t('dashboard.statusUnderReview')},{v:'In Progress',l:t('dashboard.statusInProgress')},{v:'Active',l:t('dashboard.statusActive')},{v:'Resolved',l:t('dashboard.statusResolved')},{v:'Rejected',l:t('dashboard.statusRejected')}].map(s => <option key={s.v} value={s.v}>{s.l}</option>)}
         </select>
       </div>
 

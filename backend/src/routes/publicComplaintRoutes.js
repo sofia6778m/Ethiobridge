@@ -14,6 +14,13 @@ const {
   closeComplaint,
   escalateToSubcityManual,
   addInternalNote,
+  acceptComplaint,
+  rejectComplaint,
+  requestMoreInfo,
+  markWaitingParts,
+  forwardToSubcity,
+  resolveBySubcity,
+  getAuditLog,
   getAssignableUsers,
   getStats,
   getSubcityWoredas,
@@ -23,9 +30,15 @@ const {
 const { protect, protectOptional, authorize } = require('../middleware/auth');
 const { upload } = require('../config/cloudinary');
 const { validateComplaint, validateComplaintStatus } = require('../middleware/validation');
-const { COMPLAINT_MANAGER_ROLES } = require('../utils/scopeFilter');
+const { complaintSubmitLimiter } = require('../middleware/rateLimiter');
+const {
+  COMPLAINT_MANAGER_ROLES,
+  COMPLAINT_OFFICER_ROLES,
+  SUBCITY_RESOLVE_ROLES,
+} = require('../utils/scopeFilter');
 
-// Public — track by tracking number (public access key)
+// Public — track by tracking number (public access key). Phone number supplied
+// as a query param is verified against the submission contact.
 router.get('/track/:trackingNumber', getByTrackingNumber);
 
 // Public — woredas for a subcity (complaint form dropdown). Must be before /:id.
@@ -41,15 +54,28 @@ router.get('/', protectOptional, getPublicComplaints);
 // protectOptional links a logged-in citizen's submission to their account;
 // multer parses attachments first so the express-validator checks run against
 // the real text fields, then the controller normalises routing data.
-router.post('/', protectOptional, upload.array('attachments', 5), validateComplaint, createComplaint);
+// The submission limiter prevents spam on the anonymous endpoint.
+router.post('/', protectOptional, complaintSubmitLimiter, upload.array('attachments', 5), validateComplaint, createComplaint);
 
 // Complaint managers — update status (enforced scope in controller)
 router.patch('/:id/status', protect, authorize(...COMPLAINT_MANAGER_ROLES), validateComplaintStatus, updateStatus);
 
-// Complaint managers — operational workflow actions (enforced scope in controller)
-router.put('/:id/assign-officer', protect, authorize(...COMPLAINT_MANAGER_ROLES), assignOfficer);
-router.put('/:id/assign-technician', protect, authorize(...COMPLAINT_MANAGER_ROLES), assignTechnician);
-router.put('/:id/escalate', protect, authorize(...COMPLAINT_MANAGER_ROLES), escalateToSubcityManual);
+// Citizen complaint workflow — department officer actions. Woreda admins can
+// view/monitor but never drive the workflow (excluded via COMPLAINT_OFFICER_ROLES).
+router.post('/:id/accept', protect, authorize(...COMPLAINT_OFFICER_ROLES), acceptComplaint);
+router.post('/:id/reject', protect, authorize(...COMPLAINT_OFFICER_ROLES), rejectComplaint);
+router.post('/:id/request-info', protect, authorize(...COMPLAINT_OFFICER_ROLES), requestMoreInfo);
+router.post('/:id/waiting-parts', protect, authorize(...COMPLAINT_OFFICER_ROLES), markWaitingParts);
+router.post('/:id/forward', protect, authorize(...COMPLAINT_OFFICER_ROLES), forwardToSubcity);
+router.post('/:id/resolve-by-subcity', protect, authorize(...SUBCITY_RESOLVE_ROLES), resolveBySubcity);
+
+// Complaint managers — audit trail for a complaint
+router.get('/:id/audit', protect, authorize(...COMPLAINT_MANAGER_ROLES), getAuditLog);
+
+// Complaint officers — operational workflow actions (enforced scope in controller)
+router.put('/:id/assign-officer', protect, authorize(...COMPLAINT_OFFICER_ROLES), assignOfficer);
+router.put('/:id/assign-technician', protect, authorize(...COMPLAINT_OFFICER_ROLES), assignTechnician);
+router.put('/:id/escalate', protect, authorize(...COMPLAINT_OFFICER_ROLES), escalateToSubcityManual);
 router.post('/:id/internal-notes', protect, authorize(...COMPLAINT_MANAGER_ROLES), addInternalNote);
 
 // Field staff — accept / progress work orders (self-scope checked in controller)

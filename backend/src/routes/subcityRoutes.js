@@ -7,7 +7,7 @@ const { protect, authorize } = require('../middleware/auth');
 
 // Only subcity administrators may access these routes. Account creation is
 // performed exclusively by the system admin via /api/admin/users.
-const subcityRoles = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura'];
+const subcityRoles = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'subcity_admin'];
 
 router.use(protect, authorize(...subcityRoles));
 

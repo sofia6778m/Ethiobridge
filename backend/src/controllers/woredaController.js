@@ -5,6 +5,7 @@ const EmergencyReport = require('../models/EmergencyReport');
 const PublicComplaint = require('../models/PublicComplaint');
 const createNotification = require('../utils/createNotification');
 const { DEPARTMENTS } = require('../utils/scopeFilter');
+const { departmentMatchFilter } = require('../utils/departmentRecipients');
 
 const SUBCITY_MAP = {
   subcity_bole: 'BOLE',
@@ -142,8 +143,8 @@ const assignToDepartment = async (req, res) => {
 
     await report.save();
 
-    // Notify every department user whose scope matches this exact woreda + department.
-    const deptUsers = await User.find({ woredaId, department: department.trim(), role: 'department' });
+    // Notify every department account whose scope matches this exact woreda + department.
+    const deptUsers = await User.find({ woredaId, role: { $in: ['department', 'department_officer'] }, ...departmentMatchFilter(department.trim()) });
     const io = req.app.get('io');
     for (const u of deptUsers) {
       await createNotification({

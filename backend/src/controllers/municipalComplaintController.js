@@ -21,11 +21,16 @@ const SUBCITY_ROLE_MAP = {
 
 const SUB_CITY_ROLES = Object.keys(SUBCITY_ROLE_MAP);
 
-const MUNICIPAL_VIEWER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department', 'inspector', 'technician', 'citizen'];
-const MUNICIPAL_MANAGER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department'];
+// Canonical subcity-admin role plus every derived subcity_* flavor. These get
+// folded into the viewer/manager/officer lists so subcity admins of any subcity
+// (including newly-created ones) can read and drive municipal complaints.
+const ALL_SUB_CITY_ROLES = [...SUB_CITY_ROLES, 'subcity_admin', 'SUBCITY_ADMIN'];
+
+const MUNICIPAL_VIEWER_ROLES = ['admin', 'government', ...ALL_SUB_CITY_ROLES, 'woreda', 'department', 'inspector', 'technician', 'citizen'];
+const MUNICIPAL_MANAGER_ROLES = ['admin', 'government', ...ALL_SUB_CITY_ROLES, 'woreda', 'department'];
 
 // Roles allowed to drive the operational workflow (accept/reject/assign/verify).
-const OFFICER_ROLES = ['admin', 'government', ...SUB_CITY_ROLES, 'woreda', 'department'];
+const OFFICER_ROLES = ['admin', 'government', ...ALL_SUB_CITY_ROLES, 'woreda', 'department'];
 
 // Statuses that close out a complaint (no further automatic escalation).
 const CLOSED_STATUSES = ['Resolved', 'Rejected', 'Closed'];
@@ -68,25 +73,43 @@ const getIO = (req) => {
 //   department        -> woreda-level complaints for (woreda + department) OR
 //                        subcity-level complaints for (subcity + department)
 //   citizen           -> complaints they personally submitted
+//   SUBCITY_ADMIN     -> complaints in their subcity
+//   WOREDA_ADMIN      -> complaints in their woreda
+//   OFFICER           -> complaints assigned to them OR in their woreda/department
+//   TECHNICIAN        -> work orders assigned to them OR in their woreda/department
 const buildMunicipalScope = (user, subcity = '') => {
   if (!user) return { _id: null };
+
+  // Derived subcity-admin roles (subcity_koye, subcity_kolfe, …) are not
+  // enumerated — treat every subcity_* role as scoped to its own subcity.
+  if (user.role && typeof user.role === 'string' && user.role.startsWith('subcity_')) {
+    const sub = user.subcity || SUBCITY_ROLE_MAP[user.role] || subcity;
+    return sub ? { subcity: ciRegex(sub) } : { _id: null };
+  }
 
   switch (user.role) {
     case 'admin':
     case 'government':
+    case 'ADMIN':
       return {};
 
     case 'subcity_bole':
     case 'subcity_yeka':
-    case 'subcity_lemmi_kura': {
+    case 'subcity_lemmi_kura':
+    case 'subcity_admin':
+    case 'SUBCITY_ADMIN':
+    case 'SUBCITY_HEAD': {
       const sub = user.subcity || SUBCITY_ROLE_MAP[user.role] || subcity;
       return { subcity: ciRegex(sub) };
     }
 
     case 'woreda':
+    case 'woreda_admin':
+    case 'WOREDA_ADMIN':
       return { woredaId: user.woredaId };
 
-    case 'department': {
+    case 'department':
+    case 'department_officer': {
       const sub = user.subcity || subcity;
       const dept = user.department || '';
       const conditions = [{ assignedLevel: 'Woreda', woredaId: user.woredaId, department: ciRegex(dept) }];
@@ -95,6 +118,7 @@ const buildMunicipalScope = (user, subcity = '') => {
     }
 
     case 'citizen':
+    case 'CITIZEN':
       return { reporter: user._id };
 
     case 'inspector': {
@@ -114,6 +138,18 @@ const buildMunicipalScope = (user, subcity = '') => {
       return conditions.length === 1 ? conditions[0] : { $or: conditions };
     }
 
+    case 'TECHNICIAN':
+    case 'OFFICER': {
+      const conditions = [{ assignedTo: user._id }];
+      if (user.role === 'TECHNICIAN') conditions.push({ technicianId: user._id });
+      if (user.woredaId) {
+        conditions.push(user.department
+          ? { woredaId: user.woredaId, department: ciRegex(user.department) }
+          : { woredaId: user.woredaId });
+      }
+      return conditions.length === 1 ? conditions[0] : { $or: conditions };
+    }
+
     default:
       return { _id: null };
   }
@@ -121,19 +157,33 @@ const buildMunicipalScope = (user, subcity = '') => {
 
 const isComplaintInScope = (user, complaint, subcity = '') => {
   if (!user || !complaint) return false;
+
+  // Generic derived subcity-admin roles scope by subcity name (case-insensitive).
+  if (user.role && typeof user.role === 'string' && user.role.startsWith('subcity_')) {
+    const sub = (user.subcity || SUBCITY_ROLE_MAP[user.role] || subcity || '').toLowerCase();
+    return !!sub && (complaint.subcity || '').toLowerCase() === sub;
+  }
+
   switch (user.role) {
     case 'admin':
     case 'government':
+    case 'ADMIN':
       return true;
     case 'subcity_bole':
     case 'subcity_yeka':
-    case 'subcity_lemmi_kura': {
+    case 'subcity_lemmi_kura':
+    case 'subcity_admin':
+    case 'SUBCITY_ADMIN':
+    case 'SUBCITY_HEAD': {
       const sub = (user.subcity || SUBCITY_ROLE_MAP[user.role] || subcity || '').toLowerCase();
       return (complaint.subcity || '').toLowerCase() === sub;
     }
     case 'woreda':
+    case 'woreda_admin':
+    case 'WOREDA_ADMIN':
       return String(complaint.woredaId) === String(user.woredaId);
-    case 'department': {
+    case 'department':
+    case 'department_officer': {
       const deptMatch = (complaint.department || '').toLowerCase() === (user.department || '').toLowerCase();
       if (complaint.assignedLevel === 'Subcity') {
         const sub = (user.subcity || subcity || '').toLowerCase();
@@ -143,6 +193,7 @@ const isComplaintInScope = (user, complaint, subcity = '') => {
       return String(complaint.woredaId) === String(user.woredaId) && deptMatch;
     }
     case 'citizen':
+    case 'CITIZEN':
       return String(complaint.reporter) === String(user._id);
     case 'inspector':
       if (String(complaint.inspectorId) === String(user._id)) return true;
@@ -154,6 +205,16 @@ const isComplaintInScope = (user, complaint, subcity = '') => {
         return true;
       }
       return false;
+    case 'TECHNICIAN':
+    case 'OFFICER': {
+      if (String(complaint.assignedTo) === String(user._id)) return true;
+      if (String(complaint.technicianId) === String(user._id)) return true;
+      if (user.woredaId && String(complaint.woredaId) === String(user.woredaId)) {
+        if (user.department) return (complaint.department || '').toLowerCase() === String(user.department).toLowerCase();
+        return true;
+      }
+      return false;
+    }
     default:
       return false;
   }
@@ -165,18 +226,30 @@ const findWoredaOfficer = (woredaId) =>
   User.findOne({ role: 'woreda', woredaId, isActive: true }).select('-password').lean();
 
 const findDepartmentOfficers = (woredaId, department) =>
-  User.find({ role: 'department', woredaId, department: ciRegex(department), isActive: true }).select('-password').lean();
+  User.find({ role: { $in: ['department', 'department_officer'] }, woredaId, department: ciRegex(department), isActive: true }).select('-password').lean();
 
 const findSubcityDepartmentOfficers = async (subcity, department) => {
   const woredas = await Woreda.find({ subcity: ciRegex(subcity) }).select('_id').lean();
   const ids = woredas.map((w) => w._id);
   if (!ids.length) return [];
-  return User.find({ role: 'department', woredaId: { $in: ids }, department: ciRegex(department), isActive: true })
+  return User.find({ role: { $in: ['department', 'department_officer'] }, woredaId: { $in: ids }, department: ciRegex(department), isActive: true })
     .select('-password').lean();
 };
 
+// Subcity admins exist under several role flavors: the canonical subcity_admin,
+// the legacy SUBCITY_ADMIN, and the derived subcity_<name> roles created for
+// each live Subcity record. Match them all so escalation notifications always
+// reach the right person regardless of how the account was provisioned.
+const SUB_CITY_ADMIN_ROLE_MATCH = {
+  $or: [
+    { role: 'subcity_admin' },
+    { role: 'SUBCITY_ADMIN' },
+    { role: { $regex: /^subcity_/ } },
+  ],
+};
+
 const findSubcityAdmins = (subcity) =>
-  User.find({ role: { $in: SUB_CITY_ROLES }, subcity: ciRegex(subcity), isActive: true }).select('-password').lean();
+  User.find({ ...SUB_CITY_ADMIN_ROLE_MATCH, subcity: ciRegex(subcity), isActive: true }).select('-password').lean();
 
 // ── Notification dispatch (in-app + socket + prepared SMS/email hooks) ────────
 
@@ -507,7 +580,7 @@ const assessComplaint = async (req, res) => {
     if (!isComplaintInScope(req.user, complaint, userSubcity)) {
       return res.status(403).json({ success: false, message: 'Not authorised to assess this complaint.' });
     }
-    if (!['admin', 'woreda', 'government', ...SUB_CITY_ROLES].includes(req.user.role)) {
+    if (!['admin', 'woreda', 'government', ...ALL_SUB_CITY_ROLES].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Only woreda / subcity officers can assess complaints.' });
     }
 
@@ -553,7 +626,7 @@ const forwardComplaint = async (req, res) => {
     if (!isComplaintInScope(req.user, complaint, userSubcity)) {
       return res.status(403).json({ success: false, message: 'Not authorised to forward this complaint.' });
     }
-    if (!['admin', 'woreda', 'government', ...SUB_CITY_ROLES].includes(req.user.role)) {
+    if (!['admin', 'woreda', 'government', ...ALL_SUB_CITY_ROLES].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Not authorised to forward complaints.' });
     }
     if (complaint.assignedLevel === 'Subcity' && complaint.escalatedTo === 'Subcity Administrator') {

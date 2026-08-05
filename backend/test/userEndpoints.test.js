@@ -33,7 +33,11 @@ if (!process.env.MONGOMS_SYSTEM_BINARY) {
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const PublicComplaint = require('../src/models/PublicComplaint');
 const User = require('../src/models/User');
+const Subcity = require('../src/models/Subcity');
+const Department = require('../src/models/Department');
+const Woreda = require('../src/models/Woreda');
 const { getOfficers, getTechnicians } = require('../src/controllers/userController');
+const { createUser } = require('../src/controllers/adminController');
 
 let mongod;
 
@@ -90,6 +94,9 @@ before(async () => {
   await mongoose.connect(mongod.getUri(), { serverSelectionTimeoutMS: 4000 });
   await PublicComplaint.init();
   await User.init();
+  await Subcity.init();
+  await Department.init();
+  await Woreda.init();
 });
 
 after(async () => {
@@ -100,6 +107,9 @@ after(async () => {
 beforeEach(async () => {
   await PublicComplaint.deleteMany({});
   await User.deleteMany({});
+  await Subcity.deleteMany({});
+  await Department.deleteMany({});
+  await Woreda.deleteMany({});
 });
 
 describe('GET /api/users/officers', () => {
@@ -136,9 +146,233 @@ describe('GET /api/users/officers', () => {
     assert.deepEqual(names, ['Endris']);
   });
 
+  it('matches officers by subcityId when a Subcity record exists for the complaint', async () => {
+    const sc = await Subcity.create({ name: 'Bole' });
+    const woreda01 = new mongoose.Types.ObjectId();
+    const complaint = await mkComplaint({ subcity: 'BOLE', woredaId: woreda01 });
+
+    await mkUser({ role: 'OFFICER', fullName: 'Endris', department: 'Electricity', subcityId: sc._id, woredaId: woreda01 });
+    await mkUser({ role: 'OFFICER', fullName: 'Other Subcity', department: 'Electricity', subcityId: new mongoose.Types.ObjectId(), woredaId: woreda01 });
+
+    const { status, json } = await call(getOfficers)({ complaintId: complaint._id.toString() });
+    assert.equal(status, 200);
+    const names = json.data.officers.map((o) => o.fullName);
+    assert.deepEqual(names, ['Endris']);
+  });
+
+  it('matches officers by departmentId when a Department record exists for the complaint', async () => {
+    const woreda01 = new mongoose.Types.ObjectId();
+    const dept = await Department.create({ name: 'Electricity', woredaId: woreda01 });
+    const complaint = await mkComplaint({ subcity: '', department: 'Electricity', woredaId: woreda01 });
+
+    await mkUser({ role: 'OFFICER', fullName: 'Endris', departmentId: dept._id, woredaId: woreda01 });
+    await mkUser({ role: 'OFFICER', fullName: 'Wrong Dept', departmentId: new mongoose.Types.ObjectId(), woredaId: woreda01 });
+
+    const { status, json } = await call(getOfficers)({ complaintId: complaint._id.toString() });
+    assert.equal(status, 200);
+    const names = json.data.officers.map((o) => o.fullName);
+    assert.deepEqual(names, ['Endris']);
+  });
+
+  it('finds a legacy string-only officer for a subcity-scoped department complaint (production data shape)', async () => {
+    // Production departments are stored per-subcity with lowercase names, and
+    // legacy officers carry no subcityId / departmentId — only string fields.
+    const koye = await Subcity.create({ name: 'Koye' });
+    const koyeWoreda03 = new mongoose.Types.ObjectId();
+    await Department.create({ name: 'electricity', subcityId: koye._id });
+    await Department.create({ name: 'road', subcityId: koye._id });
+
+    const complaint = await mkComplaint({
+      subcity: 'KOYE',
+      woredaId: koyeWoreda03,
+      woredaName: '03',
+      department: 'Electricity',
+    });
+
+    await mkUser({
+      role: 'OFFICER', fullName: 'Alex',
+      department: 'Electricity', subcity: 'koye',
+      woredaId: koyeWoreda03, woredaName: '03',
+    });
+    await mkUser({
+      role: 'OFFICER', fullName: 'Wrong Dept',
+      department: 'Road', subcity: 'koye',
+      woredaId: koyeWoreda03, woredaName: '03',
+    });
+
+    const { status, json } = await call(getOfficers)({ complaintId: complaint._id.toString() });
+    assert.equal(status, 200);
+    const names = json.data.officers.map((o) => o.fullName);
+    assert.deepEqual(names, ['Alex']);
+  });
+
+  it('matches an officer by departmentId when the department is subcity-scoped', async () => {
+    const bole = await Subcity.create({ name: 'Bole' });
+    const boleWoreda01 = new mongoose.Types.ObjectId();
+    const dept = await Department.create({ name: 'electricity', subcityId: bole._id });
+
+    const complaint = await mkComplaint({ subcity: 'BOLE', woredaId: boleWoreda01, department: 'Electricity' });
+
+    await mkUser({
+      role: 'OFFICER', fullName: 'Endris',
+      departmentId: dept._id, subcityId: bole._id, woredaId: boleWoreda01,
+    });
+    await mkUser({
+      role: 'OFFICER', fullName: 'Other Dept',
+      departmentId: new mongoose.Types.ObjectId(), subcityId: bole._id, woredaId: boleWoreda01,
+    });
+
+    const { status, json } = await call(getOfficers)({ complaintId: complaint._id.toString() });
+    assert.equal(status, 200);
+    const names = json.data.officers.map((o) => o.fullName);
+    assert.deepEqual(names, ['Endris']);
+  });
+
+  it('matches a legacy officer by woredaName when the complaint has no woredaId', async () => {
+    const complaint = await mkComplaint({ woredaId: undefined, woredaName: '01', subcity: 'BOLE', department: 'Electricity' });
+
+    await mkUser({ role: 'OFFICER', fullName: 'Legacy', department: 'Electricity', subcity: 'BOLE', woredaName: '01' });
+    await mkUser({ role: 'OFFICER', fullName: 'Wrong Name', department: 'Electricity', subcity: 'BOLE', woredaName: '02' });
+    await mkUser({ role: 'OFFICER', fullName: 'Has WoredaId', department: 'Electricity', subcity: 'BOLE', woredaName: '01', woredaId: new mongoose.Types.ObjectId() });
+
+    const { status, json } = await call(getOfficers)({ complaintId: complaint._id.toString() });
+    assert.equal(status, 200);
+    const names = json.data.officers.map((o) => o.fullName);
+    assert.deepEqual(names, ['Legacy']);
+  });
+
   it('returns 404 when the complaint does not exist', async () => {
     const { status, json } = await call(getOfficers)({ complaintId: new mongoose.Types.ObjectId().toString() });
     assert.equal(status, 404);
+  });
+});
+
+describe('createUser (admin) departmentId resolution', () => {
+  it('captures subcityId + departmentId for an OFFICER against subcity-scoped lowercase departments', async () => {
+    const koye = await Subcity.create({ name: 'Koye' });
+    const woreda = await Woreda.create({ name: '03', subcity: 'koye', departments: ['Electricity', 'Road'] });
+    const dept = await Department.create({ name: 'electricity', subcityId: koye._id });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'Alex', email: 'alex2@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'koye', woredaId: woreda._id.toString(), woredaName: '03', department: 'Electricity',
+        subcityId: koye._id.toString(), departmentId: dept._id.toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 201, JSON.stringify(res._json));
+    const saved = await User.findOne({ email: 'alex2@example.com' }).lean();
+    assert.equal(saved.role, 'OFFICER');
+    assert.equal(String(saved.subcityId), String(koye._id));
+    assert.equal(String(saved.departmentId), String(dept._id));
+    const savedDept = await Department.findById(saved.departmentId).lean();
+    assert.equal(savedDept.normalizedDepartmentName, 'electricity');
+  });
+
+  it('creates an OFFICER and saves subcityId + departmentId', async () => {
+    const bole = await Subcity.create({ name: 'Bole' });
+    const woreda = await Woreda.create({ name: '01', subcity: 'Bole', departments: ['Water'] });
+    const dept = await Department.create({ name: 'Water', subcityId: bole._id, woredaId: woreda._id });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'Sara', email: 'sara@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'Bole', woredaId: woreda._id.toString(), woredaName: '01', department: 'Water',
+        subcityId: bole._id.toString(), departmentId: dept._id.toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 201, JSON.stringify(res._json));
+    const saved = await User.findOne({ email: 'sara@example.com' }).lean();
+    assert.equal(saved.role, 'OFFICER');
+    assert.equal(String(saved.subcityId), String(bole._id));
+    assert.equal(String(saved.departmentId), String(dept._id));
+  });
+
+  it('rejects an OFFICER when subcityId is missing', async () => {
+    const koye = await Subcity.create({ name: 'Koye' });
+    const woreda = await Woreda.create({ name: '03', subcity: 'koye', departments: ['Electricity'] });
+    const dept = await Department.create({ name: 'electricity', subcityId: koye._id });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'No Subcity', email: 'nosubcity@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'koye', woredaId: woreda._id.toString(), woredaName: '03', department: 'Electricity',
+        departmentId: dept._id.toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 400);
+    assert.match(res._json.message, /subcity/i);
+    const saved = await User.findOne({ email: 'nosubcity@example.com' }).lean();
+    assert.equal(saved, null);
+  });
+
+  it('rejects an OFFICER when departmentId is missing', async () => {
+    const koye = await Subcity.create({ name: 'Koye' });
+    const woreda = await Woreda.create({ name: '03', subcity: 'koye', departments: ['Electricity'] });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'No Dept', email: 'nodept@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'koye', woredaId: woreda._id.toString(), woredaName: '03', department: 'Electricity',
+        subcityId: koye._id.toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 400);
+    assert.match(res._json.message, /department/i);
+    const saved = await User.findOne({ email: 'nodept@example.com' }).lean();
+    assert.equal(saved, null);
+  });
+
+  it('rejects an OFFICER when departmentId is invalid', async () => {
+    const koye = await Subcity.create({ name: 'Koye' });
+    const woreda = await Woreda.create({ name: '03', subcity: 'koye', departments: ['Electricity'] });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'Bad Dept', email: 'baddept@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'koye', woredaId: woreda._id.toString(), woredaName: '03', department: 'Electricity',
+        subcityId: koye._id.toString(), departmentId: new mongoose.Types.ObjectId().toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 400);
+    assert.match(res._json.message, /department/i);
+    const saved = await User.findOne({ email: 'baddept@example.com' }).lean();
+    assert.equal(saved, null);
+  });
+
+  it('rejects an OFFICER when subcityId is invalid', async () => {
+    const woreda = await Woreda.create({ name: '03', subcity: 'koye', departments: ['Electricity'] });
+    const dept = await Department.create({ name: 'electricity', woredaId: woreda._id });
+
+    const res = mockRes();
+    await createUser({
+      body: {
+        fullName: 'Bad Subcity', email: 'badsubcity@example.com', password: 'secret123', phone: '0911223344',
+        role: 'OFFICER', subcity: 'koye', woredaId: woreda._id.toString(), woredaName: '03', department: 'Electricity',
+        subcityId: new mongoose.Types.ObjectId().toString(), departmentId: dept._id.toString(),
+      },
+      user: { _id: new mongoose.Types.ObjectId(), role: 'ADMIN', fullName: 'Admin' },
+    }, res);
+
+    assert.equal(res._status, 400);
+    assert.match(res._json.message, /subcity/i);
+    const saved = await User.findOne({ email: 'badsubcity@example.com' }).lean();
+    assert.equal(saved, null);
   });
 });
 

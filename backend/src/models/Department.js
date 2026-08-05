@@ -19,6 +19,8 @@ const departmentSchema = new mongoose.Schema(
       trim: true,
       maxlength: [100, 'Department name must be 100 characters or fewer'],
     },
+    // Short administrative code for the department (e.g. "ELEC-01"). Optional.
+    code: { type: String, trim: true, default: '' },
     // Ownership: every department belongs to exactly one subcity. subcityId is
     // null only for legacy/global records that the migration has not yet moved.
     subcityId: {

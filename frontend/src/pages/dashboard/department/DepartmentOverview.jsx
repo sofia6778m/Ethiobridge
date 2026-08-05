@@ -71,7 +71,7 @@ export default function DepartmentOverview() {
         <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3">Quick Actions</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <QuickActionLink to="/department/dashboard/reports" icon="📋" label="View All Reports" />
-          <QuickActionLink to="/department/dashboard/reports?status=Pending" icon="⏳" label="Pending Reports" />
+          <QuickActionLink to="/department/dashboard/reports?status=Submitted" icon="⏳" label="New Reports" />
           <QuickActionLink to="/department/dashboard/reports?status=Assigned" icon="📌" label="Assigned to Me" />
           <QuickActionLink to="/department/dashboard/reports?status=In%20Progress" icon="🔄" label="In Progress" />
           <QuickActionLink to="/department/dashboard/complaints" icon="📝" label="Citizen Complaints" />

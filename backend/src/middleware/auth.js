@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { normalizeRole } = require('../utils/normalizeRole');
 
 // Protect routes - verify JWT token
 const protect = async (req, res, next) => {
@@ -29,6 +30,11 @@ const protect = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Account is deactivated' });
     }
 
+    // Normalize legacy role spellings (subcityAdmin → subcity_admin, …) so
+    // role checks in `authorize` and the controllers always see the canonical
+    // value regardless of what the database row stores.
+    req.user.role = normalizeRole(req.user.role);
+
     console.log(`[AUTH] Authorized — ${req.user.email} (role: ${req.user.role})`);
     next();
   } catch (error) {
@@ -38,16 +44,25 @@ const protect = async (req, res, next) => {
   }
 };
 
-// Authorize specific roles
+// Authorize specific roles.
+//
+// Subcity-admin roles are derived from the live Subcity collection rather than
+// hard-coded (Bole → subcity_bole, Koye → subcity_koye, plus the canonical
+// `subcity_admin`). When a route explicitly authorizes any subcity_* role, every
+// derived subcity_* role is allowed too — so admins of newly-created subcities
+// never hit an "Access Denied" wall. All other roles must match exactly.
 const authorize = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: `Role '${req.user.role}' is not authorized to access this route`,
-      });
-    }
-    next();
+    const role = req.user.role;
+    const allowed = roles.includes(role);
+    const derivedSubcityAllowed =
+      typeof role === 'string' && role.startsWith('subcity_') &&
+      roles.some((r) => typeof r === 'string' && r.startsWith('subcity_'));
+    if (allowed || derivedSubcityAllowed) return next();
+    return res.status(403).json({
+      success: false,
+      message: `Role '${role}' is not authorized to access this route`,
+    });
   };
 };
 
@@ -77,7 +92,10 @@ const protectOptional = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id).select('-password');
-    if (user && user.isActive) req.user = user;
+    if (user && user.isActive) {
+      user.role = normalizeRole(user.role);
+      req.user = user;
+    }
   } catch (error) {
     // Invalid/expired token — treat as anonymous.
   }

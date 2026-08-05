@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { adminAPI } from '../../../services/api';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import EmptyState from '../../../components/common/EmptyState';
@@ -9,11 +8,11 @@ import { toast } from 'react-toastify';
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const EMPTY_FORM = { name: '', description: '', status: 'Active' };
+const EMPTY_ADMIN_FORM = { fullName: '', email: '', password: '', phone: '' };
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function AdminSubcityManagement() {
-  const navigate = useNavigate();
   const [subcities, setSubcities] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [saving, setSaving]       = useState(false);
@@ -22,6 +21,11 @@ export default function AdminSubcityManagement() {
   const [modal, setModal]       = useState(null);
   const [form, setForm]         = useState(EMPTY_FORM);
   const [nameError, setNameError] = useState('');
+
+  // adminModal = null | { type: 'create' } | { type: 'reset', id, email }
+  const [adminModal, setAdminModal] = useState(null);
+  const [adminForm, setAdminForm]   = useState(EMPTY_ADMIN_FORM);
+  const [adminError, setAdminError] = useState('');
 
   // deleteConfirm = null | { id: string, name: string }
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -156,6 +160,70 @@ export default function AdminSubcityManagement() {
     }
   };
 
+  // ── Subcity admin account provisioning ───────────────────────────────────────
+
+  const openAdminCreate = (sc) => {
+    setAdminForm({ ...EMPTY_ADMIN_FORM, subcityId: sc._id });
+    setAdminError('');
+    setAdminModal({ type: 'create', subcityName: sc.name });
+  };
+
+  const openAdminReset = (sc) => {
+    setAdminForm({ ...EMPTY_ADMIN_FORM, subcityId: sc._id });
+    setAdminError('');
+    setAdminModal({
+      type: 'reset',
+      subcityName: sc.name,
+      adminId: sc.admin?._id,
+      adminEmail: sc.admin?.email,
+    });
+  };
+
+  const closeAdminModal = () => {
+    setAdminModal(null);
+    setAdminForm(EMPTY_ADMIN_FORM);
+    setAdminError('');
+  };
+
+  const handleAdminChange = (e) => {
+    const { name, value } = e.target;
+    setAdminForm((prev) => ({ ...prev, [name]: value }));
+    setAdminError('');
+  };
+
+  const handleSaveAdmin = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      if (adminModal.type === 'create') {
+        const { subcityId, fullName, email, password, phone } = adminForm;
+        if (!fullName.trim() || !email.trim() || !password) {
+          setAdminError('Full name, email, and password are required.');
+          return;
+        }
+        if (password.length < 6) {
+          setAdminError('Password must be at least 6 characters.');
+          return;
+        }
+        await adminAPI.createSubcityAdmin({ subcityId, fullName: fullName.trim(), email: email.trim(), password, phone: phone.trim() });
+        toast.success('Subcity admin account created');
+      } else {
+        if (!adminForm.newPassword || adminForm.newPassword.length < 6) {
+          setAdminError('Password must be at least 6 characters.');
+          return;
+        }
+        await adminAPI.resetSubcityAdminPassword(adminModal.adminId, { newPassword: adminForm.newPassword });
+        toast.success('Subcity admin password reset');
+      }
+      closeAdminModal();
+      fetchData();
+    } catch (err) {
+      setAdminError(err.response?.data?.message || 'Operation failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // ── Derived ──────────────────────────────────────────────────────────────────
 
   const isCreateModal = modal === 'create';
@@ -204,6 +272,7 @@ export default function AdminSubcityManagement() {
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-700 text-left">
                 <th className="px-4 py-3 text-gray-600 dark:text-gray-400 font-medium">Subcity Name</th>
+                <th className="px-4 py-3 text-gray-600 dark:text-gray-400 font-medium">Subcity Admin</th>
                 <th className="px-4 py-3 text-gray-600 dark:text-gray-400 font-medium">Description</th>
                 <th className="px-4 py-3 text-gray-600 dark:text-gray-400 font-medium">Created Date</th>
                 <th className="px-4 py-3 text-gray-600 dark:text-gray-400 font-medium">Status</th>
@@ -226,6 +295,20 @@ export default function AdminSubcityManagement() {
                         {sc.name}
                       </span>
                     </div>
+                  </td>
+
+                  {/* Subcity admin */}
+                  <td className="px-4 py-3">
+                    {sc.admin ? (
+                      <div>
+                        <div className="text-gray-800 dark:text-gray-200 font-medium text-xs">
+                          {sc.admin.fullName || sc.admin.email}
+                        </div>
+                        <div className="text-gray-400 dark:text-gray-500 text-[11px]">{sc.admin.email}</div>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400 dark:text-gray-500">—</span>
+                    )}
                   </td>
 
                   {/* Description */}
@@ -252,13 +335,22 @@ export default function AdminSubcityManagement() {
                   {/* Actions */}
                   <td className="px-4 py-3">
                     <div className="flex gap-1 flex-wrap">
-                      {/* Departments */}
-                      <button
-                        onClick={() => navigate(`/dashboard/admin/departments?subcity=${sc._id}`)}
-                        className="text-xs py-1 px-2 rounded-lg bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 font-medium transition-colors"
-                      >
-                        Departments
-                      </button>
+                      {/* Subcity Admin provisioning */}
+                      {sc.admin ? (
+                        <button
+                          onClick={() => openAdminReset(sc)}
+                          className="text-xs py-1 px-2 rounded-lg bg-yellow-50 text-yellow-700 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400 dark:hover:bg-yellow-900/40 font-medium transition-colors"
+                        >
+                          Reset Admin Password
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => openAdminCreate(sc)}
+                          className="text-xs py-1 px-2 rounded-lg bg-primary-50 text-primary-600 hover:bg-primary-100 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40 font-medium transition-colors"
+                        >
+                          Create Admin
+                        </button>
+                      )}
 
                       {/* Edit */}
                       <button
@@ -393,6 +485,116 @@ export default function AdminSubcityManagement() {
                     : isCreateModal
                     ? 'Add Subcity'
                     : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Subcity admin account modal ─────────────────────────────────────── */}
+      {adminModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white rounded-2xl dark:bg-gray-800 shadow-xl w-full max-w-md p-6">
+
+            {/* Modal header */}
+            <h3 className="font-bold text-lg mb-1 text-gray-800 dark:text-gray-200">
+              {adminModal.type === 'create'
+                ? 'Create Subcity Admin'
+                : 'Reset Admin Password'}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-5">
+              {adminModal.type === 'create'
+                ? `Create the SUBCITY_ADMIN account for ${adminModal.subcityName}.`
+                : `Reset the password for ${adminModal.adminEmail || 'the subcity admin'}.`}
+            </p>
+
+            <form onSubmit={handleSaveAdmin} noValidate className="space-y-4">
+
+              {adminModal.type === 'create' && (
+                <>
+                  {/* Full name */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Full Name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      name="fullName"
+                      value={adminForm.fullName}
+                      onChange={handleAdminChange}
+                      placeholder="e.g. Abebe Kebede"
+                      className="input-field w-full"
+                      autoFocus
+                    />
+                  </div>
+
+                  {/* Email */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Email <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      name="email"
+                      type="email"
+                      value={adminForm.email}
+                      onChange={handleAdminChange}
+                      placeholder="e.g. admin@bole.gov.et"
+                      className="input-field w-full"
+                    />
+                  </div>
+
+                  {/* Phone */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Phone
+                    </label>
+                    <input
+                      name="phone"
+                      value={adminForm.phone}
+                      onChange={handleAdminChange}
+                      placeholder="e.g. +251 911 000 000"
+                      className="input-field w-full"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Password */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  {adminModal.type === 'create' ? 'Password' : 'New Password'}
+                  <span className="text-red-500"> *</span>
+                </label>
+                <input
+                  name={adminModal.type === 'create' ? 'password' : 'newPassword'}
+                  type="password"
+                  value={adminModal.type === 'create' ? adminForm.password : adminForm.newPassword}
+                  onChange={handleAdminChange}
+                  placeholder={adminModal.type === 'create' ? 'Min 6 characters' : 'Enter new password (min 6 characters)'}
+                  className="input-field w-full"
+                />
+              </div>
+
+              {adminError && (
+                <p className="text-xs text-red-500">{adminError}</p>
+              )}
+
+              {/* Buttons */}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closeAdminModal}
+                  className="btn-secondary flex-1"
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="btn-primary flex-1"
+                >
+                  {saving ? 'Saving…' : adminModal.type === 'create' ? 'Create Admin' : 'Reset Password'}
                 </button>
               </div>
             </form>

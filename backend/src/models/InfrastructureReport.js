@@ -25,6 +25,15 @@ const timelineEventSchema = new mongoose.Schema({
 const infrastructureReportSchema = new mongoose.Schema(
   {
     reportId: { type: String, unique: true },
+    // Discriminates infrastructure submissions from other report types. Always
+    // 'infrastructure' on this collection — used by dashboards/analytics to
+    // query only infrastructure reports.
+    report_type: {
+      type: String,
+      enum: ['infrastructure'],
+      default: 'infrastructure',
+      index: true,
+    },
     title: { type: String, required: true, trim: true },
     description: { type: String, required: true },
     // No enum restriction — the citizen form maps Department → category, and
@@ -47,6 +56,11 @@ const infrastructureReportSchema = new mongoose.Schema(
     city: { type: String },
     // No enum restriction — any subcity created in the Subcity collection is valid.
     subcity: { type: String },
+    // Live ObjectId references used for precise role scoping (mirrors the
+    // PublicComplaint schema). Populated at submission time from the selected
+    // woreda/subcity/department master data.
+    subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity', default: null },
+    departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
     woredaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Woreda' },
     woredaName: { type: String },
     specificLocation: { type: String },
@@ -62,7 +76,7 @@ const infrastructureReportSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        'Pending', 'Under Review', 'Approved', 'Rejected',
+        'Pending', 'Submitted', 'Under Review', 'Approved', 'Rejected',
         'Assigned', 'In Progress', 'Completed',
         'Citizen Verification', 'Resolved', 'Reopened',
         'Received', 'Closed',
@@ -71,7 +85,9 @@ const infrastructureReportSchema = new mongoose.Schema(
     },
     rejectionReason: { type: String },
 
-    submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Alias for the submitting citizen — null for anonymous submissions.
+    citizen_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reporterName:  { type: String, default: '' },
     reporterEmail: { type: String, default: '' },
     reporterPhone: { type: String, default: '' },
@@ -167,6 +183,10 @@ infrastructureReportSchema.index({ assignedTo: 1 });
 infrastructureReportSchema.index({ dueDate: 1 });
 infrastructureReportSchema.index({ slaBreached: 1 });
 infrastructureReportSchema.index({ currentLevel: 1 });
+infrastructureReportSchema.index({ subcityId: 1 });
+infrastructureReportSchema.index({ woredaId: 1 });
+infrastructureReportSchema.index({ departmentId: 1 });
+infrastructureReportSchema.index({ woredaId: 1, department: 1 });
 infrastructureReportSchema.index({ createdAt: -1 });
 
 // The reportId is generated atomically from the counters collection (see

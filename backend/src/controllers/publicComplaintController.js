@@ -2,7 +2,13 @@ const PublicComplaint = require('../models/PublicComplaint');
 const createNotification = require('../utils/createNotification');
 const User = require('../models/User');
 const Woreda = require('../models/Woreda');
+const Department = require('../models/Department');
+const { sendEmail } = require('../services/emailService');
+const { sendSms } = require('../services/smsService');
+const { logAction } = require('../middleware/auditLog');
+const { normalizeDepartmentName } = require('../utils/departmentNames');
 const { verifySubmissionPassword } = require('../utils/verifySubmissionPassword');
+const { findDepartmentRecipients, departmentMatchFilter } = require('../utils/departmentRecipients');
 const {
   buildComplaintScope,
   isComplaintInScope,
@@ -17,6 +23,58 @@ const getIo = (req) => {
 const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Delivers a citizen-facing update through every channel that applies:
+//   • in-app notification  — when the reporter is a logged-in account
+//   • SMS                  — when a reporter phone was provided
+//   • email                — when a reporter email was provided
+//   • publicNotifications  — stored feed shown on the public tracking page
+// Every channel is defensive: an unconfigured SMS/email provider is a no-op.
+const notifyReporter = async (complaint, io, { event, title, message, type }) => {
+  try {
+    const channels = ['in-app'];
+    if (complaint.reporter) {
+      await createNotification({
+        recipient: complaint.reporter,
+        title,
+        message,
+        type: type || 'complaint_status',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (complaint.reporterPhone) {
+      channels.push('sms');
+      await sendSms({ to: complaint.reporterPhone, message });
+    }
+    if (complaint.reporterEmail) {
+      channels.push('email');
+      await sendEmail({ to: complaint.reporterEmail, subject: title, text: message });
+    }
+    complaint.publicNotifications.push({
+      event,
+      title,
+      message,
+      channels: channels.join(', '),
+      at: new Date(),
+    });
+  } catch (err) {
+    console.error('[PublicComplaint] Reporter notification error:', err.message);
+  }
+};
+
+// Records every workflow action in the central AuditLog collection.
+const auditComplaint = async (req, action, complaint, details) => {
+  await logAction({
+    user: req?.user || null,
+    action,
+    resource: 'public_complaint',
+    resourceId: complaint?._id,
+    details: details || `${action} on complaint ${complaint?.trackingNumber || ''}`,
+    req,
+  });
+};
 
 // Creates the complaint and regenerates the tracking number on a duplicate-key
 // collision so a concurrent submission can never be lost to a race.
@@ -81,13 +139,13 @@ const getSubcityWoredas = async (req, res) => {
 // only submits the woreda name, not its Mongo id). Returns null when not found.
 const findWoreda = async (woredaId, woredaName, subcity) => {
   if (woredaId) {
-    return Woreda.findById(woredaId).select('_id name subcity departments');
+    return Woreda.findById(woredaId).select('_id name subcity subcityId departments');
   }
   if (woredaName) {
     const nameRe = new RegExp(`^${String(woredaName).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
     const filter = { name: nameRe };
     if (subcity) filter.subcity = subcityRegex(subcity);
-    return Woreda.findOne(filter).select('_id name subcity departments');
+    return Woreda.findOne(filter).select('_id name subcity subcityId departments');
   }
   return null;
 };
@@ -103,6 +161,22 @@ const normalizeDepartment = (woredaDoc, department) => {
     if (match) return match;
   }
   return String(department).trim();
+};
+
+// Resolves the live Department record for a complaint so role scoping (e.g. the
+// department_officer role) can match on departmentId. Prefers the woreda-level
+// record, then falls back to the subcity-level record with the same name.
+const findDepartmentRef = async (woredaDoc, normalizedDepartment) => {
+  if (!normalizedDepartment) return null;
+  const subcityId = woredaDoc && woredaDoc.subcityId;
+  if (!subcityId) return null;
+  const nameRe = new RegExp(`^${escapeRegex(normalizeDepartmentName(normalizedDepartment))}$`, 'i');
+  const base = { status: 'Active', subcityId, $or: [{ normalizedDepartmentName: nameRe }, { name: nameRe }] };
+  let department = await Department.findOne({ ...base, woredaId: woredaDoc._id }).select('_id').lean();
+  if (!department) {
+    department = await Department.findOne({ ...base, woredaId: null }).select('_id').lean();
+  }
+  return department;
 };
 
 // @desc  Create a public complaint
@@ -161,6 +235,7 @@ const createComplaint = async (req, res) => {
 
     const now = new Date();
     const complaintData = {
+      report_type: 'public_complaint',
       title,
       category: safeCategory,
       description,
@@ -170,7 +245,7 @@ const createComplaint = async (req, res) => {
       priority,
       anonymous: isAnonymous,
       attachments,
-      status: 'Pending',
+      status: 'Submitted',
       submittedAt: now,
       // SLA deadlines — 48 hours to Subcity, 5 days to Subcity Administrator.
       escalationDeadline: new Date(now.getTime() + 48 * 60 * 60 * 1000),
@@ -180,7 +255,7 @@ const createComplaint = async (req, res) => {
         description: 'Complaint submitted',
         performedByRole: isAnonymous ? 'public' : 'citizen',
         previousStatus: null,
-        newStatus: 'Pending',
+        newStatus: 'Submitted',
       }],
     };
 
@@ -188,10 +263,17 @@ const createComplaint = async (req, res) => {
     if (woredaDoc) {
       complaintData.woredaId = woredaDoc._id;
       complaintData.woredaName = woredaDoc.name;
+      if (woredaDoc.subcityId) complaintData.subcityId = woredaDoc.subcityId;
     } else if (woredaName) {
       complaintData.woredaName = woredaName;
     }
     if (normalizedDepartment) complaintData.department = normalizedDepartment;
+
+    // Live subcity/department references let role scoping match on ObjectIds
+    // (department_officer sees only complaints with the same subcityId,
+    // woredaId AND departmentId as their account).
+    const departmentRef = await findDepartmentRef(woredaDoc, normalizedDepartment);
+    if (departmentRef) complaintData.departmentId = departmentRef._id;
 
     if (!isAnonymous && req.user) {
       complaintData.reporter = req.user._id;
@@ -212,10 +294,11 @@ const createComplaint = async (req, res) => {
 
     const io = getIo(req);
 
-    // Notify the exact department user(s) matching this woreda + department
-    // so the complaint appears on their dashboard immediately.
+    // Notify the exact department account(s) matching this woreda + department
+    // so the complaint appears on their dashboard immediately. Both the legacy
+    // `department` role and the canonical `department_officer` role are reached.
     if (woredaDoc && normalizedDepartment) {
-      const deptUsers = await User.find({ role: 'department', woredaId: woredaDoc._id, department: normalizedDepartment }).select('_id');
+      const deptUsers = await findDepartmentRecipients({ woredaId: woredaDoc._id, department: normalizedDepartment, departmentId: complaint.departmentId });
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
@@ -262,6 +345,20 @@ const createComplaint = async (req, res) => {
     // Push a live refresh to every connected dashboard (admin report page etc.)
     if (io) io.emit('complaint:created', { complaint });
 
+    // Notify the citizen: SMS + email with their tracking number, plus the
+    // in-app notification when they were logged in. Stored on the complaint
+    // so the public tracking page can replay the full notification history.
+    await notifyReporter(complaint, io, {
+      event: 'Complaint submitted',
+      title: `Complaint ${complaint.trackingNumber} submitted`,
+      message: `Your complaint "${title}" was received and routed to the ${normalizedDepartment || safeCategory} department in ${normalizedSubcity || region}. Track it with ID ${complaint.trackingNumber}.`,
+      type: 'complaint_status',
+    });
+    await complaint.save();
+
+    await auditComplaint(req, 'complaint_created', complaint,
+      `Complaint submitted${isAnonymous ? ' anonymously' : ` by ${complaint.reporterName || 'citizen'}`}: ${title} → ${normalizedDepartment || safeCategory}`);
+
     res.status(201).json({
       success: true,
       message: 'Complaint submitted successfully',
@@ -282,7 +379,10 @@ const getPublicComplaints = async (req, res) => {
       page = 1, limit = 15, status, category, priority, search,
       subcity, woreda, department, from, to,
     } = req.query;
-    const query = {};
+    // Hard discriminator: this list feeds the Public Complaints tab (and public
+    // complaint pages) only, so it must never surface records from any other
+    // report type.
+    const query = { report_type: 'public_complaint' };
 
     if (status) query.status = status;
     if (category) query.category = category;
@@ -365,6 +465,10 @@ const getComplaintById = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to view this complaint' });
     }
 
+    if (req.user) {
+      await auditComplaint(req, 'complaint_viewed', complaint, `Complaint viewed by ${req.user.fullName || req.user.role}`);
+    }
+
     res.json({ success: true, data: { complaint } });
   } catch (err) {
     console.error('[PublicComplaint] Get by id error:', err);
@@ -374,13 +478,38 @@ const getComplaintById = async (req, res) => {
 
 const getByTrackingNumber = async (req, res) => {
   try {
-    const complaint = await PublicComplaint.findOne({ trackingNumber: req.params.trackingNumber })
+    const complaint = await PublicComplaint.findOne({
+      trackingNumber: { $regex: `^${escapeRegex(req.params.trackingNumber)}$`, $options: 'i' },
+    })
+      .select('-internalNotes')
       .populate('reporter', 'fullName email phone')
       .populate('assignedTo', 'fullName organizationName')
       .populate('timeline.performedBy', 'fullName role');
 
     if (!complaint) {
       return res.status(404).json({ success: false, message: 'Complaint not found' });
+    }
+
+    // Citizen verification: the tracking page asks for the phone number used at
+    // submission (09XXXXXXXX format). The full details are only shown when it
+    // matches; otherwise only a minimal acknowledgement is returned. Comparison
+    // normalises formatting (spaces, dashes, +251 country prefix, leading 0).
+    const digitize = (s) => String(s || '').replace(/\D/g, '');
+    const submittedPhone = digitize(complaint.reporterPhone);
+    const providedPhone = digitize(req.query.phone);
+    if (!providedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide the phone number used to submit this complaint.',
+      });
+    }
+    const matchesPhone = submittedPhone &&
+      (submittedPhone === providedPhone || submittedPhone.slice(-9) === providedPhone.slice(-9));
+    if (!matchesPhone) {
+      return res.status(403).json({
+        success: false,
+        message: 'The phone number does not match the one used to submit this complaint.',
+      });
     }
 
     res.json({ success: true, data: { complaint } });
@@ -395,9 +524,10 @@ const updateStatus = async (req, res) => {
     const { status, comment } = req.body;
     const validStatuses = [
       'Pending', 'Submitted', 'Under Review', 'Assigned', 'Inspector Assigned',
-      'Technician Assigned', 'Technician Requested', 'In Progress',
-      'Awaiting Verification', 'Rework Required', 'Escalated to Subcity',
-      'Resolved', 'Rejected', 'Closed', 'Reopened',
+      'Technician Assigned', 'Technician Requested', 'Accepted', 'In Progress',
+      'Awaiting Verification', 'More Info Requested', 'Waiting for Parts',
+      'Rework Required', 'Escalated to Subcity', 'Forwarded to Subcity',
+      'Resolved', 'Resolved by Subcity', 'Rejected', 'Closed', 'Reopened',
     ];
 
     if (!validStatuses.includes(status)) {
@@ -434,23 +564,22 @@ const updateStatus = async (req, res) => {
 
     const io = getIo(req);
 
-    // Notify reporter (in-app + email/SMS when configured)
-    if (complaint.reporter) {
-      await createNotification({
-        recipient: complaint.reporter,
-        title: 'Complaint Status Updated',
-        message: `Your complaint ${complaint.trackingNumber} status has been updated to ${status}`,
-        type: 'info',
-        relatedReport: complaint._id,
-        relatedReportType: 'public_complaint',
-        io,
-      });
-    }
+    // Notify the citizen through every available channel (in-app + SMS + email)
+    // and record the update in the public notification feed + audit log.
+    await notifyReporter(complaint, io, {
+      event: 'Status updated',
+      title: `Complaint ${complaint.trackingNumber} is now ${status}`,
+      message: `Your complaint "${complaint.title}" status was updated to ${status}${comment ? `: ${comment}` : ''}.`,
+      type: 'complaint_status',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_status_changed', complaint,
+      `Status changed ${previousStatus} → ${status}${comment ? ` (${comment})` : ''}`);
 
     // Notify the department account assigned to this complaint (for actions
     // taken by admins/subcity so the responsible office stays in the loop).
     if (status === 'Assigned' && complaint.woredaId && complaint.department) {
-      const deptUsers = await User.find({ role: 'department', woredaId: complaint.woredaId, department: complaint.department }).select('_id');
+      const deptUsers = await findDepartmentRecipients({ woredaId: complaint.woredaId, department: complaint.department, departmentId: complaint.departmentId });
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
@@ -486,8 +615,9 @@ const TECHNICIAN_ASSIGNABLE_ROLES = ['TECHNICIAN', 'CONTRACTOR'];
 
 // Does a field-staff member (officer / technician) belong to the same
 // administrative scope as the complaint?
-//   • Woreda-level staff  — must share the complaint's woredaId, and the
-//     department when both sides carry one.
+//   • Woreda-level staff  — must share the complaint's woredaId (or, for legacy
+//     accounts predating woredaId, the stored woredaName), and the department
+//     when both sides carry one.
 //   • Subcity-level staff — no woredaId; must share the complaint's subcity.
 //   • Locationless staff  — allowed (legacy / global accounts).
 const matchesComplaintLocation = (user, complaint) => {
@@ -500,8 +630,12 @@ const matchesComplaintLocation = (user, complaint) => {
     return true;
   }
 
-  if (!complaint.woredaId) return false;
-  if (String(user.woredaId) !== String(complaint.woredaId)) return false;
+  const woredaMatches =
+    (complaint.woredaId && String(user.woredaId) === String(complaint.woredaId)) ||
+    (!!user.woredaName && !!complaint.woredaName &&
+      String(user.woredaName).toLowerCase() === String(complaint.woredaName).toLowerCase());
+  if (!woredaMatches) return false;
+
   if (user.department && complaint.department) {
     return String(user.department).toLowerCase() === String(complaint.department).toLowerCase();
   }
@@ -572,16 +706,15 @@ const assignOfficer = async (req, res) => {
       io,
     });
     if (complaint.reporter) {
-      await createNotification({
-        recipient: complaint.reporter,
-        title: 'Complaint Assigned',
-        message: `Your complaint ${complaint.trackingNumber} has been assigned to ${officer.fullName}.`,
-        type: 'info',
-        relatedReport: complaint._id,
-        relatedReportType: 'public_complaint',
-        io,
+      await notifyReporter(complaint, io, {
+        event: 'Officer assigned',
+        title: `Complaint ${complaint.trackingNumber} assigned`,
+        message: `Your complaint "${complaint.title}" has been assigned to officer ${officer.fullName} for review.`,
+        type: 'complaint_assigned',
       });
     }
+    await auditComplaint(req, 'complaint_officer_assigned', complaint, `Assigned to officer ${officer.fullName}`);
+    await complaint.save();
     if (io) io.emit('complaint:updated', { complaint });
 
     res.json({ success: true, message: 'Officer assigned', data: { complaint } });
@@ -656,16 +789,15 @@ const assignTechnician = async (req, res) => {
       io,
     });
     if (complaint.reporter) {
-      await createNotification({
-        recipient: complaint.reporter,
-        title: 'Technician Assigned',
-        message: `A technician (${technician.fullName}) has been assigned to your complaint ${complaint.trackingNumber}.`,
-        type: 'info',
-        relatedReport: complaint._id,
-        relatedReportType: 'public_complaint',
-        io,
+      await notifyReporter(complaint, io, {
+        event: 'Technician assigned',
+        title: `Complaint ${complaint.trackingNumber} — technician assigned`,
+        message: `A technician (${technician.fullName}) has been assigned to work on your complaint${dueDate ? `, due ${new Date(dueDate).toISOString().slice(0, 10)}` : ''}.`,
+        type: 'complaint_assigned',
       });
     }
+    await auditComplaint(req, 'complaint_technician_assigned', complaint, `Assigned to technician ${technician.fullName}`);
+    await complaint.save();
     if (io) io.emit('complaint:updated', { complaint });
 
     res.json({ success: true, message: 'Technician assigned', data: { complaint } });
@@ -929,6 +1061,9 @@ const verifyWork = async (req, res) => {
     }
     if (io) io.emit('complaint:updated', { complaint });
 
+    await auditComplaint(req, isApproved ? 'complaint_resolved' : 'complaint_reopened', complaint,
+      isApproved ? `Work verified and complaint resolved by ${req.user?.fullName || 'officer'}` : `Rework requested: ${String(note).trim()}`);
+
     res.json({
       success: true,
       message: isApproved ? 'Complaint verified and resolved' : 'Rework requested',
@@ -1018,6 +1153,8 @@ const closeComplaint = async (req, res) => {
     }
     if (io) io.emit('complaint:updated', { complaint });
 
+    await auditComplaint(req, 'complaint_closed', complaint, `Complaint closed by ${req.user?.fullName || 'department admin'}`);
+
     res.json({ success: true, message: 'Complaint closed', data: { complaint } });
   } catch (err) {
     console.error('[PublicComplaint] Close error:', err);
@@ -1082,7 +1219,7 @@ const escalateToSubcityManual = async (req, res) => {
 
     // Notify the department account for the target subcity department.
     if (dept) {
-      const deptUsers = await User.find({ role: 'department', department: dept, isActive: true }).select('_id');
+      const deptUsers = await User.find({ role: { $in: ['department', 'department_officer'] }, ...departmentMatchFilter(dept), isActive: true }).select('_id');
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
@@ -1108,6 +1245,8 @@ const escalateToSubcityManual = async (req, res) => {
       });
     }
     if (io) io.emit('complaint:updated', { complaint });
+
+    await auditComplaint(req, 'complaint_escalated', complaint, `Escalated to subcity: ${String(reason).trim()}`);
 
     res.json({ success: true, message: 'Complaint escalated to subcity', data: { complaint } });
   } catch (err) {
@@ -1159,6 +1298,385 @@ const addInternalNote = async (req, res) => {
   } catch (err) {
     console.error('[PublicComplaint] Add note error:', err);
     res.status(500).json({ success: false, message: 'Failed to add internal note' });
+  }
+};
+
+// ── Citizen complaint workflow — department officer actions ───────────────────
+
+// Finds a complaint and enforces the caller's role scope. Returns null when the
+// complaint is out of scope (403 is sent by the caller).
+const findScopedComplaint = async (req, forAction) => {
+  const complaint = await PublicComplaint.findOne({
+    _id: req.params.id,
+    ...buildComplaintScope(req.user),
+  });
+  if (!complaint) return null;
+  return complaint;
+};
+
+// @desc  Officer accepts a submitted complaint
+// @route POST /api/public-complaints/:id/accept
+// @access Complaint officers (department officer + managers)
+const acceptComplaint = async (req, res) => {
+  try {
+    const complaint = await findScopedComplaint(req, 'accept');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to accept this complaint.' });
+    }
+    const acceptAllowedFrom = ['Submitted', 'Pending', 'More Info Requested', 'Waiting for Parts'];
+    if (!acceptAllowedFrom.includes(complaint.status)) {
+      return res.status(400).json({ success: false, message: `Only 'Submitted' complaints can be accepted (current: ${complaint.status}).` });
+    }
+    const resuming = complaint.status !== 'Submitted' && complaint.status !== 'Pending';
+
+    const previousStatus = complaint.status;
+    complaint.status = 'Accepted';
+    complaint.acceptedAt = new Date();
+    complaint.acceptedBy = req.user?._id || null;
+    complaint.acceptedByName = req.user?.fullName || 'System';
+    complaint.timeline.push({
+      action: 'accepted',
+      description: resuming
+        ? `${req.user?.fullName || 'Officer'} resumed work on the complaint.`
+        : `${req.user?.fullName || 'Officer'} accepted the complaint.`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    await notifyReporter(complaint, io, {
+      event: 'Complaint accepted',
+      title: `Complaint ${complaint.trackingNumber} accepted`,
+      message: `Good news — your complaint "${complaint.title}" has been accepted by the ${complaint.department || 'responsible'} department.`,
+      type: 'complaint_status',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_accepted', complaint, `Complaint accepted by ${req.user?.fullName || 'officer'}`);
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint accepted', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Accept error:', err);
+    res.status(500).json({ success: false, message: 'Failed to accept complaint' });
+  }
+};
+
+// @desc  Officer rejects a complaint (with a required reason)
+// @route POST /api/public-complaints/:id/reject
+// @access Complaint officers
+const rejectComplaint = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'A rejection reason is required.' });
+    }
+
+    const complaint = await findScopedComplaint(req, 'reject');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to reject this complaint.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.status = 'Rejected';
+    complaint.rejectReason = reason;
+    complaint.rejectedAt = new Date();
+    complaint.rejectedBy = req.user?._id || null;
+    complaint.rejectedByName = req.user?.fullName || 'System';
+    complaint.resolvedAt = complaint.resolvedAt || new Date();
+    complaint.timeline.push({
+      action: 'rejected',
+      description: `Complaint rejected: ${reason}`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    await notifyReporter(complaint, io, {
+      event: 'Complaint rejected',
+      title: `Complaint ${complaint.trackingNumber} rejected`,
+      message: `Your complaint "${complaint.title}" was rejected: ${reason}`,
+      type: 'complaint_rejected',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_rejected', complaint, `Rejected: ${reason}`);
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint rejected', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Reject error:', err);
+    res.status(500).json({ success: false, message: 'Failed to reject complaint' });
+  }
+};
+
+// @desc  Officer requests more information from the citizen
+// @route POST /api/public-complaints/:id/request-info
+// @access Complaint officers
+const requestMoreInfo = async (req, res) => {
+  try {
+    const message = String(req.body.message || '').trim();
+    if (!message) {
+      return res.status(400).json({ success: false, message: 'A message for the citizen is required.' });
+    }
+
+    const complaint = await findScopedComplaint(req, 'request-info');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to update this complaint.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.status = 'More Info Requested';
+    complaint.timeline.push({
+      action: 'info_requested',
+      description: `More information requested: ${message}`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    await notifyReporter(complaint, io, {
+      event: 'More information requested',
+      title: `Complaint ${complaint.trackingNumber} — more info needed`,
+      message: `The department needs more information about "${complaint.title}": ${message}`,
+      type: 'complaint_status',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_info_requested', complaint, `More information requested: ${message}`);
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'More information requested', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Request info error:', err);
+    res.status(500).json({ success: false, message: 'Failed to request more information' });
+  }
+};
+
+// @desc  Officer marks a complaint as waiting for parts
+// @route POST /api/public-complaints/:id/waiting-parts
+// @access Complaint officers
+const markWaitingParts = async (req, res) => {
+  try {
+    const note = String(req.body.note || '').trim();
+
+    const complaint = await findScopedComplaint(req, 'waiting-parts');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to update this complaint.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.status = 'Waiting for Parts';
+    complaint.timeline.push({
+      action: 'waiting_parts',
+      description: `Complaint is waiting for parts${note ? `: ${note}` : ''}.`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    await notifyReporter(complaint, io, {
+      event: 'Waiting for parts',
+      title: `Complaint ${complaint.trackingNumber} — waiting for parts`,
+      message: `Work on your complaint "${complaint.title}" is waiting for parts${note ? ` (${note})` : ''}. We will update you as soon as work resumes.`,
+      type: 'complaint_status',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_status_changed', complaint, 'Status → Waiting for Parts');
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint marked as waiting for parts', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Waiting parts error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update complaint' });
+  }
+};
+
+// @desc  Officer forwards a complaint to the Subcity office
+// @route POST /api/public-complaints/:id/forward
+// @access Complaint officers
+// Requires a reason and captures the estimated budget / required equipment /
+// priority so the Subcity office can decide with full context.
+const forwardToSubcity = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'A forward reason is required.' });
+    }
+
+    const complaint = await findScopedComplaint(req, 'forward');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to forward this complaint.' });
+    }
+
+    const previousStatus = complaint.status;
+    const targetDepartment = String(req.body.department || complaint.department || '').trim();
+    complaint.status = 'Forwarded to Subcity';
+    complaint.assignedLevel = 'SUBCITY';
+    complaint.forwardReason = reason;
+    complaint.estimatedBudget = String(req.body.estimatedBudget || complaint.estimatedBudget || '').trim();
+    complaint.requiredEquipment = String(req.body.requiredEquipment || complaint.requiredEquipment || '').trim();
+    complaint.forwardPriority = String(req.body.forwardPriority || complaint.priority || '').trim();
+    complaint.forwardedAt = new Date();
+    complaint.forwardedBy = req.user?._id || null;
+    complaint.forwardedByName = req.user?.fullName || 'System';
+    complaint.escalatedToSubcity = true;
+    complaint.escalatedToSubcityAt = complaint.escalatedToSubcityAt || new Date();
+    if (targetDepartment) complaint.department = targetDepartment;
+    complaint.timeline.push({
+      action: 'forwarded_to_subcity',
+      description: `Forwarded to the Subcity office${targetDepartment ? ` (${targetDepartment})` : ''}: ${reason}`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+
+    // Notify the subcity office + subcity-level department accounts.
+    const subcityRole = `subcity_${normalizeSubcity(complaint.subcity).toLowerCase()}`;
+    const subcityUsers = await User.find({ role: subcityRole }).select('_id');
+    for (const u of subcityUsers) {
+      await createNotification({
+        recipient: u._id,
+        title: 'Complaint Forwarded to Your Subcity',
+        message: `Complaint ${complaint.trackingNumber} "${complaint.title}" was forwarded to the ${complaint.subcity} subcity office. Reason: ${reason}`,
+        type: 'warning',
+        relatedReport: complaint._id,
+        relatedReportType: 'public_complaint',
+        io,
+      });
+    }
+    if (targetDepartment) {
+      const deptUsers = await User.find({ role: { $in: ['department', 'department_officer'] }, ...departmentMatchFilter(targetDepartment), isActive: true }).select('_id');
+      for (const u of deptUsers) {
+        await createNotification({
+          recipient: u._id,
+          title: 'Forwarded Complaint in Your Department',
+          message: `Complaint ${complaint.trackingNumber} forwarded to Subcity (${targetDepartment}). Reason: ${reason}`,
+          type: 'warning',
+          relatedReport: complaint._id,
+          relatedReportType: 'public_complaint',
+          io,
+        });
+      }
+    }
+
+    await notifyReporter(complaint, io, {
+      event: 'Forwarded to Subcity',
+      title: `Complaint ${complaint.trackingNumber} forwarded to Subcity`,
+      message: `Your complaint "${complaint.title}" has been forwarded to the ${complaint.subcity} subcity office. Reason: ${reason}`,
+      type: 'complaint_forwarded',
+    });
+    await auditComplaint(req, 'complaint_forwarded', complaint,
+      `Forwarded to Subcity${targetDepartment ? ` (${targetDepartment})` : ''}: ${reason}`);
+    await complaint.save();
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint forwarded to Subcity', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Forward error:', err);
+    res.status(500).json({ success: false, message: 'Failed to forward complaint' });
+  }
+};
+
+// @desc  Subcity office resolves a forwarded complaint
+// @route POST /api/public-complaints/:id/resolve-by-subcity
+// @access Subcity-level roles
+const resolveBySubcity = async (req, res) => {
+  try {
+    const details = String(req.body.details || '').trim();
+    if (!details) {
+      return res.status(400).json({ success: false, message: 'Resolution details are required.' });
+    }
+
+    const complaint = await findScopedComplaint(req, 'resolve-by-subcity');
+    if (!complaint) {
+      return res.status(403).json({ success: false, message: 'Not authorized to resolve this complaint.' });
+    }
+
+    const previousStatus = complaint.status;
+    complaint.status = 'Resolved by Subcity';
+    complaint.resolutionDetails = details;
+    complaint.subcityResolvedAt = new Date();
+    complaint.subcityResolvedBy = req.user?._id || null;
+    complaint.subcityResolvedByName = req.user?.fullName || 'System';
+    complaint.resolvedAt = complaint.resolvedAt || new Date();
+    complaint.timeline.push({
+      action: 'resolved_by_subcity',
+      description: `Resolved at the Subcity level: ${details}`,
+      performedBy: req.user?._id,
+      performedByName: req.user?.fullName || 'System',
+      performedByRole: req.user?.role || 'admin',
+      previousStatus,
+      newStatus: complaint.status,
+    });
+
+    await complaint.save();
+
+    const io = getIo(req);
+    await notifyReporter(complaint, io, {
+      event: 'Resolved by Subcity',
+      title: `Complaint ${complaint.trackingNumber} resolved`,
+      message: `Your complaint "${complaint.title}" has been resolved by the ${complaint.subcity} subcity office: ${details}`,
+      type: 'complaint_resolved',
+    });
+    await complaint.save();
+    await auditComplaint(req, 'complaint_resolved', complaint, `Resolved by subcity: ${details}`);
+    if (io) io.emit('complaint:updated', { complaint });
+
+    res.json({ success: true, message: 'Complaint resolved by subcity', data: { complaint } });
+  } catch (err) {
+    console.error('[PublicComplaint] Resolve by subcity error:', err);
+    res.status(500).json({ success: false, message: 'Failed to resolve complaint' });
+  }
+};
+
+// @desc  Audit trail for a complaint
+// @route GET /api/public-complaints/:id/audit
+// @access Complaint managers
+const getAuditLog = async (req, res) => {
+  try {
+    const AuditLog = require('../models/AuditLog');
+    const complaint = await PublicComplaint.findById(req.params.id).select('_id').lean();
+    if (!complaint) {
+      return res.status(404).json({ success: false, message: 'Complaint not found' });
+    }
+    if (req.user && COMPLAINT_SCOPED_ROLES.includes(req.user.role)) {
+      const full = await PublicComplaint.findById(req.params.id).select('subcity woredaId department departmentId subcityId').lean();
+      if (!isComplaintInScope(req.user, full)) {
+        return res.status(403).json({ success: false, message: 'Not authorized to view this audit log.' });
+      }
+    }
+    const entries = await AuditLog.find({ resource: 'public_complaint', resourceId: complaint._id })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+    res.json({ success: true, data: { entries } });
+  } catch (err) {
+    console.error('[PublicComplaint] Audit log error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch audit log' });
   }
 };
 
@@ -1355,17 +1873,14 @@ async function escalateToSubcity(complaint, io) {
     });
   }
 
-  if (complaint.reporter) {
-    await createNotification({
-      recipient: complaint.reporter,
-      title: 'Complaint Escalated',
-      message: `Your complaint ${complaint.trackingNumber} has been escalated to the ${complaint.subcity} subcity office for further action.`,
-      type: 'warning',
-      relatedReport: complaint._id,
-      relatedReportType: 'public_complaint',
-      io,
-    });
-  }
+  await notifyReporter(complaint, io, {
+    event: 'Escalated to Subcity',
+    title: `Complaint ${complaint.trackingNumber} escalated`,
+    message: `Your complaint "${complaint.title}" was escalated to the ${complaint.subcity} subcity office because it was not resolved within 48 hours.`,
+    type: 'complaint_escalated',
+  });
+  await auditComplaint(null, 'complaint_escalated', complaint, 'Automatic escalation to Subcity office (48-hour deadline exceeded)');
+  await complaint.save();
 
   if (io) io.emit('complaint:updated', { complaint });
 }
@@ -1402,17 +1917,14 @@ async function escalateToSubcityAdmin(complaint, io) {
     });
   }
 
-  if (complaint.reporter) {
-    await createNotification({
-      recipient: complaint.reporter,
-      title: 'Complaint Escalated',
-      message: `Your complaint ${complaint.trackingNumber} has been escalated to the Subcity Administrator.`,
-      type: 'warning',
-      relatedReport: complaint._id,
-      relatedReportType: 'public_complaint',
-      io,
-    });
-  }
+  await notifyReporter(complaint, io, {
+    event: 'Escalated to Subcity Administrator',
+    title: `Complaint ${complaint.trackingNumber} escalated to Subcity Administrator`,
+    message: `Your complaint "${complaint.title}" was escalated to the Subcity Administrator because it was not resolved within 5 days.`,
+    type: 'complaint_escalated',
+  });
+  await auditComplaint(null, 'complaint_escalated', complaint, 'Automatic escalation to Subcity Administrator (5-day deadline exceeded)');
+  await complaint.save();
 
   if (io) io.emit('complaint:updated', { complaint });
 }
@@ -1431,6 +1943,13 @@ module.exports = {
   closeComplaint,
   escalateToSubcityManual,
   addInternalNote,
+  acceptComplaint,
+  rejectComplaint,
+  requestMoreInfo,
+  markWaitingParts,
+  forwardToSubcity,
+  resolveBySubcity,
+  getAuditLog,
   getAssignableUsers,
   getStats,
   getSubcityWoredas,

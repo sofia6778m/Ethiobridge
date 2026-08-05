@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const { logDebug } = require('../utils/debug');
 
 // ── General / register / upload limiters ─────────────────────────────────────
 
@@ -22,6 +23,17 @@ const uploadLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 30,
   message: { success: false, message: 'Too many uploads, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Public complaint submission limiter ───────────────────────────────────────
+// Protects the anonymous complaint endpoint from spam / abuse while still
+// allowing genuine citizens to submit a handful of complaints per hour.
+const complaintSubmitLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many complaint submissions from this address. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -58,7 +70,8 @@ const LOCKOUT_MS   = parseInt(process.env.LOGIN_LOCKOUT_MINUTES || '10', 10) * 6
 // In-memory store: email → { count, lockedUntil }
 const loginAttempts = new Map();
 
-// Purge stale entries every 30 minutes
+// Purge stale entries every 30 minutes. `.unref()` so the timer never keeps a
+// process alive on its own (the HTTP server owns the process lifetime).
 setInterval(() => {
   const now = Date.now();
   for (const [key, rec] of loginAttempts.entries()) {
@@ -66,7 +79,7 @@ setInterval(() => {
       loginAttempts.delete(key);
     }
   }
-}, 30 * 60 * 1000);
+}, 30 * 60 * 1000).unref();
 
 /**
  * Get the lockout record for an email, creating it if missing.
@@ -99,11 +112,10 @@ function recordFailure(email) {
   if (rec.count >= MAX_ATTEMPTS) {
     rec.lockedUntil = Date.now() + LOCKOUT_MS;
     const lockMin   = Math.ceil(LOCKOUT_MS / 60000);
-    console.log(`[AUTH-LIMIT] 🔒 Locked   ${email} for ${lockMin} minute(s) after ${rec.count} failures`);
+    logDebug(`[AUTH-LIMIT] 🔒 Locked   ${email} for ${lockMin} minute(s) after ${rec.count} failures`);
     return { locked: true, retryAfterMinutes: lockMin };
   }
-  console.log(`[AUTH-LIMIT] ❌ Wrong password for ${email} — attempt ${rec.count}/${MAX_ATTEMPTS}`);
-  return { locked: false };
+  logDebug(`[AUTH-LIMIT] ❌ Wrong password for ${email} — attempt ${rec.count}/${MAX_ATTEMPTS}`);  return { locked: false };
 }
 
 /**
@@ -112,7 +124,7 @@ function recordFailure(email) {
 function clearLockout(email) {
   const rec = loginAttempts.get(email);
   if (rec && rec.count > 0) {
-    console.log(`[AUTH-LIMIT] ✅ Unlocked ${email} after successful login (was at ${rec.count} failure(s))`);
+    logDebug(`[AUTH-LIMIT] ✅ Unlocked ${email} after successful login (was at ${rec.count} failure(s))`);
   }
   loginAttempts.delete(email);
 }
@@ -147,7 +159,10 @@ module.exports = {
   authLimiter,
   registerLimiter,
   uploadLimiter,
+  complaintSubmitLimiter,
   reactivateLimiter,
   loginAttempts,
+  getLockoutRecord,
+  recordFailure,
   clearLockout,
 };

@@ -230,6 +230,15 @@ export default function CampaignCard({ campaign, showActions = true }) {
             </Link>
           </div>
         )}
+
+        {campaign.status === 'active' && (
+          <Link
+            to={`/donate/new?campaign=${campaign._id}`}
+            className="block mt-2 text-center text-xs font-medium text-primary-600 hover:text-primary-700 hover:underline"
+          >
+            💳 Donate with QR & verified tracking
+          </Link>
+        )}
       </motion.div>
 
       {showDonation && (

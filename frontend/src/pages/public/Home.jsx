@@ -7,7 +7,6 @@ import { publicAPI, newsAPI } from '../../services/api';
 import StatusBadge from '../../components/common/StatusBadge';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import AlertBanner from '../../components/common/AlertBanner';
-import ComplaintIssueModal from '../../components/common/ComplaintIssueModal';
 
 const REGIONS = ['Addis Ababa','Oromia','Amhara','Tigray','Somali','Afar','Sidama','Central Ethiopia','South Ethiopia','Southwest Ethiopia','Gambella','Benishangul-Gumuz','Harari','Dire Dawa'];
 
@@ -16,7 +15,6 @@ export default function Home() {
   const [stats, setStats]           = useState(null);
   const [latestNews, setLatestNews] = useState([]);
   const [loading, setLoading]       = useState(true);
-  const [complaintOpen, setComplaintOpen] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -75,12 +73,12 @@ export default function Home() {
             {t('hero.description')}
           </p>
           <div className="flex flex-wrap justify-center gap-4">
-            <button
-              onClick={() => setComplaintOpen(true)}
+            <Link
+              to="/report"
               className="bg-primary-600 hover:bg-primary-700 text-white font-semibold py-3 px-8 rounded-xl transition-colors shadow-lg"
             >
-              Complaint Issues
-            </button>
+              Create Report
+            </Link>
             <Link to="/about" className="bg-white/10 backdrop-blur-sm border border-white/30 hover:bg-white/20 text-white font-semibold py-3 px-8 rounded-xl transition-colors">
               {t('hero.learnMore')}
             </Link>
@@ -101,9 +99,9 @@ export default function Home() {
           </div>
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[
-              { icon:'🏗️', title:t('home.infraTitle'),    desc:t('home.infraDesc'),    btnText:t('home.infraBtn'),    to:'/dashboard/citizen/create-report', color:'bg-blue-600', light:'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' },
-              { icon:'📋', title:'Public Complaint Management', desc:'Report public service complaints, delayed government projects, poor construction quality, and damage to public property. Reports are reviewed and forwarded to the responsible government office.', btnText:'Submit Complaint', to:'/report/public-complaint', color:'bg-amber-600', light:'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400' },
-              { icon:'📢', title:'Public Alerts & Broadcasts', desc:'Receive real-time weather updates and public service advisories directly from government authorities.', btnText:'View Active Alerts', to:'/infrastructure-reports', color:'bg-red-600', light:'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400', badge: true },
+              { icon:'🏗️', title:'Infrastructure Report', desc:'Report damaged roads, bridges, water supply, electricity, drainage, schools, hospitals, and other public infrastructure.', btnText:'Create Infrastructure Report', to:'/report/infrastructure', color:'bg-blue-600', light:'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' },
+              { icon:'⚖️', title:'Governance Complaint', desc:'Report corruption, service delays, staff misconduct, poor government service, lack of transparency, office-related complaints, and other governance issues.', btnText:'Create Governance Complaint', to:'/report/governance-complaint', color:'bg-emerald-600', light:'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' },
+              { icon:'📢', title:'Public Alerts & Broadcasts', desc:'Receive real-time weather updates and public service advisories directly from government authorities.', btnText:'View Active Alerts', to:'/alerts', color:'bg-red-600', light:'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400', badge: true },
             ].map((c, i) => (
               <div key={i} className="card hover:shadow-lg transition-shadow group">
                 <div className={`w-14 h-14 rounded-xl ${c.light} flex items-center justify-center text-2xl mb-4`}>{c.icon}</div>
@@ -314,8 +312,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Complaint Issue Modal */}
-      <ComplaintIssueModal open={complaintOpen} onClose={() => setComplaintOpen(false)} />
     </div>
   );
 }

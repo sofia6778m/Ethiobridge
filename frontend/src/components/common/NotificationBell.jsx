@@ -61,6 +61,7 @@ export default function NotificationBell() {
     message: '💬',
     system: '⚙️',
     emergency_alert: '🚨',
+    public_alert: '📢',
   };
 
   return (

@@ -2,12 +2,16 @@ const mongoose = require('mongoose');
 
 const woredaSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
+  // Short administrative code for the woreda (e.g. "W01"). Optional.
+  code: { type: String, trim: true, default: '' },
   // subcity stores the name as the admin typed it (e.g. "Bole", "Yeka", "Lemmi Kura").
   // The hard enum has been removed so newly created subcities work automatically.
   subcity: { type: String, required: true, trim: true },
-  subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity', default: null },
   description: { type: String, default: '' },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
+  // The WOREDA_ADMIN account responsible for this woreda.
+  adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   departments: {
     type: [String],
     default: ['Electricity', 'Road', 'Water', 'Health', 'Education', 'Revenue'],

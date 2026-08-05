@@ -6,7 +6,6 @@ import DashboardLayout from '../../../components/layout/DashboardLayout';
 import CitizenOverview from './CitizenOverview';
 import ReportSelection from './ReportSelection';
 import CreateReport from './CreateReport';
-import CitizenComplaint from './CitizenComplaint';
 import MyReports from './MyReports';
 import CitizenMessages from './CitizenMessages';
 import CitizenProfile from './CitizenProfile';
@@ -16,6 +15,9 @@ import SavedCampaigns from './SavedCampaigns';
 import CitizenMunicipalComplaints from './CitizenMunicipalComplaints';
 import CitizenMunicipalComplaintDetail from './CitizenMunicipalComplaintDetail';
 import MunicipalComplaintForm from './MunicipalComplaintForm';
+import MyComplaints from './MyComplaints';
+import CitizenGovernanceComplaintDetail from './CitizenGovernanceComplaintDetail';
+import CitizenAlerts from './CitizenAlerts';
 
 export default function CitizenDashboard() {
   const { t } = useTranslation();
@@ -24,9 +26,11 @@ export default function CitizenDashboard() {
     { path: '/dashboard/citizen',                 icon: '📊', label: t('dashboard.overview') },
     { path: '/dashboard/citizen/create-report',   icon: '📝', label: t('dashboard.createReport') },
     { path: '/dashboard/citizen/my-reports',      icon: '📋', label: t('dashboard.myReports') },
+    { path: '/dashboard/citizen/my-complaints',   icon: '🗂️', label: 'My Complaints' },
     { path: '/dashboard/citizen/municipal-complaints', icon: '🏛️', label: 'Municipal Complaints' },
     { path: '/dashboard/citizen/my-donations',    icon: '❤️', label: 'My Donations' },
     { path: '/dashboard/citizen/saved-campaigns', icon: '🔖', label: 'Saved Campaigns' },
+    { path: '/dashboard/citizen/alerts',          icon: '📢', label: 'Public Alerts' },
     { path: '/dashboard/citizen/messages',        icon: '💬', label: t('dashboard.messages') },
     { path: '/dashboard/citizen/profile',         icon: '👤', label: t('dashboard.profile') },
   ];
@@ -37,14 +41,17 @@ export default function CitizenDashboard() {
         <Route index element={<CitizenOverview />} />
         <Route path="create-report" element={<ReportSelection />} />
         <Route path="create-report/infrastructure" element={<CreateReport />} />
-        <Route path="create-report/complaint" element={<CitizenComplaint />} />
-        <Route path="create-complaint" element={<Navigate to="/dashboard/citizen/create-report/complaint" replace />} />
         <Route path="my-reports" element={<MyReports />} />
+        <Route path="my-complaints" element={<MyComplaints />} />
         <Route path="municipal-complaints" element={<CitizenMunicipalComplaints />} />
         <Route path="municipal-complaints/new" element={<MunicipalComplaintForm />} />
         <Route path="municipal-complaints/:id" element={<CitizenMunicipalComplaintDetail />} />
+        <Route path="governance-complaints" element={<Navigate to="/dashboard/citizen/my-complaints" replace />} />
+        <Route path="governance-complaints/new" element={<Navigate to="/report/governance-complaint" replace />} />
+        <Route path="governance-complaints/:id" element={<CitizenGovernanceComplaintDetail />} />
         <Route path="my-donations" element={<MyDonations />} />
         <Route path="saved-campaigns" element={<SavedCampaigns />} />
+        <Route path="alerts" element={<CitizenAlerts />} />
         <Route path="messages" element={<CitizenMessages />} />
         <Route path="profile" element={<CitizenProfile />} />
         <Route path="*" element={<Navigate to="/dashboard/citizen" replace />} />

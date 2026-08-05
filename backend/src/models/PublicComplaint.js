@@ -1,8 +1,18 @@
 const mongoose = require('mongoose');
+const Counter = require('./Counter');
 
 const publicComplaintSchema = new mongoose.Schema(
   {
     trackingNumber: { type: String, unique: true },
+    // Discriminates public complaints from other report types. Always
+    // 'public_complaint' on this collection — used by dashboards/analytics to
+    // query only public complaints.
+    report_type: {
+      type: String,
+      enum: ['public_complaint'],
+      default: 'public_complaint',
+      index: true,
+    },
     title: { type: String, required: true, trim: true },
     category: {
       type: String,
@@ -19,6 +29,11 @@ const publicComplaintSchema = new mongoose.Schema(
     region: { type: String, required: true },
     city: { type: String, default: '' },
     subcity: { type: String, default: '' },  // no enum — accepts any subcity name from the Subcity collection
+    // Live ObjectId references used for precise role scoping (e.g. the
+    // department_officer role scopes on all three IDs). Populated at submission
+    // time from the selected woreda/subcity/department master data.
+    subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity', default: null },
+    departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
     woredaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Woreda' },
     woredaName: { type: String, default: '' },
     district: { type: String, default: '' },
@@ -57,12 +72,13 @@ const publicComplaintSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        'Pending', 'Submitted', 'Under Review', 'Assigned', 'Inspector Assigned',
-        'Technician Assigned', 'Technician Requested', 'In Progress',
-        'Awaiting Verification', 'Rework Required', 'Escalated to Subcity',
+        'Pending', 'Submitted', 'Accepted', 'Under Review', 'Assigned', 'Inspector Assigned',
+        'Technician Assigned', 'Technician Requested', 'In Progress', 'Waiting for Parts',
+        'More Info Requested', 'Awaiting Verification', 'Rework Required',
+        'Escalated to Subcity', 'Forwarded to Subcity', 'Resolved by Subcity',
         'Resolved', 'Rejected', 'Closed', 'Reopened',
       ],
-      default: 'Pending',
+      default: 'Submitted',
     },
     // Technician work-order lifecycle. Independent of the complaint status:
     //   ASSIGNED → ACCEPTED → ON_THE_WAY → WORK_STARTED → WORK_PAUSED → WORK_COMPLETED
@@ -135,6 +151,40 @@ const publicComplaintSchema = new mongoose.Schema(
       },
       { timestamps: true },
     ],
+    // Citizen-facing notification feed — shown on the public tracking page and
+    // also delivered via SMS / email when contact details were provided.
+    publicNotifications: [
+      {
+        event: { type: String, default: '' },
+        title: { type: String, default: '' },
+        message: { type: String, default: '' },
+        channels: { type: String, default: 'in-app' },
+        at: { type: Date, default: Date.now },
+      },
+    ],
+    // ── Department officer actions (citizen complaint workflow) ─────────────
+    // Officer accepted the complaint.
+    acceptedAt: { type: Date },
+    acceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    acceptedByName: { type: String, default: '' },
+    // Officer rejected the complaint.
+    rejectReason: { type: String, default: '' },
+    rejectedAt: { type: Date },
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    rejectedByName: { type: String, default: '' },
+    // Officer forwarded the complaint to the Subcity office.
+    forwardReason: { type: String, default: '' },
+    estimatedBudget: { type: String, default: '' },
+    requiredEquipment: { type: String, default: '' },
+    forwardPriority: { type: String, default: '' },
+    forwardedAt: { type: Date },
+    forwardedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    forwardedByName: { type: String, default: '' },
+    // Subcity-level resolution (complaint reached the Subcity office).
+    subcityResolvedAt: { type: Date },
+    subcityResolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    subcityResolvedByName: { type: String, default: '' },
+    resolutionDetails: { type: String, default: '' },
     timeline: [
       {
         action: { type: String, required: true },
@@ -153,15 +203,15 @@ const publicComplaintSchema = new mongoose.Schema(
 
 publicComplaintSchema.pre('save', async function (next) {
   if (!this.trackingNumber) {
-    const model = mongoose.model('PublicComplaint');
-    // Sequential numbers that skip any already in use, so deleted or raced
-    // records never produce a duplicate tracking number (a duplicate would
-    // reject the save and lose the complaint).
-    let number = (await model.countDocuments()) + 1;
-    while (await model.exists({ trackingNumber: `ETH-PC-${String(number).padStart(5, '0')}` })) {
-      number += 1;
-    }
-    this.trackingNumber = `ETH-PC-${String(number).padStart(5, '0')}`;
+    const year = new Date().getFullYear();
+    // Atomic per-year sequence (Counter collection) so concurrent submissions
+    // can never collide: CMP-2026-000001, CMP-2026-000002, ...
+    const counter = await Counter.findByIdAndUpdate(
+      { _id: `public_complaint:${year}` },
+      { $inc: { seq: 1 } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    this.trackingNumber = `CMP-${year}-${String(counter.seq).padStart(6, '0')}`;
   }
   next();
 });
@@ -190,7 +240,9 @@ publicComplaintSchema.index({ status: 1 });
 publicComplaintSchema.index({ category: 1 });
 publicComplaintSchema.index({ region: 1 });
 publicComplaintSchema.index({ subcity: 1 });
+publicComplaintSchema.index({ subcityId: 1 });
 publicComplaintSchema.index({ woredaId: 1 });
+publicComplaintSchema.index({ departmentId: 1 });
 publicComplaintSchema.index({ woredaId: 1, department: 1 });
 publicComplaintSchema.index({ department: 1 });
 publicComplaintSchema.index({ priority: 1 });

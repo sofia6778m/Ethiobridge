@@ -91,3 +91,15 @@
 
   /* Chart grid stroke for dark mode */
   .dark { --grid-stroke: #374151; }
+
+/* Panel overlay / slide animations */
+@keyframes eb-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes eb-panel-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.eb-overlay-in { animation: eb-fade-in 0.18s ease-out; }
+.eb-panel-in { animation: eb-panel-in 0.22s ease-out; }

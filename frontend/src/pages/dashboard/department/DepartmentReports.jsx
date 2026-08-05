@@ -13,6 +13,7 @@ import InlineLoader from '../../../components/common/InlineLoader';
 
 const REPORT_STATUS_STYLES = {
   Pending:      'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  Submitted:    'bg-blue-100   text-blue-800   dark:bg-blue-900/30   dark:text-blue-300',
   Assigned:     'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
   'In Progress':'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
   Completed:    'bg-teal-100   text-teal-800   dark:bg-teal-900/30   dark:text-teal-300',
@@ -183,7 +184,7 @@ function ReportsTab() {
                 </div>
 
                 <div className="flex-shrink-0 flex flex-col gap-2 min-w-[110px]">
-                  {r.status === 'Pending' && <>
+                  {['Pending', 'Submitted'].includes(r.status) && <>
                     <button onClick={() => handleAction('accept', r._id)}
                       className="text-xs px-3 py-1.5 rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium">Accept</button>
                     <button onClick={() => handleAction('reject', r._id)}

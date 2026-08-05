@@ -117,7 +117,7 @@ function InfraTab() {
           placeholder={t('common.search')} className="input-field flex-1 min-w-[180px]" />
         <select value={status} onChange={e => { setStatus(e.target.value); setPage(1); }} className="input-field w-auto">
           <option value="">{t('common.allStatuses')}</option>
-          {['Pending','Under Review','In Progress','Active','Resolved','Rejected'].map(s => (
+          {['Submitted','Pending','Under Review','In Progress','Active','Resolved','Rejected'].map(s => (
             <option key={s} value={s}>{s}</option>
           ))}
         </select>

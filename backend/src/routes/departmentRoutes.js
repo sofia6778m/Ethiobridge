@@ -8,7 +8,10 @@ const {
 const { protect, authorize } = require('../middleware/auth');
 const { upload } = require('../config/cloudinary');
 
-router.use(protect, authorize('department'));
+// `department` is the legacy role; `department_officer` is the canonical role
+// for department officers created through the admin UI. Both share the same
+// woredaId + department scoped data.
+router.use(protect, authorize('department', 'department_officer'));
 
 router.get('/stats', getDepartmentStats);
 

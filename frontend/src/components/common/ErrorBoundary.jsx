@@ -29,12 +29,20 @@ export default class ErrorBoundary extends Component {
                 {this.state.error.stack}
               </div>
             )}
-            <button
-              onClick={() => this.setState({ hasError: false, error: null })}
-              className="btn-primary text-sm px-4 py-2"
-            >
-              Try Again
-            </button>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                onClick={() => this.setState({ hasError: false, error: null })}
+                className="btn-primary text-sm px-4 py-2"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={() => { window.location.href = '/login'; }}
+                className="btn-secondary text-sm px-4 py-2"
+              >
+                Go to Login
+              </button>
+            </div>
           </div>
         </div>
       );

@@ -5,6 +5,12 @@ const Woreda = require('../models/Woreda');
 const createNotification = require('../utils/createNotification');
 const { upload } = require('../config/cloudinary');
 
+// Case-insensitive exact-match helper. Department and subcity names on issue
+// types are title-cased while the live master-data lists can be lowercase, so
+// dependent dropdowns must never rely on an exact-case string compare.
+const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ciRegex = (s) => ({ $regex: `^${escapeRegex(s)}$`, $options: 'i' });
+
 const getIo = (req) => req.app?.get('io') || null;
 
 // ── Scope helpers ─────────────────────────────────────────────────────────────
@@ -25,15 +31,27 @@ const SUBCITY_ROLE_MAP = {
  */
 function buildScope(user) {
   if (!user) return {};
+  // Derived subcity-admin roles (subcity_koye, subcity_kolfe, …) plus the
+  // canonical subcity_admin all scope to their own subcity. Complaint records
+  // store the subcity name in UPPERCASE, so normalize the match target too.
+  if (user.role && typeof user.role === 'string' && user.role.startsWith('subcity_')) {
+    const sub = SUBCITY_ROLE_MAP[user.role] || (user.subcity || '').toUpperCase();
+    return sub ? { subcity: sub } : {};
+  }
   switch (user.role) {
     case 'admin': return {};
     case 'subcity_bole':
     case 'subcity_yeka':
     case 'subcity_lemmi_kura':
-      return { subcity: SUBCITY_ROLE_MAP[user.role] };
+    case 'subcity_admin':
+    case 'SUBCITY_ADMIN':
+      return { subcity: SUBCITY_ROLE_MAP[user.role] || (user.subcity || '').toUpperCase() };
     case 'woreda':
+    case 'woreda_admin':
+    case 'WOREDA_ADMIN':
       return { woredaId: user.woredaId };
     case 'department':
+    case 'department_officer':
       return { woredaId: user.woredaId, department: user.department };
     case 'citizen':
       return { reporter: user._id };
@@ -48,8 +66,8 @@ function buildScope(user) {
 const getIssueTypes = async (req, res) => {
   try {
     const filter = { isActive: true };
-    if (req.query.department) filter.department = req.query.department;
-    if (req.query.subcity) filter.subcity = req.query.subcity;
+    if (req.query.department) filter.department = ciRegex(req.query.department);
+    if (req.query.subcity) filter.subcity = ciRegex(req.query.subcity);
     const issues = await IssueType.find(filter).sort({ department: 1, subcity: 1, name: 1 });
     res.json({ success: true, data: { issueTypes: issues } });
   } catch (err) {

@@ -14,6 +14,12 @@ import WorkflowComplaintDetail from '../workflow/WorkflowComplaintDetail';
 import WorkflowDashboard from '../workflow/WorkflowDashboard';
 import MunicipalComplaintList from '../municipal/MunicipalComplaintList';
 import MunicipalComplaintDetail from '../municipal/MunicipalComplaintDetail';
+import GovernanceComplaintList from '../governance/GovernanceComplaintList';
+import GovernanceComplaintDetail from '../governance/GovernanceComplaintDetail';
+import SharedAlerts from './SharedAlerts';
+import CreateAlertForm from '../government/CreateAlertForm';
+import SharedCampaigns from './SharedCampaigns';
+import SharedDonations from './SharedDonations';
 
 const SUB_CITY_LABELS = {
   subcity_bole: 'Bole',
@@ -34,8 +40,11 @@ export default function SharedDashboard() {
   const isTechnician = role === 'technician';
   const isSubcityHead = role === 'SUBCITY_HEAD';
   const isWoredaHead = role === 'WOREDA_HEAD';
+  const isWoredaAdmin = role === 'woreda_admin';
+  const isDepartmentOfficer = role === 'department_officer';
   const isOfficer = role === 'OFFICER';
   const isFieldTech = role === 'TECHNICIAN';
+  const isGovernanceOfficer = role === 'GOVERNANCE_OFFICER' || role === 'OFFICE_SUPERVISOR';
 
   const subcityLabel = SUB_CITY_LABELS[role] || user?.subcity || 'Subcity';
 
@@ -43,11 +52,19 @@ export default function SharedDashboard() {
   const navItems = [
     { path: base, icon: '📊', label: t('dashboard.overview') },
     ...(isSubcity || isWoreda || isSubcityHead || isWoredaHead ? [{ path: `${base}/reports`, icon: '📋', label: 'Reports' }] : []),
-    ...(!isInspector && !isTechnician ? [{ path: `${base}/complaints`, icon: '📝', label: 'Complaints' }] : []),
-    { path: `${base}/municipal-complaints`, icon: '🏛️', label: isInspector || isTechnician || isOfficer || isFieldTech ? 'My Work Orders' : 'Municipal Complaints' },
-    ...(!isInspector && !isTechnician ? [
+    ...(!isInspector && !isTechnician && !isGovernanceOfficer ? [{ path: `${base}/complaints`, icon: '📝', label: 'Complaints' }] : []),
+    ...(!isInspector && !isTechnician && !isWoredaAdmin && !isDepartmentOfficer && !isGovernanceOfficer ? [
+      { path: `${base}/municipal-complaints`, icon: '🏛️', label: isOfficer || isFieldTech ? 'My Work Orders' : 'Municipal Complaints' },
       { path: `${base}/workflow-complaints`, icon: '⚙️', label: 'Workflow Complaints' },
       { path: `${base}/workflow-analytics`, icon: '📈', label: 'Analytics' },
+    ] : []),
+    ...(!isInspector && !isTechnician && !isWoredaAdmin && !isDepartmentOfficer ? [
+      { path: `${base}/governance-complaints`, icon: '⚖️', label: 'Governance Complaints' },
+    ] : []),
+    ...(!isInspector && !isTechnician && !isWoredaAdmin && !isDepartmentOfficer && !isGovernanceOfficer ? [
+      { path: `${base}/campaigns`, icon: '🎯', label: 'Campaigns' },
+      { path: `${base}/donations`, icon: '❤️', label: 'Donations' },
+      { path: `${base}/alerts`, icon: '📢', label: 'Public Alerts' },
     ] : []),
     { path: `${base}/notifications`, icon: '🔔', label: t('dashboard.notifications') },
     ...(!isInspector && !isTechnician ? [{ path: `${base}/messages`, icon: '💬', label: t('dashboard.messages') }] : []),
@@ -67,23 +84,47 @@ export default function SharedDashboard() {
             ? `${subcityLabel} Subcity Dashboard`
             : isWoredaHead
               ? 'Woreda Dashboard'
-              : isOfficer
-                ? 'Officer Dashboard'
-                : isFieldTech
-                  ? 'Field Technician Dashboard'
-                  : 'Dashboard';
+              : isWoredaAdmin
+                ? 'Woreda Dashboard'
+                : isDepartmentOfficer
+                  ? 'Department Dashboard'
+                  : isOfficer
+                  ? 'Officer Dashboard'
+                  : isFieldTech
+                    ? 'Field Technician Dashboard'
+                    : isGovernanceOfficer
+                      ? 'Governance Officer Dashboard'
+                      : 'Dashboard';
 
   return (
     <DashboardLayout navItems={navItems} title={title}>
       <Routes>
         <Route index element={<SharedOverview />} />
         {(isSubcity || isWoreda) && <Route path="reports" element={<SharedReports />} />}
-        <Route path="complaints" element={<SharedComplaints />} />
-        <Route path="municipal-complaints" element={<MunicipalComplaintList basePath={`${base}/municipal-complaints`} />} />
-        <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
-        <Route path="workflow-complaints" element={<WorkflowComplaintList basePath={base} />} />
-        <Route path="workflow-complaints/:id" element={<WorkflowComplaintDetail basePath={`${base}/workflow-complaints`} />} />
-        <Route path="workflow-analytics" element={<WorkflowDashboard />} />
+        {!isGovernanceOfficer && <Route path="complaints" element={<SharedComplaints />} />}
+        {!isGovernanceOfficer && (
+          <>
+            <Route path="municipal-complaints" element={<MunicipalComplaintList basePath={`${base}/municipal-complaints`} />} />
+            <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
+          </>
+        )}
+        <Route path="governance-complaints" element={<GovernanceComplaintList basePath={`${base}/governance-complaints`} />} />
+        <Route path="governance-complaints/:id" element={<GovernanceComplaintDetail basePath={`${base}/governance-complaints`} />} />
+        {!isGovernanceOfficer && (
+          <>
+            <Route path="workflow-complaints" element={<WorkflowComplaintList basePath={base} />} />
+            <Route path="workflow-complaints/:id" element={<WorkflowComplaintDetail basePath={`${base}/workflow-complaints`} />} />
+            <Route path="workflow-analytics" element={<WorkflowDashboard />} />
+          </>
+        )}
+        {(isSubcity || isWoreda || isSubcityHead || isWoredaHead) && (
+          <>
+            <Route path="campaigns" element={<SharedCampaigns />} />
+            <Route path="donations" element={<SharedDonations />} />
+            <Route path="alerts" element={<SharedAlerts />} />
+            <Route path="alerts/create" element={<CreateAlertForm />} />
+          </>
+        )}
         <Route path="notifications" element={<SharedNotifications />} />
         <Route path="messages" element={<CitizenMessages />} />
         <Route path="profile" element={<CitizenProfile />} />

@@ -16,17 +16,32 @@ const STATUS_STYLES = {
   'Inspector Assigned': 'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300',
   'Technician Assigned': 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300',
   'Technician Requested': 'bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300',
+  'Accepted': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   'In Progress': 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
   'Awaiting Verification': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  'More Info Requested': 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+  'Waiting for Parts': 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
   'Rework Required': 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300',
   'Escalated to Subcity': 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
+  'Forwarded to Subcity': 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
   'Resolved': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+  'Resolved by Subcity': 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
   'Rejected': 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
   'Closed': 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
   'Reopened': 'bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-900/30 dark:text-fuchsia-300',
 };
 
-const STATUS_OPTIONS = ['Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned', 'Technician Assigned', 'Technician Requested', 'In Progress', 'Awaiting Verification', 'Rework Required', 'Escalated to Subcity', 'Resolved', 'Rejected', 'Closed', 'Reopened'];
+const STATUS_OPTIONS = ['Submitted', 'Pending', 'Under Review', 'Assigned', 'Inspector Assigned', 'Technician Assigned', 'Technician Requested', 'Accepted', 'In Progress', 'Awaiting Verification', 'More Info Requested', 'Waiting for Parts', 'Rework Required', 'Escalated to Subcity', 'Forwarded to Subcity', 'Resolved', 'Resolved by Subcity', 'Rejected', 'Closed', 'Reopened'];
+
+// Roles allowed to drive the operational citizen-complaint workflow
+// (mirrors COMPLAINT_OFFICER_ROLES in backend/src/utils/scopeFilter.js).
+const DRIVE_WORKFLOW_ROLES = ['admin', 'government', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'ADMIN', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'department_officer'];
+
+const SUBCITY_RESOLVE_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD'];
+
+const TERMINAL_STATUSES = ['Resolved', 'Rejected', 'Closed', 'Resolved by Subcity'];
+
+const OVERDUE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Technician work-order actions available per current work state.
 const TECH_ACTIONS = {
@@ -48,12 +63,15 @@ export default function SharedComplaints() {
 
   // Only these roles may change complaint status — the backend enforces the
   // same rule and their scope, returning 403 otherwise.
-  const canUpdateStatus = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'ADMIN'].includes(user?.role);
+  const canUpdateStatus = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'woreda_admin', 'department_officer', 'department', 'SUBCITY_HEAD', 'WOREDA_HEAD', 'DEPARTMENT_ADMIN', 'ADMIN'].includes(user?.role);
   const isOfficer = user?.role === 'OFFICER';
   const isTechnician = user?.role === 'TECHNICIAN';
+  const canDriveWorkflow = DRIVE_WORKFLOW_ROLES.includes(user?.role);
+  const canResolveSubcity = SUBCITY_RESOLVE_ROLES.includes(user?.role);
 
   const isAssignedOfficer = (c) => isOfficer && c.assignedOfficerId && String(c.assignedOfficerId) === user?._id;
   const isAssignedTechnician = (c) => isTechnician && c.assignedTechnicianId && String(c.assignedTechnicianId) === user?._id;
+  const isOverdue = (c) => !TERMINAL_STATUSES.includes(c.status) && (Date.now() - new Date(c.createdAt).getTime()) > OVERDUE_MS;
 
   const params = useMemo(() => {
     const p = { page, limit: 20 };
@@ -140,6 +158,45 @@ export default function SharedComplaints() {
     }
   };
 
+  const runWorkflowAction = async (id, apiCall, successMessage, fallbackMessage) => {
+    try {
+      await apiCall(id);
+      toast.success(successMessage);
+      reload();
+    } catch (err) {
+      toast.error(err.response?.data?.message || fallbackMessage);
+    }
+  };
+
+  const handleAcceptComplaint = (id) => runWorkflowAction(id, complaintAPI.acceptComplaint, 'Complaint accepted', 'Failed to accept complaint');
+
+  const handleRejectComplaint = (id) => {
+    const reason = window.prompt('Rejection reason (shown to the citizen):');
+    if (!reason) return;
+    runWorkflowAction(id, (i) => complaintAPI.rejectComplaint(i, { reason }), 'Complaint rejected', 'Failed to reject complaint');
+  };
+
+  const handleRequestInfo = (id) => {
+    const request = window.prompt('What information is needed from the citizen?');
+    if (!request) return;
+    runWorkflowAction(id, (i) => complaintAPI.requestMoreInfo(i, { request }), 'More information requested from the citizen', 'Failed to request information');
+  };
+
+  const handleWaitingParts = (id) => {
+    const note = window.prompt('Parts note (optional):') || '';
+    runWorkflowAction(id, (i) => complaintAPI.markWaitingParts(i, { note }), 'Complaint marked as waiting for parts', 'Failed to mark waiting for parts');
+  };
+
+  const handleForwardSubcity = (id) => {
+    const note = window.prompt('Note for the Subcity (optional):') || '';
+    runWorkflowAction(id, (i) => complaintAPI.forwardToSubcity(i, { note }), 'Complaint forwarded to Subcity', 'Failed to forward complaint');
+  };
+
+  const handleResolveSubcity = (id) => {
+    const note = window.prompt('Resolution note (optional):') || '';
+    runWorkflowAction(id, (i) => complaintAPI.resolveBySubcity(i, { note }), 'Complaint resolved at Subcity level', 'Failed to resolve complaint');
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -168,7 +225,7 @@ export default function SharedComplaints() {
       ) : (
         <div className="space-y-3">
           {complaints.map(c => (
-            <div key={c._id} className="card p-4">
+            <div key={c._id} className={`card p-4 ${isOverdue(c) ? 'border-l-4 border-l-red-500' : ''}`}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -176,6 +233,7 @@ export default function SharedComplaints() {
                     <span className="text-xs text-gray-400">{c.trackingNumber}</span>
                     {c.department && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{c.department}</span>}
                     {c.priority && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${c.priority === 'Urgent' || c.priority === 'High' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'}`}>{c.priority}</span>}
+                    {isOverdue(c) && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 font-semibold">Overdue</span>}
                   </div>
                   <h3 className="font-semibold text-gray-900 dark:text-gray-100 truncate">{c.title}</h3>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{c.description}</p>
@@ -229,6 +287,40 @@ export default function SharedComplaints() {
                 {canUpdateStatus && c.status === 'Resolved' && (
                   <button onClick={() => handleClose(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-white hover:bg-gray-900 dark:bg-gray-200 dark:text-gray-800 dark:hover:bg-white font-medium">
                     Close Complaint
+                  </button>
+                )}
+                {/* Citizen complaint workflow — department officer / subcity actions */}
+                {canDriveWorkflow && !TERMINAL_STATUSES.includes(c.status) && ['Submitted', 'Pending'].includes(c.status) && (
+                  <>
+                    <button onClick={() => handleAcceptComplaint(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium">
+                      Accept
+                    </button>
+                    <button onClick={() => handleRejectComplaint(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 font-medium">
+                      Reject
+                    </button>
+                  </>
+                )}
+                {canDriveWorkflow && ['More Info Requested', 'Waiting for Parts'].includes(c.status) && (
+                  <button onClick={() => handleAcceptComplaint(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium">
+                    Resume Work
+                  </button>
+                )}
+                {canDriveWorkflow && ['Accepted', 'In Progress', 'Technician Assigned', 'Inspector Assigned', 'Technician Requested'].includes(c.status) && (
+                  <>
+                    <button onClick={() => handleRequestInfo(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white hover:bg-amber-700 font-medium">
+                      Request More Info
+                    </button>
+                    <button onClick={() => handleWaitingParts(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:bg-orange-700 font-medium">
+                      Waiting for Parts
+                    </button>
+                    <button onClick={() => handleForwardSubcity(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-medium">
+                      Forward to Subcity
+                    </button>
+                  </>
+                )}
+                {canResolveSubcity && c.status === 'Forwarded to Subcity' && (
+                  <button onClick={() => handleResolveSubcity(c._id)} className="text-xs px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium">
+                    Resolve at Subcity
                   </button>
                 )}
               </div>

@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { infraAPI, complaintAPI, publicAPI } from '../../../services/api';
+import { infraAPI, publicAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 import { toast } from 'react-toastify';
+
+const IssueLocationPicker = lazy(() => import('../../../components/map/IssueLocationPicker'));
 
 // Fallback subcity options used only when the live /public/subcities call fails.
 const FALLBACK_SUBCITIES = [
@@ -30,12 +32,10 @@ const DEPT_CATEGORY_MAP = {
   Water:       'water_supply_issue',
 };
 
-export default function CitizenReportForm({ type }) {
+export default function CitizenReportForm() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
-
-  const isComplaint = type === 'complaint';
 
   const [form, setForm] = useState({
     fullName: user?.fullName || '',
@@ -57,8 +57,12 @@ export default function CitizenReportForm({ type }) {
   const [routingLoading, setRoutingLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState({});
-  const [trackingNumber, setTrackingNumber] = useState('');
+  const [location, setLocation] = useState({
+    latitude: null, longitude: null, accuracy: null, timestamp: null,
+    address: '', street: '', landmark: '', subcity: '', detectedWoreda: '', woredaIndex: null,
+  });
   const videoRef = useRef(null);
+  const pendingWoredaIndex = useRef(null);
 
   // Load subcities and departments once on mount (static lists are fallbacks).
   useEffect(() => {
@@ -74,6 +78,18 @@ export default function CitizenReportForm({ type }) {
       .catch(() => setDepartments([]));
   }, []);
 
+  // Once the woreda list for the detected subcity is ready, auto-select the
+  // woreda grid cell the map picked.
+  useEffect(() => {
+    if (pendingWoredaIndex.current != null && !form.woredaId) {
+      const w = woredas[pendingWoredaIndex.current];
+      if (w) {
+        pendingWoredaIndex.current = null;
+        setForm(p => ({ ...p, woredaId: w._id, woredaName: w.name, department: '' }));
+      }
+    }
+  }, [woredas, form.woredaId]);
+
   const set = (key, val) => {
     setForm(p => ({ ...p, [key]: val }));
     if (errors[key]) setErrors(p => { const n = { ...p }; delete n[key]; return n; });
@@ -81,6 +97,7 @@ export default function CitizenReportForm({ type }) {
 
   const handleSubcityChange = async (subcityValue) => {
     setForm(p => ({ ...p, subcity: subcityValue, woredaId: '', woredaName: '', department: '' }));
+    pendingWoredaIndex.current = null;
     setWoredas([]);
     if (!subcityValue) return;
     setRoutingLoading(true);
@@ -103,6 +120,20 @@ export default function CitizenReportForm({ type }) {
   const departmentOptions = (selectedWoreda?.departments?.length)
     ? selectedWoreda.departments
     : departments;
+
+  const handleLocationChange = (loc) => {
+    setLocation(loc);
+    if (loc.subcity && !form.subcity) {
+      const opt = subcities.find(s => s.label.toLowerCase() === loc.subcity.toLowerCase());
+      if (opt) handleSubcityChange(opt.value);
+    }
+    if (loc.woredaIndex != null && loc.subcity) {
+      const matchesSelected = form.subcity
+        ? canonicalSubcity(loc.subcity) === canonicalSubcity(form.subcity)
+        : true;
+      if (matchesSelected && !form.woredaId) pendingWoredaIndex.current = loc.woredaIndex;
+    }
+  };
 
   const handleVideoChange = (e) => {
     const files = Array.from(e.target.files).slice(0, 3 - videos.length);
@@ -149,56 +180,30 @@ export default function CitizenReportForm({ type }) {
       fd.append('reporterPhone', cleanPhone);
       fd.append('password', form.password);
 
-      if (isComplaint) {
-        fd.append('priority', form.issueLevel);
-        fd.append('anonymous', 'false');
-        fd.append('requirePassword', 'true');
-        videos.forEach(v => fd.append('attachments', v));
-        const res = await complaintAPI.create(fd);
-        setTrackingNumber(res.data?.data?.trackingNumber || '');
-      } else {
-        const category = DEPT_CATEGORY_MAP[form.department];
-        if (category) fd.append('category', category);
-        fd.append('severityLevel', form.issueLevel);
-        videos.forEach(v => fd.append('media', v));
-        await infraAPI.create(fd);
-        toast.success(t('report.submitted') || 'Report submitted successfully');
-        navigate('/dashboard/citizen/my-reports');
-        return;
+      const category = DEPT_CATEGORY_MAP[form.department];
+      if (category) fd.append('category', category);
+      fd.append('severityLevel', form.issueLevel);
+
+      // GIS location (latitude/longitude/address are stored; accuracy + timestamp
+      // are captured for reference).
+      if (Number.isFinite(Number(location.latitude)) && Number.isFinite(Number(location.longitude))) {
+        fd.append('latitude', location.latitude);
+        fd.append('longitude', location.longitude);
+        fd.append('locationAccuracy', location.accuracy || '');
+        fd.append('gpsTimestamp', location.timestamp ? new Date(location.timestamp).toISOString() : '');
+        if (location.address) fd.append('address', location.address);
       }
 
-      toast.success('Complaint submitted successfully!');
+      videos.forEach(v => fd.append('media', v));
+      await infraAPI.create(fd);
+      toast.success(t('report.submitted') || 'Report submitted successfully');
+      navigate('/dashboard/citizen/my-reports');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Submission failed. Please try again.');
     } finally {
       setSubmitting(false);
     }
   };
-
-  if (trackingNumber) {
-    return (
-      <div className="max-w-2xl mx-auto">
-        <div className="card text-center animate-fade-in p-8">
-          <div className="w-20 h-20 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center mx-auto mb-6">
-            <svg className="w-10 h-10 text-green-600 dark:text-green-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Complaint Submitted Successfully</h2>
-          <p className="text-gray-500 dark:text-gray-400 text-sm mb-6">
-            Your tracking number — keep it to follow up on your complaint.
-          </p>
-          <p className="text-lg font-bold text-primary-600 dark:text-primary-400 tracking-wider mb-8">{trackingNumber}</p>
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <button type="button" onClick={() => { setTrackingNumber(''); setVideos([]); }} className="btn-secondary px-5 py-2.5 text-sm">
-              Submit Another
-            </button>
-            <Link to="/dashboard/citizen" className="btn-primary px-5 py-2.5 text-sm">Back to Dashboard</Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -208,8 +213,7 @@ export default function CitizenReportForm({ type }) {
           ← Back to report types
         </Link>
         <h2 className="text-xl font-bold text-gray-900 dark:text-gray-50 flex items-center gap-2">
-          {isComplaint ? '📋' : '🏗️'}
-          {isComplaint ? 'Submit Public Complaint' : 'Submit Infrastructure Report'}
+          🏗️ Submit Infrastructure Report
         </h2>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Fields marked with * are required</p>
       </div>
@@ -277,6 +281,19 @@ export default function CitizenReportForm({ type }) {
           </FieldWrap>
         </div>
 
+        {/* GIS Issue Location */}
+        <section className="border-t border-gray-200 dark:border-gray-700 pt-5">
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2 mb-1">
+            📍 Issue Location
+          </h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+            Use your current GPS location or click the map to mark where the issue is. Subcity and woreda are detected automatically.
+          </p>
+          <Suspense fallback={<MapFallback />}>
+            <IssueLocationPicker value={location} onChange={handleLocationChange} />
+          </Suspense>
+        </section>
+
         {/* Issue level */}
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Issue Level *</label>
@@ -336,6 +353,14 @@ export default function CitizenReportForm({ type }) {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function MapFallback() {
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 h-64 flex items-center justify-center text-sm text-gray-400">
+      Loading map…
     </div>
   );
 }

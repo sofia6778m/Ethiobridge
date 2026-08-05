@@ -35,6 +35,7 @@ if (!process.env.MONGOMS_SYSTEM_BINARY) {
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const PublicComplaint = require('../src/models/PublicComplaint');
 const User = require('../src/models/User');
+const AuditLog = require('../src/models/AuditLog');
 const {
   getPublicComplaints,
   getComplaintById,
@@ -48,6 +49,15 @@ const {
   addInternalNote,
   getAssignableUsers,
   getStats,
+  createComplaint,
+  getByTrackingNumber,
+  acceptComplaint,
+  rejectComplaint,
+  requestMoreInfo,
+  markWaitingParts,
+  forwardToSubcity,
+  resolveBySubcity,
+  getAuditLog,
 } = require('../src/controllers/publicComplaintController');
 
 let mongod;
@@ -62,7 +72,13 @@ const mockRes = () => {
 const call = (fn) => async (id, body = {}, extra = {}) => {
   const res = mockRes();
   const user = extra.user || { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' };
-  await fn({ params: { id }, body, user, query: extra.query || {}, app: { get: () => null } }, res);
+  await fn({ params: { id }, body, user, query: extra.query || {}, ip: '127.0.0.1', connection: { remoteAddress: '127.0.0.1' }, get: () => 'node-test', app: { get: () => null } }, res);
+  return { status: res._status, json: res._json };
+};
+
+const callTrack = (fn) => async (trackingNumber, query = {}) => {
+  const res = mockRes();
+  await fn({ params: { trackingNumber }, body: {}, query, user: null, ip: '127.0.0.1', connection: { remoteAddress: '127.0.0.1' }, get: () => 'node-test', app: { get: () => null } }, res);
   return { status: res._status, json: res._json };
 };
 
@@ -101,6 +117,7 @@ before(async () => {
   await mongoose.connect(mongod.getUri(), { serverSelectionTimeoutMS: 4000 });
   await PublicComplaint.init();
   await User.init();
+  await AuditLog.init();
 });
 
 after(async () => {
@@ -111,6 +128,7 @@ after(async () => {
 beforeEach(async () => {
   await PublicComplaint.deleteMany({});
   await User.deleteMany({});
+  await AuditLog.deleteMany({});
 });
 
 // ── List: search + filters ────────────────────────────────────────────────────
@@ -545,5 +563,213 @@ describe('complaint detail', () => {
     assert.equal(status, 200);
     assert.equal(json.data.complaint.trackingNumber, c.trackingNumber);
     assert.ok(Array.isArray(json.data.complaint.timeline));
+  });
+});
+
+// ── Tracking number format ────────────────────────────────────────────────────
+describe('tracking number generation', () => {
+  it('generates CMP-YYYY-000001 sequential tracking numbers', async () => {
+    const a = await PublicComplaint.create({ title: 'A', description: 'desc', category: 'Other', region: 'Addis Ababa', priority: 'Medium' });
+    const b = await PublicComplaint.create({ title: 'B', description: 'desc', category: 'Other', region: 'Addis Ababa', priority: 'Medium' });
+    assert.match(a.trackingNumber, /^CMP-\d{4}-\d{6}$/);
+    assert.match(b.trackingNumber, /^CMP-\d{4}-\d{6}$/);
+    assert.notEqual(a.trackingNumber, b.trackingNumber);
+  });
+
+  it('createComplaint returns a CMP tracking number', async () => {
+    const { status, json } = await call(createComplaint)(undefined, {
+      title: 'Pothole on Bole road',
+      description: 'A deep pothole near the roundabout.',
+      category: 'Poor Work Quality',
+      region: 'Addis Ababa',
+      priority: 'High',
+      reporterName: 'Dagi',
+      reporterPhone: '0967786170',
+      reporterEmail: 'dagi@example.com',
+    });
+    assert.equal(status, 201);
+    assert.match(json.data.trackingNumber, /^CMP-\d{4}-\d{6}$/);
+  });
+});
+
+// ── Public tracking with phone verification ───────────────────────────────────
+describe('public tracking (phone verified)', () => {
+  it('requires a phone number', async () => {
+    const c = await mkComplaint();
+    const { status } = await callTrack(getByTrackingNumber)(c.trackingNumber, {});
+    assert.equal(status, 400);
+    assert.equal(c.reporterPhone, '0967786170');
+  });
+
+  it('rejects a mismatching phone number', async () => {
+    const c = await mkComplaint();
+    const { status } = await callTrack(getByTrackingNumber)(c.trackingNumber, { phone: '0911222333' });
+    assert.equal(status, 403);
+  });
+
+  it('returns full details when the phone matches', async () => {
+    const c = await mkComplaint();
+    const { status, json } = await callTrack(getByTrackingNumber)(c.trackingNumber, { phone: '0967786170' });
+    assert.equal(status, 200);
+    assert.equal(json.data.complaint.trackingNumber, c.trackingNumber);
+    assert.equal(json.data.complaint.title, 'Broken streetlight on Bole road');
+  });
+
+  it('matches phone numbers despite formatting differences', async () => {
+    const c = await mkComplaint({ reporterPhone: '+251 96 778 6170' });
+    const { status } = await callTrack(getByTrackingNumber)(c.trackingNumber, { phone: '0967786170' });
+    assert.equal(status, 200);
+  });
+});
+
+// ── Department officer actions ────────────────────────────────────────────────
+describe('department officer workflow', () => {
+  const asDeptOfficer = (woredaId, departmentId) => ({
+    user: {
+      _id: new mongoose.Types.ObjectId(),
+      role: 'department_officer',
+      fullName: 'Officer Dept',
+      subcityId: new mongoose.Types.ObjectId(),
+      woredaId,
+      departmentId,
+    },
+  });
+
+  it('accepts a Submitted complaint and notifies the citizen', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ woredaId });
+    const asOfficer = asDeptOfficer(woredaId, new mongoose.Types.ObjectId());
+    // department_officer scope requires subcityId/woredaId/departmentId match —
+    // set them so the scoped query finds the complaint.
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { subcityId: asOfficer.user.subcityId, departmentId: asOfficer.user.departmentId } });
+
+    const { status } = await call(acceptComplaint)(c._id, {}, asOfficer);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Accepted');
+    assert.ok(fresh.acceptedAt);
+    assert.equal(fresh.acceptedByName, 'Officer Dept');
+    assert.ok(fresh.timeline.some((t) => t.action === 'accepted'));
+    assert.equal(fresh.publicNotifications.length, 1);
+    assert.match(fresh.publicNotifications[0].message, /accepted/);
+  });
+
+  it('rejects a complaint with a required reason', async () => {
+    const c = await mkComplaint();
+    const { status: s1 } = await call(rejectComplaint)(c._id, {}, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(s1, 400);
+
+    const { status } = await call(rejectComplaint)(c._id, { reason: 'Duplicate of an existing report.' }, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Rejected');
+    assert.equal(fresh.rejectReason, 'Duplicate of an existing report.');
+    assert.ok(fresh.rejectedAt);
+  });
+
+  it('requests more information', async () => {
+    const c = await mkComplaint();
+    const { status: s1 } = await call(requestMoreInfo)(c._id, {}, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(s1, 400);
+
+    const { status } = await call(requestMoreInfo)(c._id, { message: 'Please send a photo of the meter.' }, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'More Info Requested');
+    assert.ok(fresh.publicNotifications.length >= 1);
+  });
+
+  it('resumes work on a complaint that was waiting for info', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const c = await mkComplaint({ woredaId });
+    const asOfficer = asDeptOfficer(woredaId, new mongoose.Types.ObjectId());
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { subcityId: asOfficer.user.subcityId, departmentId: asOfficer.user.departmentId } });
+
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { status: 'More Info Requested' } });
+    const { status } = await call(acceptComplaint)(c._id, {}, asOfficer);
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Accepted');
+    assert.ok(fresh.timeline.some((t) => t.action === 'accepted' && /resumed/.test(t.description)));
+  });
+
+  it('marks a complaint as waiting for parts', async () => {
+    const c = await mkComplaint({ status: 'In Progress' });
+    const { status } = await call(markWaitingParts)(c._id, { note: 'Awaiting transformer delivery.' }, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Waiting for Parts');
+  });
+
+  it('forwards to subcity with reason, budget, equipment and priority', async () => {
+    const c = await mkComplaint();
+    const { status: s1 } = await call(forwardToSubcity)(c._id, {}, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(s1, 400);
+
+    const { status } = await call(forwardToSubcity)(c._id, {
+      reason: 'Requires subcity budget approval.',
+      estimatedBudget: '750,000 ETB',
+      requiredEquipment: 'Crane and excavator',
+      forwardPriority: 'Urgent',
+    }, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Forwarded to Subcity');
+    assert.equal(fresh.assignedLevel, 'SUBCITY');
+    assert.equal(fresh.forwardReason, 'Requires subcity budget approval.');
+    assert.equal(fresh.estimatedBudget, '750,000 ETB');
+    assert.equal(fresh.requiredEquipment, 'Crane and excavator');
+    assert.equal(fresh.forwardPriority, 'Urgent');
+    assert.equal(fresh.escalatedToSubcity, true);
+    assert.ok(fresh.timeline.some((t) => t.action === 'forwarded_to_subcity'));
+  });
+
+  it('resolves a complaint at the subcity level', async () => {
+    const c = await mkComplaint({ status: 'Forwarded to Subcity', assignedLevel: 'SUBCITY' });
+    const { status: s1 } = await call(resolveBySubcity)(c._id, {}, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(s1, 400);
+
+    const { status } = await call(resolveBySubcity)(c._id, { details: 'Road repaired and reopened to traffic.' }, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const fresh = await PublicComplaint.findById(c._id).lean();
+    assert.equal(fresh.status, 'Resolved by Subcity');
+    assert.equal(fresh.resolutionDetails, 'Road repaired and reopened to traffic.');
+    assert.ok(fresh.subcityResolvedAt);
+  });
+});
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+describe('complaint audit log', () => {
+  it('records workflow actions and lists them', async () => {
+    const woredaId = new mongoose.Types.ObjectId();
+    const departmentId = new mongoose.Types.ObjectId();
+    const subcityId = new mongoose.Types.ObjectId();
+
+    const created = await call(createComplaint)(undefined, {
+      title: 'Audited complaint',
+      description: 'desc',
+      category: 'Other',
+      region: 'Addis Ababa',
+      subcity: 'BOLE',
+      priority: 'Medium',
+    });
+    assert.equal(created.status, 201);
+    const c = created.json.data.complaint;
+
+    // Scope the complaint to the officer so the workflow actions are allowed.
+    await PublicComplaint.updateOne({ _id: c._id }, { $set: { subcityId, woredaId, departmentId } });
+    const asOfficer = {
+      user: { _id: new mongoose.Types.ObjectId(), role: 'department_officer', fullName: 'Officer Audit', subcityId, woredaId, departmentId },
+    };
+
+    assert.equal((await call(acceptComplaint)(c._id, {}, asOfficer)).status, 200);
+    assert.equal((await call(forwardToSubcity)(c._id, { reason: 'Needs subcity review.' }, asOfficer)).status, 200);
+
+    const { status, json } = await call(getAuditLog)(c._id, {}, { user: { _id: new mongoose.Types.ObjectId(), role: 'admin', fullName: 'Admin' } });
+    assert.equal(status, 200);
+    const actions = json.data.entries.map((e) => e.action);
+    assert.ok(actions.includes('complaint_created'));
+    assert.ok(actions.includes('complaint_accepted'));
+    assert.ok(actions.includes('complaint_forwarded'));
   });
 });

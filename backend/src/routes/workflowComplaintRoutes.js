@@ -30,26 +30,26 @@ router.post('/', upload.array('attachments', 5), protectOptional, createWorkflow
 // ── Authenticated — complaint listing & detail ────────────────────────────────
 
 const VIEWER_ROLES = [
-  'admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
-  'woreda', 'department', 'citizen',
+  'admin', 'subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
+  'woreda', 'woreda_admin', 'department', 'department_officer', 'citizen',
 ];
 
 router.get('/stats', protect, authorize(...VIEWER_ROLES), getWorkflowStats);
-router.get('/analytics', protect, authorize('admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'department'), getWorkflowAnalytics);
+router.get('/analytics', protect, authorize('admin', 'subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'woreda_admin', 'department', 'department_officer'), getWorkflowAnalytics);
 router.get('/', protect, authorize(...VIEWER_ROLES), getWorkflowComplaints);
 router.get('/:id', protect, authorize(...VIEWER_ROLES), getWorkflowComplaintById);
 
 // ── Woreda actions ────────────────────────────────────────────────────────────
 
-router.patch('/:id/woreda-resolve', protect, authorize('admin', 'woreda'), woredaResolve);
-router.patch('/:id/woreda-escalate', protect, authorize('admin', 'woreda'), woredaEscalate);
+router.patch('/:id/woreda-resolve', protect, authorize('admin', 'woreda', 'woreda_admin'), woredaResolve);
+router.patch('/:id/woreda-escalate', protect, authorize('admin', 'woreda', 'woreda_admin'), woredaEscalate);
 
 // ── Subcity / Department actions ──────────────────────────────────────────────
 
 router.patch(
   '/:id/subcity-resolve',
   protect,
-  authorize('admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'department'),
+  authorize('admin', 'subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'department', 'department_officer'),
   subcityResolve
 );
 

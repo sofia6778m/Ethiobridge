@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { authAPI } from '../services/api';
+import { normalizeRole } from '../utils/roleRoutes';
 
 const AuthContext = createContext(null);
 
@@ -14,6 +15,7 @@ const safeParseStoredUser = () => {
       localStorage.removeItem('zda_user');
       return null;
     }
+    parsed.role = normalizeRole(parsed.role);
     return parsed;
   } catch (err) {
     console.error('[AUTH] Failed to parse stored user, clearing it:', err.message);
@@ -90,14 +92,13 @@ export const AuthProvider = ({ children }) => {
         );
 
 
-        setUser(res.data.user);
-
+        const getMeUser = { ...res.data.user, role: normalizeRole(res.data.user?.role) };
+        setUser(getMeUser);
 
         localStorage.setItem(
           'zda_user',
-          JSON.stringify(res.data.user)
+          JSON.stringify(getMeUser)
         );
-
 
       } catch(error) {
 
@@ -172,7 +173,7 @@ export const AuthProvider = ({ children }) => {
 
 
       const res = await authAPI.login({
-        email,
+        email: String(email || '').trim().toLowerCase(),
         password
       });
 
@@ -203,14 +204,16 @@ export const AuthProvider = ({ children }) => {
       );
 
 
-
       justLoggedIn.current = true;
 
 
 
+      const normalizedUser = { ...u, role: normalizeRole(u.role) };
+
       setToken(t);
 
-      setUser(u);
+      setUser(normalizedUser);
+
 
 
 
@@ -222,7 +225,7 @@ export const AuthProvider = ({ children }) => {
 
       localStorage.setItem(
         'zda_user',
-        JSON.stringify(u)
+        JSON.stringify(normalizedUser)
       );
 
 
@@ -231,7 +234,7 @@ export const AuthProvider = ({ children }) => {
 
 
 
-      return u;
+      return normalizedUser;
 
 
 

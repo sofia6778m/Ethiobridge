@@ -69,4 +69,46 @@ const upload = multer({
   },
 });
 
-module.exports = { cloudinary, upload, imageUpload, videoUpload };
+// Governance complaint evidence: photos, PDFs, audio, and video. Images/videos
+// go to their usual folders; PDFs + audio are stored as raw resources so they
+// stay downloadable as-is.
+const governanceStorage = new CloudinaryStorage({
+  cloudinary,
+  params: (req, file) => {
+    const mime = file.mimetype || '';
+    if (mime.startsWith('video/')) {
+      return {
+        folder: 'zda/governance',
+        resource_type: 'video',
+        allowed_formats: ['mp4', 'mov', 'avi', 'webm'],
+        transformation: [{ width: 1280, height: 720, crop: 'limit', quality: 'auto' }],
+      };
+    }
+    if (mime === 'application/pdf' || mime.startsWith('audio/')) {
+      return { folder: 'zda/governance', resource_type: 'raw', allowed_formats: ['pdf', 'mp3', 'wav', 'm4a', 'ogg'] };
+    }
+    return {
+      folder: 'zda/governance',
+      resource_type: 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+      transformation: [{ width: 1200, height: 900, crop: 'limit' }],
+    };
+  },
+});
+
+const governanceUpload = multer({
+  storage: governanceStorage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const mime = file.mimetype || '';
+    const ok =
+      mime.startsWith('image/') ||
+      mime.startsWith('video/') ||
+      mime.startsWith('audio/') ||
+      mime === 'application/pdf';
+    if (ok) cb(null, true);
+    else cb(new Error('Only image, PDF, audio and video files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, upload, imageUpload, videoUpload, governanceUpload };
