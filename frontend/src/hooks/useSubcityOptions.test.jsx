@@ -12,11 +12,11 @@ const mockGet = getWithRetry;
 
 beforeEach(() => {
   mockGet.mockReset();
-  mockGet.mockResolvedValue({ data: { success: true, subcities: [{ _id: 'a', name: 'Bole' }] } });
+  mockGet.mockResolvedValue({ data: { success: true, data: [{ _id: 'a', name: 'Bole' }] } });
 });
 
 describe('useSubcityOptions', () => {
-  it('fetches the public subcity list once on mount and exposes normalized entries', async () => {
+  it('fetches the canonical subcity list once on mount and exposes normalized entries', async () => {
     const { result } = renderHook(() => useSubcityOptions());
     expect(result.current.subcitiesLoading).toBe(true);
     await waitFor(() => expect(result.current.subcitiesLoading).toBe(false));
@@ -24,7 +24,7 @@ describe('useSubcityOptions', () => {
       expect.objectContaining({ _id: 'a', name: 'Bole', value: 'a' }),
     ]);
     expect(mockGet).toHaveBeenCalledTimes(1);
-    expect(mockGet.mock.calls[0][0]).toBe('/public/subcities');
+    expect(mockGet.mock.calls[0][0]).toBe('/subcities');
   });
 
   it('does not refetch when the parent re-renders with a NEW onError callback', async () => {
@@ -42,13 +42,13 @@ describe('useSubcityOptions', () => {
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the /subcities dropdown alias when the public endpoint fails', async () => {
+  it('falls back to the /public/subcities alias when the canonical endpoint fails', async () => {
     mockGet.mockRejectedValueOnce({ message: 'Network Error' });
-    mockGet.mockResolvedValueOnce({ data: { success: true, data: [{ _id: 'b', name: 'Yeka' }] } });
+    mockGet.mockResolvedValueOnce({ data: { success: true, subcities: [{ _id: 'b', name: 'Yeka' }] } });
     const { result } = renderHook(() => useSubcityOptions());
     await waitFor(() => expect(result.current.subcitiesLoading).toBe(false));
-    expect(mockGet.mock.calls[0][0]).toBe('/public/subcities');
-    expect(mockGet.mock.calls[1][0]).toBe('/subcities');
+    expect(mockGet.mock.calls[0][0]).toBe('/subcities');
+    expect(mockGet.mock.calls[1][0]).toBe('/public/subcities');
     expect(result.current.subcities).toEqual([expect.objectContaining({ _id: 'b', name: 'Yeka' })]);
     expect(result.current.subcitiesError).toBe('');
   });

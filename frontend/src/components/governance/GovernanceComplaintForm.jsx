@@ -90,6 +90,10 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
   const [woredasLoading, setWoredasLoading] = useState(false);
   const [officesLoading, setOfficesLoading] = useState(false);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
+  // Inline (non-toast) errors so the dropdowns stay visible and offer retry.
+  const [woredasError, setWoredasError] = useState('');
+  const [officesError, setOfficesError] = useState('');
+  const [categoriesError, setCategoriesError] = useState('');
   const imageRef = useRef(null);
   const documentRef = useRef(null);
   const videoRef = useRef(null);
@@ -98,9 +102,64 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
   const loadedSubcityRef = useRef(null);
   const loadedOfficeRef = useRef(null);
 
+  // Resolves a subcity option by its rendered value. Options use `s.value`
+  // (which is `_id`, falling back to `id`, then to the name) so the dropdown
+  // still works even if a backend omits the id.
+  const findSubcityByValue = (value) =>
+    (subcities || []).find(
+      (s) => s.value === value || s._id === value || s.id === value || s.name === value
+    );
+
+  // Loads the woredas + government offices for a selected subcity. Extracted so
+  // both the change handler and the inline "Try again" retry can reuse it.
+  const fetchRouting = async (subcityRecord) => {
+    const subcityId = subcityRecord?._id || subcityRecord?.id || '';
+    const subcityName = subcityRecord?.name || '';
+    routingReqRef.current?.abort();
+    officeReqRef.current?.abort();
+    const controller = new AbortController();
+    routingReqRef.current = controller;
+
+    setWoredasLoading(true);
+    setOfficesLoading(true);
+    setWoredasError('');
+    setOfficesError('');
+
+    const woredaTask = getWithRetry('/woredas', {
+      params: subcityId ? { subcityId } : { subcity: subcityName },
+      signal: controller.signal,
+      timeout: 10000,
+    })
+      .then((res) => (controller.signal.aborted ? [] : extractList(res, 'woredas')))
+      .catch((err) => {
+        if (isCanceledError(err)) return null;
+        setWoredasError('Unable to load woredas. Please try again.');
+        return null;
+      })
+      .finally(() => { if (!controller.signal.aborted) setWoredasLoading(false); });
+
+    const officeTask = getWithRetry(subcityId ? `/government-offices/by-subcity/${subcityId}` : '/government-offices', {
+      params: subcityId ? undefined : { subcity: subcityName },
+      signal: controller.signal,
+      timeout: 10000,
+    })
+      .then((res) => (controller.signal.aborted ? [] : res.data?.data?.offices || []))
+      .catch((err) => {
+        if (isCanceledError(err)) return null;
+        setOfficesError('Unable to load government offices. Please try again.');
+        return null;
+      })
+      .finally(() => { if (!controller.signal.aborted) setOfficesLoading(false); });
+
+    const [woredaList, officeList] = await Promise.all([woredaTask, officeTask]);
+    if (controller.signal.aborted) return;
+    setWoredas(Array.isArray(woredaList) ? woredaList : []);
+    setOffices(Array.isArray(officeList) ? officeList : []);
+  };
+
   // ── Subcity → Woreda + Government Office ─────────────────────────────────────
-  const handleSubcityChange = async (subcityId) => {
-    const subcityRecord = subcities.find((s) => s._id === subcityId);
+  const handleSubcityChange = async (subcityValue) => {
+    const subcityRecord = findSubcityByValue(subcityValue);
 
     // Reset every dependent value immediately so no stale data survives a change.
     set('subcity', subcityRecord?.name || '');
@@ -112,58 +171,50 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     setWoredas([]);
     setOffices([]);
     setCategories([]);
+    setWoredasError('');
+    setOfficesError('');
+    setCategoriesError('');
 
     // Cleared selection — stop; nothing to load.
-    if (!subcityId) {
+    if (!subcityValue) {
       loadedSubcityRef.current = null;
       return;
     }
     // Validate the selected subcity exists before making any request.
-    if (!subcityRecord || !subcityRecord._id) {
+    if (!subcityRecord || !subcityRecord.name) {
       toast.error('Please choose a valid subcity.');
       return;
     }
     // Prevent duplicate requests when the same subcity is re-selected.
-    if (loadedSubcityRef.current === subcityRecord._id) return;
-    loadedSubcityRef.current = subcityRecord._id;
+    const loadKey = subcityRecord._id || subcityRecord.id || subcityRecord.name.toLowerCase();
+    if (loadedSubcityRef.current === loadKey) return;
+    loadedSubcityRef.current = loadKey;
 
-    routingReqRef.current?.abort();
+    await fetchRouting(subcityRecord);
+  };
+
+  // Loads the complaint categories for a selected office. Extracted so both the
+  // change handler and the inline "Try again" retry can reuse it.
+  const fetchCategories = async (officeId) => {
     officeReqRef.current?.abort();
     const controller = new AbortController();
-    routingReqRef.current = controller;
-
-    setWoredasLoading(true);
-    setOfficesLoading(true);
-
-    const woredaTask = getWithRetry('/woredas', {
-      params: { subcityId },
-      signal: controller.signal,
-      timeout: 10000,
-    })
-      .then((res) => (controller.signal.aborted ? [] : extractList(res, 'woredas')))
-      .catch((err) => {
-        if (isCanceledError(err)) return null;
-        toast.error('Unable to load woredas. Please try again.');
-        return null;
-      })
-      .finally(() => { if (!controller.signal.aborted) setWoredasLoading(false); });
-
-    const officeTask = getWithRetry(`/government-offices/by-subcity/${subcityRecord._id}`, {
-      signal: controller.signal,
-      timeout: 10000,
-    })
-      .then((res) => (controller.signal.aborted ? [] : res.data?.data?.offices || []))
-      .catch((err) => {
-        if (isCanceledError(err)) return null;
-        toast.error('Unable to load government offices. Please try again.');
-        return null;
-      })
-      .finally(() => { if (!controller.signal.aborted) setOfficesLoading(false); });
-
-    const [woredaList, officeList] = await Promise.all([woredaTask, officeTask]);
-    if (controller.signal.aborted) return;
-    setWoredas(Array.isArray(woredaList) ? woredaList : []);
-    setOffices(Array.isArray(officeList) ? officeList : []);
+    officeReqRef.current = controller;
+    setCategoriesLoading(true);
+    setCategoriesError('');
+    try {
+      const res = await getWithRetry('/complaint-categories', {
+        params: { officeId },
+        signal: controller.signal,
+        timeout: 10000,
+      });
+      if (controller.signal.aborted) return;
+      const list = res.data?.data?.categories || res.data?.categories || [];
+      setCategories(Array.isArray(list) ? list : []);
+    } catch (err) {
+      if (!isCanceledError(err)) setCategoriesError('Unable to load complaint categories. Please try again.');
+    } finally {
+      if (!controller.signal.aborted) setCategoriesLoading(false);
+    }
   };
 
   // ── Government Office → Complaint Categories ─────────────────────────────────
@@ -174,6 +225,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     set('categoryId', '');
     set('category', '');
     setCategories([]);
+    setCategoriesError('');
     if (!officeId) {
       loadedOfficeRef.current = null;
       return;
@@ -186,24 +238,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     if (loadedOfficeRef.current === office._id) return;
     loadedOfficeRef.current = office._id;
 
-    officeReqRef.current?.abort();
-    const controller = new AbortController();
-    officeReqRef.current = controller;
-    setCategoriesLoading(true);
-    try {
-      const res = await getWithRetry('/complaint-categories', {
-        params: { officeId },
-        signal: controller.signal,
-        timeout: 10000,
-      });
-      if (controller.signal.aborted) return;
-      const list = res.data?.data?.categories || res.data?.categories || [];
-      setCategories(Array.isArray(list) ? list : []);
-    } catch (err) {
-      if (!isCanceledError(err)) toast.error('Unable to load complaint categories. Please try again.');
-    } finally {
-      if (!controller.signal.aborted) setCategoriesLoading(false);
-    }
+    await fetchCategories(office._id);
   };
 
   const handleWoredaChange = (woredaId) => {
@@ -371,9 +406,12 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Subcity <span className="text-red-500">*</span></label>
-              <select value={form.subcity ? subcities.find((s) => s.name === form.subcity)?._id || '' : ''} onChange={(e) => handleSubcityChange(e.target.value)} className={inputCls('subcity')}>
+              <select
+                value={form.subcity ? (subcities.find((s) => s.name === form.subcity)?.value || '') : ''}
+                onChange={(e) => handleSubcityChange(e.target.value)}
+                className={inputCls('subcity')}>
                 <option value="">{subcitiesLoading ? 'Loading subcities…' : 'Select Subcity'}</option>
-                {(subcities || []).map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+                {(subcities || []).map((s) => <option key={s.value} value={s.value}>{s.name}</option>)}
               </select>
               {subcitiesError && (
                 <div className="flex items-center gap-2 mt-1.5">
@@ -395,6 +433,15 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
                 </option>
                 {(woredas || []).map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
               </select>
+              {woredasError && (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">⚠ {woredasError}</p>
+                  <button type="button" onClick={() => fetchRouting(findSubcityByValue(form.subcity))}
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">
+                    Try again
+                  </button>
+                </div>
+              )}
               {fieldError('woreda')}
             </div>
           </div>
@@ -412,6 +459,15 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
                 </option>
                 {(offices || []).map((o) => <option key={o._id} value={o._id}>{o.name}</option>)}
               </select>
+              {officesError && (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">⚠ {officesError}</p>
+                  <button type="button" onClick={() => fetchRouting(findSubcityByValue(form.subcity))}
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">
+                    Try again
+                  </button>
+                </div>
+              )}
               {fieldError('office')}
             </div>
             <div>
@@ -428,25 +484,38 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
         <FormSection icon="⚖️" title="Governance Issue Category" subtitle="Choose the category that best describes the issue">
           {!form.officeId ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">Select a government office first to see its complaint categories.</p>
-          ) : categoriesLoading ? (
-            <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-              <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /> Loading categories…
-            </div>
-          ) : categories.length === 0 ? (
-            <p className="text-sm text-gray-500 dark:text-gray-400">This office has no active complaint categories yet.</p>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {(categories || []).map((c) => (
-                <button key={c._id} type="button" onClick={() => set('categoryId', c._id)}
-                  className={`text-left px-3 py-2.5 rounded-xl border-2 text-sm font-medium transition-all duration-150
-                    ${form.categoryId === c._id
-                      ? 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 ring-2 ring-emerald-300'
-                      : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-emerald-300 dark:hover:border-emerald-600 bg-white dark:bg-gray-800'
-                    }`}>
-                  {c.name}
-                </button>
-              ))}
-            </div>
+            <>
+              {categoriesLoading ? (
+                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                  <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /> Loading categories…
+                </div>
+              ) : categories.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">This office has no active complaint categories yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {(categories || []).map((c) => (
+                    <button key={c._id} type="button" onClick={() => set('categoryId', c._id)}
+                      className={`text-left px-3 py-2.5 rounded-xl border-2 text-sm font-medium transition-all duration-150
+                        ${form.categoryId === c._id
+                          ? 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 ring-2 ring-emerald-300'
+                          : 'border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:border-emerald-300 dark:hover:border-emerald-600 bg-white dark:bg-gray-800'
+                        }`}>
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {categoriesError && (
+                <div className="flex items-center gap-2 mt-2">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">⚠ {categoriesError}</p>
+                  <button type="button" onClick={() => fetchCategories(form.officeId)}
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">
+                    Try again
+                  </button>
+                </div>
+              )}
+            </>
           )}
           {fieldError('category')}
         </FormSection>

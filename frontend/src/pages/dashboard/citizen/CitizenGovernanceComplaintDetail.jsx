@@ -6,7 +6,7 @@ import { getWithRetry, isCanceledError, classifyError } from '../../../utils/req
 import { errorMessageFor, isToastableErrorKind } from '../../../utils/listErrors';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import ReportTimeline from '../../../components/common/ReportTimeline';
-import { STATUS_COLORS, fmtDate, isClosed } from '../../../components/governance/governanceMeta';
+import { STATUS_COLORS, fmtDate, isClosed, displayStatus } from '../../../components/governance/governanceMeta';
 
 function Meta({ label, value }) {
   return (
@@ -160,7 +160,7 @@ export default function CitizenGovernanceComplaintDetail() {
             <p className="text-xs text-gray-500 mt-0.5">Assigned to {complaint.assignedToOffice || 'Subcity Governance Office'}</p>
           </div>
           <div className="flex flex-col items-end gap-1.5">
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${STATUS_COLORS[complaint.status] || 'bg-gray-100 text-gray-600'}`}>{complaint.status}</span>
+            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${STATUS_COLORS[complaint.status] || 'bg-gray-100 text-gray-600'}`}>{displayStatus(complaint.status, complaint)}</span>
             {complaint.isOverdue && <span className="px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Overdue</span>}
           </div>
         </div>

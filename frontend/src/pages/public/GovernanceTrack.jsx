@@ -4,7 +4,7 @@ import { toast } from 'react-toastify';
 import { governanceComplaintAPI } from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import ReportTimeline from '../../components/common/ReportTimeline';
-import { STATUS_COLORS, fmtDate, isClosed } from '../../components/governance/governanceMeta';
+import { STATUS_COLORS, fmtDate, isClosed, displayStatus } from '../../components/governance/governanceMeta';
 
 export default function GovernanceTrack() {
   const { trackingId } = useParams();
@@ -107,7 +107,7 @@ export default function GovernanceTrack() {
                 </p>
               </div>
               <div className="flex flex-col items-end gap-2">
-                <span className={`px-3 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[complaint.status] || 'bg-gray-100 text-gray-600'}`}>{complaint.status}</span>
+                <span className={`px-3 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[complaint.status] || 'bg-gray-100 text-gray-600'}`}>{displayStatus(complaint.status, complaint)}</span>
                 {complaint.isOverdue && (
                   <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Overdue</span>
                 )}
@@ -120,7 +120,7 @@ export default function GovernanceTrack() {
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Details</h3>
             <div className="grid sm:grid-cols-2 gap-3">
               <Detail label="Category" value={complaint.category} />
-              <Detail label="Status" value={complaint.status} />
+              <Detail label="Status" value={displayStatus(complaint.status, complaint)} />
               <Detail label="Subcity" value={complaint.subcity} />
               <Detail label="Woreda" value={complaint.woredaName} />
               <Detail label="Office / Bureau" value={complaint.office} />

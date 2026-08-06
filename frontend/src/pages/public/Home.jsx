@@ -79,6 +79,12 @@ export default function Home() {
             >
               Create Report
             </Link>
+            <Link
+              to="/track-complaint"
+              className="bg-white/10 backdrop-blur-sm border border-white/30 hover:bg-white/20 text-white font-semibold py-3 px-8 rounded-xl transition-colors"
+            >
+              Check Status
+            </Link>
             <Link to="/about" className="bg-white/10 backdrop-blur-sm border border-white/30 hover:bg-white/20 text-white font-semibold py-3 px-8 rounded-xl transition-colors">
               {t('hero.learnMore')}
             </Link>

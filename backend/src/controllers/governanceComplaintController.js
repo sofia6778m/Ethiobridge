@@ -50,6 +50,44 @@ const ACTIVE_STATUSES = [
 const WOREDA_REQUEST_DAYS = 5;
 const REOPEN_WINDOW_DAYS = 15;
 
+// ── Status display aliases ────────────────────────────────────────────────────
+// The workflow stores a rich 12-state enum (Submitted, Under Review, In
+// Progress, …). For citizen-facing surfaces we also expose a simplified
+// vocabulary (New, Received, Assigned, Under Investigation, Need More
+// Information, Resolved, Rejected, Closed) via a displayStatus field — the
+// granular enum is kept untouched for the investigation workflow.
+const STATUS_ALIASES = {
+  'Submitted': 'New',
+  'Under Review': 'Received',
+  'In Progress': 'Under Investigation',
+  'Investigation in Progress': 'Under Investigation',
+  'Awaiting Woreda Response': 'Under Investigation',
+  'Need More Information': 'Need More Information',
+  'Action Taken': 'Action Taken',
+  'Resolved': 'Resolved',
+  'Rejected': 'Rejected',
+  'Reopened': 'Reopened',
+  'Escalated': 'Escalated',
+  'Closed': 'Closed',
+};
+
+// "Assigned" surfaces once an officer has been explicitly assigned to the
+// complaint (assignment moves a Submitted complaint to Under Review).
+const displayStatusFor = (complaint) => {
+  if (!complaint) return '';
+  if (complaint.status === 'Under Review' && (complaint.assignedTo || complaint.assignedToOffice)) {
+    return 'Assigned';
+  }
+  return STATUS_ALIASES[complaint.status] || complaint.status;
+};
+
+// Attach the simplified citizen-facing status label to API responses. Handles
+// both Mongoose documents and lean/populated objects.
+const withDisplay = (complaint) => {
+  const obj = complaint && typeof complaint.toObject === 'function' ? complaint.toObject() : complaint;
+  return { ...obj, displayStatus: displayStatusFor(complaint) };
+};
+
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
 const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -337,6 +375,13 @@ const createComplaint = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Description must be at least 10 characters.' });
     }
     if (!agreed) return res.status(400).json({ success: false, message: 'You must agree to the reporting terms to continue.' });
+    if (!serviceReceived || String(serviceReceived).trim().length < 2) {
+      return res.status(400).json({ success: false, message: 'The service you received is required.' });
+    }
+    if (!incidentDate) return res.status(400).json({ success: false, message: 'Incident date is required.' });
+    if (!incidentLocation || String(incidentLocation).trim().length < 3) {
+      return res.status(400).json({ success: false, message: 'Incident location is required.' });
+    }
 
     // Validate the woreda belongs to the chosen subcity.
     const woreda = await Woreda.findById(woredaId).lean();
@@ -471,7 +516,7 @@ const createComplaint = async (req, res) => {
     await complaint.save();
     emitUpdate(io, complaint);
 
-    res.status(201).json({ success: true, message: 'Governance complaint submitted', data: complaint });
+    res.status(201).json({ success: true, message: 'Governance complaint submitted', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -532,7 +577,10 @@ const getComplaints = async (req, res) => {
 
     // Anonymous reports: hide reporter identity from everyone but the reporter
     // themself and platform admins.
-    complaints.forEach((c) => redactAnonymousComplaint(c, req.user));
+    complaints.forEach((c) => {
+      redactAnonymousComplaint(c, req.user);
+      c.displayStatus = displayStatusFor(c);
+    });
 
     res.json({
       success: true,
@@ -580,7 +628,7 @@ const getComplaintById = async (req, res) => {
 
     redactAnonymousComplaint(complaint, req.user);
 
-    res.json({ success: true, data: complaint });
+    res.json({ success: true, data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -620,6 +668,7 @@ const trackComplaint = async (req, res) => {
       woredaName: complaint.woredaName,
       office: complaint.office,
       status: complaint.status,
+      displayStatus: displayStatusFor(complaint),
       isAnonymous: complaint.isAnonymous,
       isOverdue: complaint.isOverdue,
       createdAt: complaint.createdAt,
@@ -712,7 +761,7 @@ const reopenByTracking = async (req, res) => {
     await complaint.save();
     emitUpdate(io, complaint);
 
-    res.json({ success: true, message: 'Complaint reopened', data: complaint });
+    res.json({ success: true, message: 'Complaint reopened', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -775,7 +824,7 @@ const updateStatus = async (req, res) => {
     await notifyStatusChange(complaint, req, { previous, status });
     emitUpdate(getIO(req), complaint);
 
-    res.json({ success: true, message: 'Complaint status updated', data: complaint });
+    res.json({ success: true, message: 'Complaint status updated', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -916,7 +965,7 @@ const assignOfficer = async (req, res) => {
       type: 'governance_status',
     });
 
-    res.json({ success: true, message: `Complaint assigned to ${officer.fullName}`, data: complaint });
+    res.json({ success: true, message: `Complaint assigned to ${officer.fullName}`, data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -947,7 +996,7 @@ const confirmResolution = async (req, res) => {
 
     await complaint.save();
     emitUpdate(getIO(req), complaint);
-    res.json({ success: true, message: 'Resolution confirmed', data: complaint });
+    res.json({ success: true, message: 'Resolution confirmed', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1006,7 +1055,7 @@ const respondToCitizen = async (req, res) => {
     }
 
     emitUpdate(io, complaint);
-    res.json({ success: true, message: 'Response sent to the citizen', data: complaint });
+    res.json({ success: true, message: 'Response sent to the citizen', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1044,7 +1093,7 @@ const requestMoreInfo = async (req, res) => {
     await notifyStatusChange(complaint, req, { previous, status: 'Need More Information' });
     emitUpdate(getIO(req), complaint);
 
-    res.json({ success: true, message: 'Additional information requested from the citizen', data: complaint });
+    res.json({ success: true, message: 'Additional information requested from the citizen', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1111,7 +1160,7 @@ const requestWoredaInfo = async (req, res) => {
 
     await complaint.save();
     emitUpdate(io, complaint);
-    res.json({ success: true, message: 'Request sent to the woreda', data: complaint });
+    res.json({ success: true, message: 'Request sent to the woreda', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1160,7 +1209,7 @@ const respondToWoredaRequest = async (req, res) => {
     });
     await complaint.save();
     emitUpdate(io, complaint);
-    res.json({ success: true, message: 'Response submitted', data: complaint });
+    res.json({ success: true, message: 'Response submitted', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1192,7 +1241,7 @@ const addInvestigationNote = async (req, res) => {
     pushTimeline(complaint, 'Note Added', 'Investigation note added', note, req.user);
 
     await complaint.save();
-    res.json({ success: true, message: 'Note added', data: complaint });
+    res.json({ success: true, message: 'Note added', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1217,7 +1266,7 @@ const uploadOfficialDocument = async (req, res) => {
     pushTimeline(complaint, 'Document Uploaded', 'Official documents attached', `${urls.length} document(s) uploaded`, req.user, urls);
 
     await complaint.save();
-    res.json({ success: true, message: 'Documents uploaded', data: complaint });
+    res.json({ success: true, message: 'Documents uploaded', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1256,7 +1305,7 @@ const recordAdministrativeAction = async (req, res) => {
     await notifyStatusChange(complaint, req, { previous: 'Investigation in Progress', status: 'Action Taken' });
     emitUpdate(io, complaint);
 
-    res.json({ success: true, message: 'Administrative action recorded', data: complaint });
+    res.json({ success: true, message: 'Administrative action recorded', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1289,7 +1338,7 @@ const resolveComplaint = async (req, res) => {
     await complaint.save();
     await notifyStatusChange(complaint, req, { previous, status: 'Resolved' });
     emitUpdate(getIO(req), complaint);
-    res.json({ success: true, message: 'Complaint resolved', data: complaint });
+    res.json({ success: true, message: 'Complaint resolved', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1321,7 +1370,7 @@ const rejectComplaint = async (req, res) => {
     await complaint.save();
     await notifyStatusChange(complaint, req, { previous, status: 'Rejected' });
     emitUpdate(getIO(req), complaint);
-    res.json({ success: true, message: 'Complaint rejected', data: complaint });
+    res.json({ success: true, message: 'Complaint rejected', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1383,7 +1432,7 @@ const escalateComplaint = async (req, res) => {
 
     await complaint.save();
     emitUpdate(io, complaint);
-    res.json({ success: true, message: 'Complaint escalated', data: complaint });
+    res.json({ success: true, message: 'Complaint escalated', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1426,7 +1475,7 @@ const reopenComplaint = async (req, res) => {
       type: 'governance_reopened',
     });
     emitUpdate(io, complaint);
-    res.json({ success: true, message: 'Complaint reopened', data: complaint });
+    res.json({ success: true, message: 'Complaint reopened', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1461,7 +1510,7 @@ const addEvidence = async (req, res) => {
       type: 'governance_status',
     });
     await complaint.save();
-    res.json({ success: true, message: 'Evidence added', data: complaint });
+    res.json({ success: true, message: 'Evidence added', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1863,4 +1912,7 @@ module.exports = {
   runGovernanceEscalationPass,
   buildGovernanceScope,
   isComplaintInScope,
+  STATUS_ALIASES,
+  displayStatusFor,
+  withDisplay,
 };

@@ -31,6 +31,30 @@ export const STATUSES = [
 
 export const CLOSED_STATUSES = ['Resolved', 'Rejected', 'Closed'];
 
+// Simplified citizen-facing vocabulary mapped onto the granular workflow enum.
+// Mirrors STATUS_ALIASES / displayStatusFor in governanceComplaintController.
+export const STATUS_ALIASES = {
+  'Submitted': 'New',
+  'Under Review': 'Received',
+  'In Progress': 'Under Investigation',
+  'Investigation in Progress': 'Under Investigation',
+  'Awaiting Woreda Response': 'Under Investigation',
+  'Need More Information': 'Need More Information',
+  'Action Taken': 'Action Taken',
+  'Resolved': 'Resolved',
+  'Rejected': 'Rejected',
+  'Reopened': 'Reopened',
+  'Escalated': 'Escalated',
+  'Closed': 'Closed',
+};
+
+export const displayStatus = (status, complaint) => {
+  if (status === 'Under Review' && complaint && (complaint.assignedTo || complaint.assignedToOffice)) {
+    return 'Assigned';
+  }
+  return STATUS_ALIASES[status] || status;
+};
+
 export const ACTIVE_STATUSES = [
   'Submitted',
   'Under Review',

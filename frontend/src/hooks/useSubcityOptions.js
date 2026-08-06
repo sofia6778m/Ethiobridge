@@ -12,9 +12,15 @@ import { getWithRetry, isCanceledError, extractList } from '../utils/requestUtil
 //   - every entry carries a stable id (s._id) AND a name for name-based callers
 //   - a user-friendly error string + loading flag for inline UI
 //
-// Response shapes accepted: { data: { subcities: [...] } }, { data: [...] }
-// (the /api/subcities dropdown alias) and the legacy { subcities: [...] } used
-// by /api/public/subcities.
+// PRIMARY endpoint is GET /api/subcities — the canonical dropdown source that
+// ALWAYS returns each subcity's _id. Dependent dropdowns (woredas, government
+// offices, complaint categories) resolve by _id, so an id-less response would
+// render options with empty values and silently break the whole chain. The
+// /api/public/subcities alias is used only as a fallback for older deployments
+// that still expose the legacy { subcities: [...] } shape.
+//
+// Response shapes accepted: { data: [...] } (/api/subcities),
+// { subcities: [...] } (/api/public/subcities) and { data: { subcities: [...] } }.
 const DEFAULT_ERROR = 'Unable to load subcities. Please try again.';
 
 const normalizeList = (res) =>
@@ -56,15 +62,15 @@ export default function useSubcityOptions({ onError } = {}) {
     try {
       let res;
       try {
-        res = await getWithRetry('/public/subcities', {
+        res = await getWithRetry('/subcities', {
           signal: controller.signal,
           timeout: 10000,
         });
       } catch (err) {
         if (isCanceledError(err) || controller.signal.aborted) throw err;
-        // Public endpoint may be unavailable on older deployments — retry the
-        // /api/subcities dropdown alias (same _id/name contract).
-        res = await getWithRetry('/subcities', {
+        // The canonical dropdown endpoint may be absent on older deployments —
+        // fall back to the public alias (legacy { subcities: [...] } shape).
+        res = await getWithRetry('/public/subcities', {
           signal: controller.signal,
           timeout: 10000,
         });
