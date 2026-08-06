@@ -468,11 +468,14 @@ export const governanceComplaintAPI = {
       headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
     }),
   reopen: (id, data) => API.post(`/governance-complaints/${id}/reopen`, data),
+  confirmResolution: (id) => API.post(`/governance-complaints/${id}/confirm-resolution`),
   acknowledgment: (id) =>
     API.get(`/governance-complaints/${id}/acknowledgment`, { responseType: 'blob' }),
 
   // Subcity Governance Office actions
   updateStatus: (id, data) => API.post(`/governance-complaints/${id}/status`, data),
+  assignableOfficers: (id) => API.get(`/governance-complaints/${id}/assignable-officers`),
+  assign: (id, data) => API.post(`/governance-complaints/${id}/assign`, data),
   respondToCitizen: (id, data) =>
     API.post(`/governance-complaints/${id}/respond`, data, {
       headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
@@ -520,31 +523,62 @@ export const governanceManagementAPI = {
   getOffices: (params) => API.get('/governance-management/offices', { params }),
   getCategories: (params) => API.get('/governance-management/categories', { params }),
 
+  // ── Simplified governance forms (spec'd endpoints) ──
+  // All active subcities created by the System Admin (Admin Dashboard).
+  getSubcities: () => API.get('/subcities'),
+  // Active government offices belonging to one subcity (public read) — drives
+  // the dynamic "Government Office" dropdown when the Subcity changes.
+  getOfficesBySubcity: (subcityId) => API.get(`/government-offices/by-subcity/${subcityId}`),
+  // POST /api/government-offices — { subcityId, officeName, status }
+  createOffice: (data) => API.post('/government-offices', data),
+  // POST /api/governance-users — { fullName, email, password, phoneNumber, subcityId, governmentOfficeId, role, status }
+  createOfficer: (data) => API.post('/governance-users', data),
+
   // ── Subcity Admin — Government Office management ──
-  getManagedOffices: () => API.get('/governance-management/offices'),
-  createOffice: (data) => API.post('/governance-management/offices', data),
-  updateOffice: (id, data) => API.put(`/governance-management/offices/${id}`, data),
-  toggleOffice: (id) => API.patch(`/governance-management/offices/${id}/toggle`),
-  deleteOffice: (id) => API.delete(`/governance-management/offices/${id}`),
+  // Primary routes use the subcity-scoped endpoints (/api/subcity/*) which are
+  // restricted to subcity_* roles. The /api/governance-management/* equivalents
+  // remain available for platform admins (read-only analytics use case).
+  getManagedOffices: () => API.get('/subcity/government-offices'),
+  getOffice: (id) => API.get(`/government-offices/${id}`),
+  updateOffice: (id, data) => API.put(`/subcity/government-offices/${id}`, data),
+  toggleOffice: (id) => API.patch(`/subcity/government-offices/${id}/toggle`),
+  deleteOffice: (id) => API.delete(`/subcity/government-offices/${id}`),
 
   // ── Subcity Admin — Complaint Category management ──
   getManagedCategories: (officeId) =>
-    API.get('/governance-management/categories', { params: { officeId } }),
-  createCategory: (data) => API.post('/governance-management/categories', data),
-  updateCategory: (id, data) => API.put(`/governance-management/categories/${id}`, data),
-  toggleCategory: (id) => API.patch(`/governance-management/categories/${id}/toggle`),
-  deleteCategory: (id) => API.delete(`/governance-management/categories/${id}`),
+    API.get('/subcity/complaint-categories', { params: { officeId } }),
+  createCategory: (data) => API.post('/subcity/complaint-categories', data),
+  updateCategory: (id, data) => API.put(`/subcity/complaint-categories/${id}`, data),
+  toggleCategory: (id) => API.patch(`/subcity/complaint-categories/${id}/toggle`),
+  deleteCategory: (id) => API.delete(`/subcity/complaint-categories/${id}`),
 
-  // ── Subcity Admin — Governance Officer user management ──
-  getOfficers: (params) => API.get('/governance-management/officers', { params }),
-  createOfficer: (data) => API.post('/governance-management/officers', data),
-  updateOfficer: (id, data) => API.put(`/governance-management/officers/${id}`, data),
-  toggleOfficer: (id) => API.patch(`/governance-management/officers/${id}/toggle`),
+  // ── Subcity Admin — Governance User management (officers + supervisors) ──
+  getOfficers: (params) => API.get('/subcity/governance-users', { params }),
+  getOfficer: (id) => API.get(`/governance-users/${id}`),
+  updateOfficer: (id, data) => API.put(`/subcity/governance-users/${id}`, data),
+  toggleOfficer: (id) => API.patch(`/subcity/governance-users/${id}/toggle`),
+  deleteOfficer: (id) => API.delete(`/governance-users/${id}`),
   resetOfficerPassword: (id, data) =>
-    API.put(`/governance-management/officers/${id}/reset-password`, data),
+    API.put(`/subcity/governance-users/${id}/reset-password`, data),
 
-  // ── Summary widget for the management module ──
-  getSummary: () => API.get('/governance-management/summary'),
+  // ── Summary widget (subcity-scoped for subcity admins) ──
+  getSummary: () => API.get('/subcity/summary'),
+
+  // ── Platform Admin read-only aliases (cross-subcity analytics only) ──
+  getAdminOffices: (params) => API.get('/governance-management/offices', { params }),
+  getAdminCategories: (params) => API.get('/governance-management/categories', { params }),
+  getAdminOfficers: (params) => API.get('/governance-management/officers', { params }),
+  getAdminSummary: (params) => API.get('/governance-management/summary', { params }),
+
+  // ── SLA rules (category-based response deadlines) ──
+  // Subcity admins manage their own subcity's rules; platform admins manage the
+  // global defaults (both sets are allowed on the same endpoints).
+  getSlaRules: (params) => API.get('/subcity/sla-rules', { params }),
+  getAdminSlaRules: (params) => API.get('/governance-management/sla-rules', { params }),
+  upsertSlaRule: (data) => API.post('/subcity/sla-rules', data),
+  upsertAdminSlaRule: (data) => API.post('/governance-management/sla-rules', data),
+  deleteSlaRule: (id) => API.delete(`/subcity/sla-rules/${id}`),
+  deleteAdminSlaRule: (id) => API.delete(`/governance-management/sla-rules/${id}`),
 };
 
 // ---- Government hierarchy (SUBCITY_ADMIN / WOREDA_ADMIN / OFFICER / TECHNICIAN) ----

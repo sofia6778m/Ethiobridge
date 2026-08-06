@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { hierarchyAPI } from '../../../services/api';
+import { hierarchyAPI, governanceComplaintAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 import StatCard from '../../../components/common/StatCard';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
@@ -9,6 +9,7 @@ export default function WoredaOverview() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
+  const [governance, setGovernance] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -18,6 +19,11 @@ export default function WoredaOverview() {
     try {
       const res = await hierarchyAPI.getWoredaStats();
       setStats(res.data.data);
+      // Woreda officers also handle governance-complaint information requests.
+      governanceComplaintAPI
+        .getStats()
+        .then((g) => setGovernance(g.data.data))
+        .catch(() => setGovernance(null));
     } catch (err) {
       console.error('[WOREDA] Failed to load stats:', err.response?.data || err.message);
       setError(err.response?.data?.message || 'Failed to load dashboard stats');
@@ -57,13 +63,14 @@ export default function WoredaOverview() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
         <StatCard icon="🏛️" label="Departments" value={stats.departments} color="bg-purple-100" iconColor="text-purple-600" />
         <StatCard icon="👮" label="Officers" value={stats.officers} color="bg-blue-100" iconColor="text-blue-600" />
         <StatCard icon="🔧" label="Technicians" value={stats.technicians} color="bg-teal-100" iconColor="text-teal-600" />
         <StatCard icon="📥" label="Complaints" value={stats.complaints} color="bg-primary-100" iconColor="text-primary-600" />
         <StatCard icon="🕒" label="Pending" value={stats.pendingComplaints} color="bg-amber-100" iconColor="text-amber-600" />
         <StatCard icon="✅" label="Resolved" value={stats.resolvedComplaints} color="bg-green-100" iconColor="text-green-600" />
+        <StatCard icon="🏢" label="Gov. Requests" value={governance?.awaitingWoreda ?? '—'} color="bg-orange-100" iconColor="text-orange-600" />
       </div>
 
       <div className="grid md:grid-cols-3 gap-6">

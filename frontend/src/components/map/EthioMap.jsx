@@ -51,20 +51,20 @@ export default function EthioMap({ markers = [], center = [9.145, 40.489], zoom 
   );
 }
 
+const ClickHandler = ({ onLocationSelect }) => {
+  const map = useMap();
+  useEffect(() => {
+    const handler = (e) => {
+      onLocationSelect({ lat: e.latlng.lat, lng: e.latlng.lng });
+    };
+    map.on('click', handler);
+    return () => { map.off('click', handler); };
+  }, [map, onLocationSelect]);
+  return null;
+};
+
 export function LocationPicker({ onLocationSelect, position }) {
   const { t } = useTranslation();
-  function ClickHandler() {
-    const map = useMap();
-    useEffect(() => {
-      const handler = (e) => {
-        onLocationSelect({ lat: e.latlng.lat, lng: e.latlng.lng });
-      };
-      map.on('click', handler);
-      return () => { map.off('click', handler); };
-    }, [map, onLocationSelect]);
-    return null;
-  }
-
   return (
     <div className="w-full rounded-xl overflow-hidden border border-gray-200" style={{ height: '300px' }}>
       <MapContainer center={[9.145, 40.489]} zoom={6} style={{ height: '100%', width: '100%' }}>
@@ -72,7 +72,7 @@ export function LocationPicker({ onLocationSelect, position }) {
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <ClickHandler />
+        <ClickHandler onLocationSelect={onLocationSelect} />
         {position && <Marker position={[position.lat, position.lng]} />}
       </MapContainer>
       <p className="text-xs text-gray-500 mt-1">{t('dashboard.clickMapToSelect')}</p>

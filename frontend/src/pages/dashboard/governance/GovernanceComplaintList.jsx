@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { useAuth } from '../../../context/AuthContext';
+import { useSocket } from '../../../context/SocketContext';
 import { governanceComplaintAPI, governanceManagementAPI } from '../../../services/api';
 import { getWithRetry, isCanceledError } from '../../../utils/requestUtils';
 import { errorMessageFor, isToastableErrorKind } from '../../../utils/listErrors';
@@ -47,6 +48,7 @@ const downloadBlob = (res, fallbackName) => {
 export default function GovernanceComplaintList({ basePath }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const { on } = useSocket() || {};
 
   const [searchInput, setSearchInput] = useState('');
   const debouncedSearch = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
@@ -142,6 +144,16 @@ export default function GovernanceComplaintList({ basePath }) {
       .finally(() => { if (!cancelled) setStatsLoading(false); });
     return () => { cancelled = true; controller.abort(); };
   }, [user?._id, statsTick]);
+
+  // Real-time refresh: the backend broadcasts `governance:updated` on every
+  // complaint change, so the list + widgets stay in sync without polling.
+  useEffect(() => {
+    if (typeof on !== 'function') return;
+    return on('governance:updated', () => {
+      reload();
+      setStatsTick((t) => t + 1);
+    });
+  }, [on, reload]);
 
   const setFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));

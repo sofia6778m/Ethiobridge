@@ -83,7 +83,7 @@ export default function GovernanceAnalytics() {
         <button onClick={fetchData} className="btn-secondary text-sm">Refresh</button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <StatCard label="Total Complaints" value={a.total ?? 0} icon="⚖️" tone="bg-amber-100 dark:bg-amber-900/40" />
         <StatCard label="Pending" value={a.pendingTotal ?? 0} icon="🕐" tone="bg-blue-100 dark:bg-blue-900/40" />
         <StatCard label="Overdue / Due Soon" value={a.overdueComplaints?.length ?? 0} icon="⏰" tone="bg-red-100 dark:bg-red-900/40" />
@@ -96,10 +96,32 @@ export default function GovernanceAnalytics() {
           icon="⏱️"
           tone="bg-emerald-100 dark:bg-emerald-900/40"
         />
+        <StatCard
+          label="SLA Compliance"
+          value={a.slaComplianceRate != null ? `${a.slaComplianceRate}%` : '—'}
+          icon="⏳"
+          tone="bg-teal-100 dark:bg-teal-900/40"
+        />
       </div>
 
-      {(a.averageFirstResponseHours != null || (a.pendingByStatus?.length || 0) > 0 || (a.overdueComplaints?.length || 0) > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {(a.averageFirstResponseHours != null || (a.pendingByStatus?.length || 0) > 0 || (a.overdueComplaints?.length || 0) > 0 || a.slaTotalCount > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {a.slaTotalCount > 0 && (
+            <div className="card p-5">
+              <h3 className="font-semibold text-gray-800 dark:text-gray-200 mb-1">SLA Compliance</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+                Resolved within the category's response deadline ({a.slaCompliantCount ?? 0} of {a.slaTotalCount})
+              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-3xl font-bold text-teal-600 dark:text-teal-400">
+                  {a.slaComplianceRate != null ? `${a.slaComplianceRate}%` : '—'}
+                </p>
+                <div className="h-2 flex-1 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div className="h-full bg-teal-500 rounded-full" style={{ width: `${Math.max(0, Math.min(100, a.slaComplianceRate || 0))}%` }} />
+                </div>
+              </div>
+            </div>
+          )}
           {a.averageFirstResponseHours != null && (
             <div className="card p-5">
               <h3 className="font-semibold text-gray-800 dark:text-gray-200 mb-1">Average First Response Time</h3>

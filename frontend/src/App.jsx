@@ -67,11 +67,16 @@ const PublicOnlyRoute = ({ children }) => {
 // user's role isn't allowed, show a friendly UnauthorizedPage instead of an
 // "Access Denied" toast. Role mismatches redirect back to the user's own
 // dashboard via getRoleDashboard.
-const ProtectedRoute = ({ children, roles }) => {
+// Optional `roleCheck` function overrides `roles` for wildcard pattern matching.
+const ProtectedRoute = ({ children, roles, roleCheck }) => {
   const { isAuthenticated, user, loading } = useAuth();
   if (loading) return <LoadingSpinner fullPage />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user?.role)) {
+  if (roleCheck && !roleCheck(user?.role)) {
+    console.warn(`[AUTH] Role '${user?.role}' is not allowed for this route`);
+    return <UnauthorizedPage />;
+  }
+  if (!roleCheck && roles && !roles.includes(user?.role)) {
     console.warn(`[AUTH] Role '${user?.role}' is not allowed for this route`);
     return <UnauthorizedPage />;
   }
@@ -191,9 +196,15 @@ const AppRoutes = () => {
         </ProtectedRoute>
       } />
 
-      {/* Subcity Admin Dashboard — legacy SUBCITY_ADMIN and canonical subcity_admin */}
+      {/* Subcity Admin Dashboard — all subcity_* roles (subcity_admin, SUBCITY_ADMIN,
+          and derived roles: subcity_bole, subcity_yeka, subcity_koye, …) land here.
+          Each admin sees only their own subcity's data (enforced by the backend). */}
       <Route path="/dashboard/subcity/*" element={
-        <ProtectedRoute roles={['SUBCITY_ADMIN', 'subcity_admin']}>
+        <ProtectedRoute roleCheck={(role) =>
+          role === 'subcity_admin' ||
+          role === 'SUBCITY_ADMIN' ||
+          (typeof role === 'string' && role.startsWith('subcity_'))
+        }>
           <ErrorBoundary fallbackTitle="Dashboard error" fallbackMessage="Something went wrong loading this dashboard. Your data is safe — try again or contact support.">
             <SubcityDashboard />
           </ErrorBoundary>

@@ -39,9 +39,9 @@ describe('getRoleDashboard', () => {
     expect(getRoleDashboard({ role: 'woredaAdmin' })).toBe('/dashboard/woreda');
   });
 
-  it('routes derived subcity_* roles to the shared dashboard', () => {
-    expect(getRoleDashboard({ role: 'subcity_bole' })).toBe('/dashboard');
-    expect(getRoleDashboard({ role: 'subcity_koye' })).toBe('/dashboard');
+  it('routes derived subcity_* roles to the dedicated subcity dashboard', () => {
+    expect(getRoleDashboard({ role: 'subcity_bole' })).toBe('/dashboard/subcity');
+    expect(getRoleDashboard({ role: 'subcity_koye' })).toBe('/dashboard/subcity');
   });
 
   it('routes admin to the admin dashboard', () => {

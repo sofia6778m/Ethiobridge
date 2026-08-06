@@ -40,28 +40,13 @@ export default function SubcityOverview() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <StatCard icon="🏘️" label="Woredas" value={stats.woredas} color="bg-primary-100" iconColor="text-primary-600" />
-        <StatCard icon="🏛️" label="Departments" value={stats.departments} color="bg-purple-100" iconColor="text-purple-600" />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <StatCard icon="📥" label="Complaints" value={stats.complaints} color="bg-blue-100" iconColor="text-blue-600" />
         <StatCard icon="🕒" label="Pending" value={stats.pendingComplaints} color="bg-amber-100" iconColor="text-amber-600" />
         <StatCard icon="✅" label="Resolved" value={stats.resolvedComplaints} color="bg-green-100" iconColor="text-green-600" />
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
-        <button
-          onClick={() => navigate('woredas')}
-          className="card p-6 text-left hover:shadow-md transition-shadow"
-        >
-          <div className="flex items-center gap-3 mb-3">
-            <span className="w-10 h-10 rounded-xl bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-xl">🏘️</span>
-            <h3 className="font-semibold text-gray-800 dark:text-gray-200">Manage Woredas</h3>
-          </div>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            Create woredas, edit their details, and provision woreda admin accounts.
-          </p>
-        </button>
-
         <button
           onClick={() => navigate('municipal-complaints')}
           className="card p-6 text-left hover:shadow-md transition-shadow"
@@ -72,6 +57,19 @@ export default function SubcityOverview() {
           </div>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Review all complaints across the subcity's woredas.
+          </p>
+        </button>
+
+        <button
+          onClick={() => navigate('governance-complaints')}
+          className="card p-6 text-left hover:shadow-md transition-shadow"
+        >
+          <div className="flex items-center gap-3 mb-3">
+            <span className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/40 flex items-center justify-center text-xl">⚖️</span>
+            <h3 className="font-semibold text-gray-800 dark:text-gray-200">Governance Complaints</h3>
+          </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Review and respond to service governance complaints.
           </p>
         </button>
       </div>

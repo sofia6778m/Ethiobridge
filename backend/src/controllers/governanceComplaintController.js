@@ -6,6 +6,7 @@ const Woreda = require('../models/Woreda');
 const Subcity = require('../models/Subcity');
 const User = require('../models/User');
 const createNotification = require('../utils/createNotification');
+const { logAction } = require('../middleware/auditLog');
 const { sendEmail } = require('../services/emailService');
 const { sendSms } = require('../services/smsService');
 const {
@@ -227,13 +228,48 @@ const dispatchGovernanceNotification = async (io, complaint, targets, { event, t
   }
 };
 
-const pushAudit = (complaint, action, user, details = '') => {
+const AUDIT_ACTION_MAP = {
+  'Created': 'governance_created',
+  'Status Changed': 'governance_status_changed',
+  'Officer Assigned': 'governance_assigned',
+  'Resolved': 'governance_resolved',
+  'Rejected': 'governance_rejected',
+  'Reopened': 'governance_reopened',
+  'Escalated': 'governance_escalated',
+  'Note Added': 'governance_note_added',
+  'Response Posted': 'governance_response_posted',
+  'Information Requested': 'governance_info_requested',
+  'Woreda Contacted': 'governance_woreda_contacted',
+  'Woreda Responded': 'governance_woreda_responded',
+  'Document Uploaded': 'governance_document_uploaded',
+  'Admin Action Recorded': 'governance_admin_action',
+  'Evidence Added': 'governance_evidence_added',
+  'Viewed': 'governance_viewed',
+  'Overdue': 'governance_overdue',
+  'Resolution Confirmed': 'governance_resolution_confirmed',
+};
+
+// Pushes an entry to the complaint's embedded audit trail AND writes a global
+// AuditLog record so platform admins can review every governance action.
+const recordAudit = async (req, complaint, action, user, details = '', meta = {}) => {
+  const ip = req?.ip || req?.connection?.remoteAddress || '';
   complaint.auditTrail.push({
     action,
     user: user?._id || null,
     userName: user?.fullName || (user ? `${user.role}` : 'System'),
     role: user?.role || 'system',
     details: details || '',
+    oldStatus: meta.oldStatus ?? '',
+    newStatus: meta.newStatus ?? '',
+    ipAddress: ip,
+  });
+  await logAction({
+    user,
+    action: AUDIT_ACTION_MAP[action] || 'governance_status_changed',
+    resource: 'governance_complaint',
+    resourceId: complaint._id,
+    details: { action, details: details || '', oldStatus: meta.oldStatus, newStatus: meta.newStatus },
+    req,
   });
 };
 
@@ -369,7 +405,7 @@ const createComplaint = async (req, res) => {
       assignedToOffice: office.name,
     });
 
-    pushAudit(complaint, 'Created', req.user || null, `Governance complaint submitted (${category.name}, ${office.name})`);
+    await recordAudit(req, complaint, 'Created', req.user || null, `Governance complaint submitted (${category.name}, ${office.name})`, { newStatus: 'Submitted' });
     pushTimeline(complaint, 'Submitted', 'Complaint Submitted', `Submitted to the ${office.name} (${subcity}). ${title ? `Title: ${title}` : ''}`, req.user || null);
 
     await complaint.save();
@@ -527,11 +563,20 @@ const getComplaintById = async (req, res) => {
       userName: req.user.fullName || req.user.role,
       role: req.user.role,
       details: `Complaint viewed by ${req.user.role}`,
+      ipAddress: req.ip || req.connection?.remoteAddress || '',
       at: new Date(),
     };
     await GovernanceComplaint.updateOne({ _id: complaint._id }, { $push: { auditTrail: auditEntry } });
     complaint.auditTrail = complaint.auditTrail || [];
     complaint.auditTrail.push(auditEntry);
+    await logAction({
+      user: req.user,
+      action: 'governance_viewed',
+      resource: 'governance_complaint',
+      resourceId: complaint._id,
+      details: { action: 'Viewed', details: auditEntry.details },
+      req,
+    });
 
     redactAnonymousComplaint(complaint, req.user);
 
@@ -638,7 +683,7 @@ const reopenByTracking = async (req, res) => {
     complaint.reopenedAt = new Date();
     complaint.reopenedByName = complaint.reporterName || 'Citizen';
     complaint.isOverdue = false;
-    pushAudit(complaint, 'Reopened', null, `Complaint reopened by citizen (was ${previousStatus})`);
+    await recordAudit(req, complaint, 'Reopened', null, `Complaint reopened by citizen (was ${previousStatus})`, { oldStatus: previousStatus, newStatus: 'Reopened' });
     pushTimeline(complaint, 'Reopened', 'Complaint Reopened', String(reason || 'The citizen requested the complaint be reopened.').trim(), null);
 
     await complaint.save();
@@ -723,7 +768,7 @@ const updateStatus = async (req, res) => {
       complaint.closedByName = req.user.fullName;
     }
 
-    pushAudit(complaint, 'Status Changed', req.user, `${previous} → ${status}`);
+    await recordAudit(req, complaint, 'Status Changed', req.user, `${previous} → ${status}`, { oldStatus: previous, newStatus: status });
     pushTimeline(complaint, status, `Status changed to ${status}`, String(req.body.note || '').trim(), req.user);
 
     await complaint.save();
@@ -777,6 +822,137 @@ const notifyStatusChange = async (complaint, req, { previous, status }) => {
   });
 };
 
+// ── Officer assignment ────────────────────────────────────────────────────────
+
+// GET /api/governance-complaints/:id/assignable-officers
+// Officers eligible to handle a complaint: members of the complaint's
+// GovernmentOffice, falling back to active governance staff of the subcity.
+const getAssignableOfficers = async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id).lean();
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    if (!isComplaintInScope(req.user, complaint)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    if (!SUB_CITY_OFFICER_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Not authorised to assign officers.' });
+    }
+    let officers;
+    if (complaint.officeId) {
+      officers = await findOfficeOfficers(complaint.officeId);
+    } else {
+      officers = await User.find({
+        subcity: ciRegex(complaint.subcity || ''),
+        role: { $in: ['GOVERNANCE_OFFICER', 'OFFICE_SUPERVISOR', ...ALL_SUB_CITY_ROLES] },
+        isActive: true,
+      }).select('-password').sort('fullName').lean();
+    }
+    res.json({
+      success: true,
+      data: officers.map((o) => ({
+        _id: o._id,
+        fullName: o.fullName,
+        email: o.email,
+        phone: o.phone,
+        role: o.role,
+        governmentOfficeName: o.governmentOfficeName || '—',
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/governance-complaints/:id/assign  { officerId, note }
+const assignOfficer = async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id);
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    if (!isComplaintInScope(req.user, complaint)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    if (!SUB_CITY_OFFICER_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Not authorised to assign officers.' });
+    }
+    const officer = await User.findById(req.body.officerId).select('-password');
+    if (!officer || !officer.isActive) {
+      return res.status(400).json({ success: false, message: 'The selected officer is not available.' });
+    }
+    if (complaint.subcity && officer.subcity && complaint.subcity !== officer.subcity) {
+      return res.status(400).json({ success: false, message: 'The officer does not belong to this subcity.' });
+    }
+    if (complaint.officeId && officer.governmentOfficeId && String(officer.governmentOfficeId) !== String(complaint.officeId)) {
+      return res.status(400).json({ success: false, message: 'The officer is not assigned to this complaint\'s office.' });
+    }
+
+    const previousAssignee = complaint.assignedTo ? String(complaint.assignedTo) : null;
+    const wasSubmitted = complaint.status === 'Submitted';
+    complaint.assignedTo = officer._id;
+    complaint.assignedAt = new Date();
+    complaint.assignedBy = req.user._id;
+    complaint.assignedByName = req.user.fullName;
+    if (officer.governmentOfficeName) complaint.assignedToOffice = officer.governmentOfficeName;
+    if (wasSubmitted) complaint.status = 'Under Review';
+
+    const note = String(req.body.note || '').trim();
+    await recordAudit(
+      req,
+      complaint,
+      'Officer Assigned',
+      req.user,
+      `Complaint assigned to ${officer.fullName}${note ? `: ${note}` : ''}${previousAssignee ? ` (reassigned from ${previousAssignee})` : ''}`,
+      { oldStatus: wasSubmitted ? 'Submitted' : undefined, newStatus: complaint.status }
+    );
+    pushTimeline(complaint, 'Assigned', 'Officer assigned', `${officer.fullName} has been assigned${note ? ` — ${note}` : ''}.`, req.user);
+
+    await complaint.save();
+    emitUpdate(getIO(req), complaint);
+
+    const io = getIO(req);
+    await dispatchGovernanceNotification(io, complaint, [officer], {
+      event: 'Assigned',
+      title: `New assignment: ${complaint.trackingId}`,
+      message: `You have been assigned to handle complaint ${complaint.trackingId} (${complaint.category}).`,
+      type: 'governance_status',
+    });
+
+    res.json({ success: true, message: `Complaint assigned to ${officer.fullName}`, data: complaint });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/governance-complaints/:id/confirm-resolution
+const confirmResolution = async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id);
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    if (complaint.status !== 'Resolved') {
+      return res.status(400).json({ success: false, message: 'Only resolved complaints can be confirmed.' });
+    }
+    const isReporter = complaint.reporter && String(complaint.reporter) === String(req.user._id);
+    const isPhoneMatch = !complaint.reporter && req.user.phone &&
+      String(complaint.reporterPhone || '').replace(/\s+/g, '') === String(req.user.phone).replace(/\s+/g, '');
+    if (!isReporter && !isPhoneMatch) {
+      return res.status(403).json({ success: false, message: 'Only the reporter can confirm resolution.' });
+    }
+    if (complaint.confirmedByCitizen) {
+      return res.status(400).json({ success: false, message: 'Resolution has already been confirmed.' });
+    }
+
+    complaint.confirmedByCitizen = true;
+    complaint.confirmedAt = new Date();
+    await recordAudit(req, complaint, 'Resolution Confirmed', req.user, 'Resolution confirmed by the citizen reporter', { newStatus: complaint.status });
+    pushTimeline(complaint, 'Confirmed', 'Resolution confirmed by citizen', 'The reporter confirmed that the complaint has been resolved.', req.user);
+
+    await complaint.save();
+    emitUpdate(getIO(req), complaint);
+    res.json({ success: true, message: 'Resolution confirmed', data: complaint });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ── Officer responses + additional-information requests ───────────────────────
 
 // POST /api/governance-complaints/:id/respond  (upload.array('evidence', 8))
@@ -804,7 +980,7 @@ const respondToCitizen = async (req, res) => {
       userName: req.user.fullName,
       role: req.user.role,
     });
-    pushAudit(complaint, 'Response Posted', req.user, `Officer responded to the citizen: ${message}`);
+    await recordAudit(req, complaint, 'Response Posted', req.user, `Officer responded to the citizen: ${message}`);
     pushTimeline(complaint, 'Officer Response', 'Response from the office', message, req.user, urls);
 
     await complaint.save();
@@ -861,7 +1037,7 @@ const requestMoreInfo = async (req, res) => {
       userName: req.user.fullName,
       role: req.user.role,
     });
-    pushAudit(complaint, 'Information Requested', req.user, `Additional information requested from the reporter: ${message}`);
+    await recordAudit(req, complaint, 'Information Requested', req.user, `Additional information requested from the reporter: ${message}`, { oldStatus: previous, newStatus: 'Need More Information' });
     pushTimeline(complaint, 'Information Requested', 'Additional information requested', message, req.user);
 
     await complaint.save();
@@ -900,7 +1076,7 @@ const requestWoredaInfo = async (req, res) => {
       status: 'Pending',
     });
     complaint.status = 'Awaiting Woreda Response';
-    pushAudit(complaint, 'Woreda Contacted', req.user, `Official request sent to the woreda (due ${dueAt.toLocaleDateString()})`);
+    await recordAudit(req, complaint, 'Woreda Contacted', req.user, `Official request sent to the woreda (due ${dueAt.toLocaleDateString()})`, { newStatus: 'Awaiting Woreda Response' });
     pushTimeline(complaint, 'Woreda Contacted', 'Information requested from Woreda', message, req.user);
 
     await complaint.save();
@@ -969,7 +1145,7 @@ const respondToWoredaRequest = async (req, res) => {
     request.respondedByName = req.user.fullName;
 
     complaint.status = 'Investigation in Progress';
-    pushAudit(complaint, 'Woreda Responded', req.user, 'Woreda submitted its response to the request');
+    await recordAudit(req, complaint, 'Woreda Responded', req.user, 'Woreda submitted its response to the request', { newStatus: 'Investigation in Progress' });
     pushTimeline(complaint, 'Woreda Responded', 'Woreda response received', response, req.user, request.responseFiles);
 
     await complaint.save();
@@ -1012,7 +1188,7 @@ const addInvestigationNote = async (req, res) => {
       userName: req.user.fullName,
       role: req.user.role,
     });
-    pushAudit(complaint, 'Note Added', req.user, 'Investigation note added');
+    await recordAudit(req, complaint, 'Note Added', req.user, 'Investigation note added');
     pushTimeline(complaint, 'Note Added', 'Investigation note added', note, req.user);
 
     await complaint.save();
@@ -1037,7 +1213,7 @@ const uploadOfficialDocument = async (req, res) => {
     if (!urls.length) return res.status(400).json({ success: false, message: 'No documents uploaded.' });
 
     complaint.officialDocuments.push(...urls);
-    pushAudit(complaint, 'Document Uploaded', req.user, `${urls.length} official document(s) attached`);
+    await recordAudit(req, complaint, 'Document Uploaded', req.user, `${urls.length} official document(s) attached`);
     pushTimeline(complaint, 'Document Uploaded', 'Official documents attached', `${urls.length} document(s) uploaded`, req.user, urls);
 
     await complaint.save();
@@ -1072,7 +1248,7 @@ const recordAdministrativeAction = async (req, res) => {
       recordedAt: new Date(),
     });
     complaint.status = 'Action Taken';
-    pushAudit(complaint, 'Admin Action Recorded', req.user, `Administrative action recorded: ${action}`);
+    await recordAudit(req, complaint, 'Admin Action Recorded', req.user, `Administrative action recorded: ${action}`, { newStatus: 'Action Taken' });
     pushTimeline(complaint, 'Action Taken', `Administrative action: ${action}`, String(req.body.note || '').trim(), req.user);
 
     await complaint.save();
@@ -1107,7 +1283,7 @@ const resolveComplaint = async (req, res) => {
     complaint.resolvedByName = req.user.fullName;
     complaint.resolutionNote = resolutionNote;
     complaint.isOverdue = false;
-    pushAudit(complaint, 'Resolved', req.user, `Complaint resolved: ${resolutionNote}`);
+    await recordAudit(req, complaint, 'Resolved', req.user, `Complaint resolved: ${resolutionNote}`, { oldStatus: previous, newStatus: 'Resolved' });
     pushTimeline(complaint, 'Resolved', 'Complaint resolved', resolutionNote, req.user);
 
     await complaint.save();
@@ -1139,7 +1315,7 @@ const rejectComplaint = async (req, res) => {
     complaint.rejectedBy = req.user._id;
     complaint.rejectedByName = req.user.fullName;
     complaint.rejectionReason = rejectionReason;
-    pushAudit(complaint, 'Rejected', req.user, `Complaint rejected: ${rejectionReason}`);
+    await recordAudit(req, complaint, 'Rejected', req.user, `Complaint rejected: ${rejectionReason}`, { oldStatus: previous, newStatus: 'Rejected' });
     pushTimeline(complaint, 'Rejected', 'Complaint rejected', rejectionReason, req.user);
 
     await complaint.save();
@@ -1172,7 +1348,7 @@ const escalateComplaint = async (req, res) => {
     complaint.escalatedBy = req.user._id;
     complaint.escalatedByName = req.user.fullName;
     complaint.status = 'Escalated';
-    pushAudit(complaint, 'Escalated', req.user, `Escalated to ${complaint.escalatedTo}: ${reason}`);
+    await recordAudit(req, complaint, 'Escalated', req.user, `Escalated to ${complaint.escalatedTo}: ${reason}`, { newStatus: 'Escalated' });
     pushTimeline(complaint, 'Escalated', `Escalated to ${complaint.escalatedTo}`, reason, req.user);
 
     await complaint.save();
@@ -1230,13 +1406,14 @@ const reopenComplaint = async (req, res) => {
       return res.status(400).json({ success: false, message: 'This complaint has already been reopened twice.' });
     }
 
+    const previousStatus = complaint.status;
     complaint.reopenedCount = (complaint.reopenedCount || 0) + 1;
     complaint.status = 'Reopened';
     complaint.reopenedAt = new Date();
     complaint.reopenedBy = req.user._id;
     complaint.reopenedByName = req.user.fullName;
     complaint.isOverdue = false;
-    pushAudit(complaint, 'Reopened', req.user, `Complaint reopened (was ${complaint.status === 'Reopened' ? 'Reopened' : complaint.status})`);
+    await recordAudit(req, complaint, 'Reopened', req.user, `Complaint reopened (was ${previousStatus})`, { oldStatus: previousStatus, newStatus: 'Reopened' });
 
     await complaint.save();
 
@@ -1270,7 +1447,7 @@ const addEvidence = async (req, res) => {
     if (!urls.length) return res.status(400).json({ success: false, message: 'No files uploaded.' });
 
     complaint.evidenceFiles.push(...urls);
-    pushAudit(complaint, 'Evidence Added', req.user, `${urls.length} additional evidence file(s) attached`);
+    await recordAudit(req, complaint, 'Evidence Added', req.user, `${urls.length} additional evidence file(s) attached`);
     pushTimeline(complaint, 'Evidence Added', 'Additional evidence attached', `${urls.length} file(s) uploaded by the reporter`, req.user, urls);
 
     await complaint.save();
@@ -1394,7 +1571,7 @@ const getAnalytics = async (req, res) => {
 
     const [
       byCategory, byWoreda, topOffices, resolutionTime, escalationRate, corruptionStats, monthlyTrend,
-      pendingByStatus, overdueComplaints, firstResponseTime, officerPerformance,
+      pendingByStatus, overdueComplaints, firstResponseTime, officerPerformance, slaCompliance,
     ] = await Promise.all([
       GovernanceComplaint.aggregate([
         { $match: scope },
@@ -1503,11 +1680,29 @@ const getAnalytics = async (req, res) => {
         { $sort: { responses: -1 } },
         { $limit: 10 },
       ]),
+      // SLA compliance: resolved/closed complaints resolved at or before slaDueAt.
+      GovernanceComplaint.aggregate([
+        {
+          $match: {
+            ...scope,
+            status: { $in: ['Resolved', 'Closed'] },
+            slaDueAt: { $exists: true, $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            compliant: { $sum: { $cond: [{ $lte: ['$resolvedAt', '$slaDueAt'] }, 1, 0] } },
+          },
+        },
+      ]),
     ]);
 
     const round = (n) => (n == null ? null : Math.round(n * 100) / 100);
     const escalation = escalationRate[0];
     const corrupt = corruptionStats[0];
+    const sla = slaCompliance[0];
     const pendingTotal = pendingByStatus.reduce((sum, row) => sum + row.count, 0);
 
     res.json({
@@ -1528,6 +1723,9 @@ const getAnalytics = async (req, res) => {
         pendingTotal,
         overdueComplaints,
         officerPerformance,
+        slaComplianceRate: sla && sla.total ? round((sla.compliant / sla.total) * 100) : null,
+        slaCompliantCount: sla?.compliant || 0,
+        slaTotalCount: sla?.total || 0,
       },
     });
   } catch (err) {
@@ -1594,7 +1792,7 @@ const runGovernanceEscalationPass = async (io) => {
     if (!changed) continue;
 
     complaint.overdueNotifiedAt = now;
-    pushAudit(complaint, 'Overdue', null, 'Complaint flagged as overdue');
+    await recordAudit(null, complaint, 'Overdue', null, 'Complaint flagged as overdue');
     await complaint.save();
 
     const subcityAdmins = await findSubcityAdmins(complaint.subcity);
@@ -1604,6 +1802,28 @@ const runGovernanceEscalationPass = async (io) => {
       message: 'This governance complaint has passed its response deadline or has an overdue woreda request.',
       type: 'governance_status',
     });
+
+    const officeOfficers = complaint.officeId
+      ? await findOfficeOfficers(complaint.officeId)
+      : [];
+    const supervisors = officeOfficers.filter((o) => o.role === 'OFFICE_SUPERVISOR');
+    const assignedOfficer = complaint.assignedTo
+      ? await User.findById(complaint.assignedTo).select('-password').lean()
+      : null;
+    await dispatchGovernanceNotification(io, complaint, supervisors, {
+      event: 'Overdue',
+      title: `Complaint ${complaint.trackingId} overdue`,
+      message: 'An assigned complaint has passed its response deadline and needs urgent attention.',
+      type: 'governance_status',
+    });
+    if (assignedOfficer) {
+      await dispatchGovernanceNotification(io, complaint, [assignedOfficer], {
+        event: 'Overdue',
+        title: `Complaint ${complaint.trackingId} overdue`,
+        message: 'A complaint assigned to you has passed its response deadline.',
+        type: 'governance_status',
+      });
+    }
     console.log(`[Escalation] Governance complaint flagged overdue: ${complaint.trackingId}`);
   }
 };
@@ -1620,6 +1840,9 @@ module.exports = {
   trackComplaint,
   reopenByTracking,
   updateStatus,
+  getAssignableOfficers,
+  assignOfficer,
+  confirmResolution,
   requestWoredaInfo,
   respondToWoredaRequest,
   respondToCitizen,

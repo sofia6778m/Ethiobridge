@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { municipalComplaintAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
-import { getWithRetry, isCanceledError } from '../../../utils/requestUtils';
+import { getWithRetry, isCanceledError, extractList } from '../../../utils/requestUtils';
 
 const PRIORITIES = ['Low', 'Medium', 'High'];
 const MAX_VIDEOS = 3;
@@ -32,6 +32,8 @@ export default function MunicipalComplaintForm() {
   });
   const [errors, setErrors] = useState({});
   const [subcities, setSubcities] = useState([]);
+  const [subcitiesLoading, setSubcitiesLoading] = useState(true);
+  const [subcitiesError, setSubcitiesError] = useState('');
   const [woredas, setWoredas] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -39,18 +41,28 @@ export default function MunicipalComplaintForm() {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [geoCoding, setGeoCoding] = useState(false);
+  const [woredasLoading, setWoredasLoading] = useState(false);
   const photoRef = useRef(null);
   const videoRef = useRef(null);
   const woredaReqRef = useRef(null);
+  const loadedSubcityRef = useRef(null);
 
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
+    setSubcitiesLoading(true);
+    setSubcitiesError('');
     getWithRetry('/public/subcities', { signal: controller.signal, timeout: 10000 })
-      .then((res) => { if (!cancelled) setSubcities(res.data.subcities || []); })
+      .then((res) => {
+        if (cancelled) return;
+        setSubcities(extractList(res, 'subcities'));
+      })
       .catch((err) => {
-        if (!cancelled && !isCanceledError(err)) toast.error('Could not load subcities');
-      });
+        if (cancelled || isCanceledError(err)) return;
+        setSubcitiesError('Unable to load subcities. Please try again.');
+        toast.error('Unable to load subcities. Please try again.');
+      })
+      .finally(() => { if (!cancelled) setSubcitiesLoading(false); });
     return () => { cancelled = true; controller.abort(); };
   }, []);
 
@@ -68,6 +80,10 @@ export default function MunicipalComplaintForm() {
     setWoredas([]);
     setTemplates([]);
     if (!subcity) return;
+    // Prevent duplicate requests when the same subcity is re-selected.
+    if (loadedSubcityRef.current === subcity) return;
+    loadedSubcityRef.current = subcity;
+    setWoredasLoading(true);
     try {
       const res = await getWithRetry('/public-complaints/subcity-woredas', {
         params: { subcity },
@@ -75,7 +91,7 @@ export default function MunicipalComplaintForm() {
         timeout: 10000,
       });
       if (controller.signal.aborted) return;
-      const list = res.data.woredas || [];
+      const list = Array.isArray(res.data?.woredas) ? res.data.woredas : [];
       setWoredas(list);
 
       // Department options come from the subcity's own department master data,
@@ -88,10 +104,13 @@ export default function MunicipalComplaintForm() {
           signal: controller.signal,
           timeout: 10000,
         });
-        subcityDepts = (deptRes.data.departments || []).map((d) => d.name || d);
+        if (!controller.signal.aborted) {
+          subcityDepts = (Array.isArray(deptRes.data?.departments) ? deptRes.data.departments : []).map((d) => d.name || d);
+        }
       } catch {
         /* keep woreda fallback below */
       }
+      if (controller.signal.aborted) return;
       const deptList = subcityDepts.length ? subcityDepts : (list[0]?.departments || []);
       setDepartments(deptList);
       if (deptList.length) {
@@ -100,7 +119,9 @@ export default function MunicipalComplaintForm() {
         loadTemplates('Woreda', d);
       }
     } catch (err) {
-      if (!isCanceledError(err)) toast.error('Could not load woredas');
+      if (!isCanceledError(err)) toast.error('Unable to load woredas. Please try again.');
+    } finally {
+      if (!controller.signal.aborted) setWoredasLoading(false);
     }
   };
 
@@ -265,16 +286,17 @@ export default function MunicipalComplaintForm() {
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Subcity *</label>
               <select value={form.subcity} onChange={e => handleSubcityChange(e.target.value)} className={inputCls('subcity')}>
-                <option value="">Select subcity…</option>
-                {subcities.map(sc => <option key={sc.name} value={sc.name}>{sc.name}</option>)}
+                <option value="">{subcitiesLoading ? 'Loading subcities…' : 'Select subcity…'}</option>
+                {(subcities || []).map(sc => <option key={sc.name} value={sc.name}>{sc.name}</option>)}
               </select>
+              {subcitiesError && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ {subcitiesError}</p>}
               {errors.subcity && <p className="text-xs text-red-500 mt-1">{errors.subcity}</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Woreda *</label>
-              <select value={form.woredaId} onChange={e => handleWoredaChange(e.target.value)} disabled={!form.subcity} className={inputCls('woredaId')}>
-                <option value="">{form.subcity ? 'Select woreda…' : 'Select a subcity first'}</option>
-                {woredas.map(w => <option key={w._id} value={w._id}>{w.name}</option>)}
+              <select value={form.woredaId} onChange={e => handleWoredaChange(e.target.value)} disabled={!form.subcity || woredasLoading} className={inputCls('woredaId')}>
+                <option value="">{woredasLoading ? 'Loading woredas…' : form.subcity ? 'Select woreda…' : 'Select a subcity first'}</option>
+                {(woredas || []).map(w => <option key={w._id} value={w._id}>{w.name}</option>)}
               </select>
               {errors.woredaId && <p className="text-xs text-red-500 mt-1">{errors.woredaId}</p>}
             </div>

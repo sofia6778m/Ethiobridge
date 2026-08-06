@@ -22,9 +22,13 @@ export const ROLE_DASHBOARD_MAP = {
   ngo: '/dashboard/ngo',
   volunteer: '/dashboard/volunteer',
   admin: '/dashboard/admin',
-  subcity_bole: '/dashboard',
-  subcity_yeka: '/dashboard',
-  subcity_lemmi_kura: '/dashboard',
+  // All subcity-admin roles — both the canonical `subcity_admin` and every
+  // derived role (subcity_bole, subcity_yeka, subcity_lemmi_kura, …) — land on
+  // the dedicated SubcityDashboard. Derived roles are matched by the
+  // getRoleDashboard() function below so they don't need individual entries.
+  subcity_bole: '/dashboard/subcity',
+  subcity_yeka: '/dashboard/subcity',
+  subcity_lemmi_kura: '/dashboard/subcity',
   woreda: '/dashboard',
   department: '/department/dashboard',
   inspector: '/dashboard',
@@ -43,13 +47,9 @@ export const ROLE_DASHBOARD_MAP = {
   OFFICE_SUPERVISOR: '/dashboard',
   // Real Addis Ababa government hierarchy
   SUBCITY_ADMIN: '/dashboard/subcity',
-  // Canonical role for subcity admins provisioned through the admin UI. They
-  // land on the dedicated SubcityDashboard (/dashboard/subcity) — the same
-  // destination as the legacy SUBCITY_ADMIN role.
+  // Canonical role for subcity admins provisioned through the admin UI.
   subcity_admin: '/dashboard/subcity',
   WOREDA_ADMIN: '/dashboard/woreda',
-  // Woreda admins and department officers provisioned by the System Admin land
-  // on their dedicated dashboards.
   woreda_admin: '/dashboard/woreda',
   department_officer: '/department/dashboard',
 };
@@ -68,14 +68,12 @@ export const GOV_LEVEL_ROUTES = {
 export function getRoleDashboard(user) {
   if (!user || !user.role) return '/';
   const role = normalizeRole(user.role);
-  // The canonical `subcity_admin` role lands on the dedicated SubcityDashboard.
-  if (role === 'subcity_admin' || role === 'SUBCITY_ADMIN') {
-    return ROLE_DASHBOARD_MAP.subcity_admin;
+  // ALL subcity_* roles (subcity_admin, SUBCITY_ADMIN, subcity_bole, subcity_yeka,
+  // any future subcity_<name>) land on the dedicated SubcityDashboard.
+  // This gives every subcity admin their own isolated governance dashboard.
+  if (role === 'subcity_admin' || role === 'SUBCITY_ADMIN' || role.startsWith('subcity_')) {
+    return '/dashboard/subcity';
   }
-  // Legacy subcity-admin roles are derived from the Subcity collection (Bole →
-  // subcity_bole, Koye → subcity_koye, …), so any other subcity_* role lands on
-  // the shared locality dashboard.
-  if (role.startsWith('subcity_')) return '/dashboard';
   const base = ROLE_DASHBOARD_MAP[role] || '/';
   if (role === 'government' && user.administrativeLevel) {
     return GOV_LEVEL_ROUTES[user.administrativeLevel] || base;

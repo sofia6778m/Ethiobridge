@@ -10,6 +10,9 @@ const {
   trackComplaint,
   reopenByTracking,
   updateStatus,
+  getAssignableOfficers,
+  assignOfficer,
+  confirmResolution,
   requestWoredaInfo,
   respondToWoredaRequest,
   respondToCitizen,
@@ -63,6 +66,9 @@ router.post('/:id/resolve', protect, authorize(...GOVERNANCE_MANAGER_ROLES), res
 router.post('/:id/reject', protect, authorize(...GOVERNANCE_MANAGER_ROLES), rejectComplaint);
 router.post('/:id/escalate', protect, authorize(...GOVERNANCE_MANAGER_ROLES), escalateComplaint);
 router.post('/:id/status', protect, authorize(...GOVERNANCE_MANAGER_ROLES), updateStatus);
+router.get('/:id/assignable-officers', protect, authorize(...SUB_CITY_OFFICER_ROLES), getAssignableOfficers);
+router.post('/:id/assign', protect, authorize(...SUB_CITY_OFFICER_ROLES), assignOfficer);
+router.post('/:id/confirm-resolution', protect, authorize('citizen', 'CITIZEN'), confirmResolution);
 router.get('/:id', protect, authorize(...GOVERNANCE_VIEWER_ROLES), getComplaintById);
 
 module.exports = router;

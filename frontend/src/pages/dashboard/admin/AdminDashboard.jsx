@@ -19,11 +19,7 @@ import MunicipalComplaintList from '../municipal/MunicipalComplaintList';
 import MunicipalComplaintDetail from '../municipal/MunicipalComplaintDetail';
 import GovernanceComplaintList from '../governance/GovernanceComplaintList';
 import GovernanceComplaintDetail from '../governance/GovernanceComplaintDetail';
-import GovernanceManagementOverview from '../subcity/governance/GovernanceManagementOverview';
-import GovernanceOffices from '../subcity/governance/GovernanceOffices';
-import GovernanceCategories from '../subcity/governance/GovernanceCategories';
-import GovernanceOfficers from '../subcity/governance/GovernanceOfficers';
-import GovernanceAnalytics from '../subcity/governance/GovernanceAnalytics';
+import AdminGovernanceStats from './AdminGovernanceStats';
 import AdminComplaints from './AdminComplaints';
 import AdminAlerts from './AdminAlerts';
 import CreateAlertForm from '../government/CreateAlertForm';
@@ -42,10 +38,9 @@ export default function AdminDashboard() {
     { path: '/dashboard/admin/payment-methods', icon: '💳', label: 'Payment Methods' },
     { path: '/dashboard/admin/users',        icon: '👥', label: t('dashboard.userManagement') },
     { path: '/dashboard/admin/reports',      icon: '📋', label: t('dashboard.reportManagement') },
-    { path: '/dashboard/admin/complaints', icon: '🏛️', label: 'Complaint Management' },
+    { path: '/dashboard/admin/complaints',   icon: '🏛️', label: 'Complaint Management' },
     { path: '/dashboard/admin/governance-complaints', icon: '⚖️', label: 'Governance Complaints' },
-    { path: '/dashboard/admin/governance-management', icon: '🗂️', label: 'Governance Management' },
-    { path: '/dashboard/admin/governance-management/analytics', icon: '📈', label: 'Governance Analytics' },
+    { path: '/dashboard/admin/governance-stats', icon: '🗂️', label: 'Governance Statistics' },
     { path: '/dashboard/admin/activity',     icon: '📜', label: t('admin.activityLog') },
     { path: '/dashboard/admin/subcities',    icon: '🏙️', label: 'Subcity Management' },
     { path: '/dashboard/admin/woredas',      icon: '🏘️', label: 'Woreda Management' },
@@ -74,11 +69,9 @@ export default function AdminDashboard() {
         <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
         <Route path="governance-complaints" element={<GovernanceComplaintList basePath="/dashboard/admin/governance-complaints" />} />
         <Route path="governance-complaints/:id" element={<GovernanceComplaintDetail basePath="/dashboard/admin/governance-complaints" />} />
-        <Route path="governance-management" element={<GovernanceManagementOverview />} />
-        <Route path="governance-management/offices" element={<GovernanceOffices />} />
-        <Route path="governance-management/categories" element={<GovernanceCategories />} />
-        <Route path="governance-management/officers" element={<GovernanceOfficers />} />
-        <Route path="governance-management/analytics" element={<GovernanceAnalytics />} />
+        {/* Read-only governance statistics — management (create/edit/delete) is
+            owned exclusively by each Subcity Admin via the Subcity Dashboard. */}
+        <Route path="governance-stats" element={<AdminGovernanceStats />} />
         <Route path="activity"   element={<AdminActivity />} />
         <Route path="subcities"  element={<AdminSubcityManagement />} />
         <Route path="woredas"    element={<AdminWoredaManagement />} />

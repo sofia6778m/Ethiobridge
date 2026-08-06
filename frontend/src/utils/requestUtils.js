@@ -5,6 +5,26 @@
 
 import API from '../services/api';
 
+// Extracts an array from the many response shapes the API returns. Never
+// returns null/undefined — callers can safely map over the result.
+//   { subcities: [...] }                 /api/public/subcities, /api/admin/subcities
+//   { data: [...] }                      /api/subcities, /api/woredas?subcityId=
+//   { data: { subcities: [...] } }       legacy nested shape
+//   { data: { woredas: [...] } }         /api/public-complaints/subcity-woredas
+export const extractList = (res, key) => {
+  const body = res?.data && typeof res.data === 'object' ? res.data : res;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body)) return body;
+  if (key && Array.isArray(body[key])) return body[key];
+  const nested = body.data;
+  if (Array.isArray(nested)) return nested;
+  if (key && nested && typeof nested === 'object') {
+    if (Array.isArray(nested[key])) return nested[key];
+    if (Array.isArray(nested.data?.[key])) return nested.data[key];
+  }
+  return [];
+};
+
 export const DEFAULT_RETRIES = 2;
 export const DEFAULT_BASE_DELAY_MS = 500;
 export const DEFAULT_TIMEOUT_MS = 15000;

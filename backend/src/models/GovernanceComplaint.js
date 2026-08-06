@@ -119,6 +119,9 @@ const auditEntrySchema = new mongoose.Schema(
     userName: { type: String, default: 'System' },
     role: { type: String, default: 'system' },
     details: { type: String, default: '' },
+    oldStatus: { type: String, default: '' },
+    newStatus: { type: String, default: '' },
+    ipAddress: { type: String, default: '' },
   },
   { timestamps: { createdAt: 'at', updatedAt: false } }
 );
@@ -199,6 +202,9 @@ const governanceComplaintSchema = new mongoose.Schema(
     closedAt: { type: Date },
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     closedByName: { type: String, default: '' },
+    // Citizen confirmation of the resolution
+    confirmedByCitizen: { type: Boolean, default: false },
+    confirmedAt: { type: Date },
     // Logs
     timeline: [timelineEntrySchema],
     auditTrail: [auditEntrySchema],
@@ -233,12 +239,24 @@ governanceComplaintSchema.pre('save', async function (next) {
 });
 
 // Backfill SLA deadline after insert (createdAt is only known post-insert).
+// The deadline is resolved from the category-based SlaRule collection
+// (corruption = 3d, unreasonable delay = 7d, unprofessional conduct = 5d,
+// default = 48h) so every complaint carries a category-appropriate due date.
 governanceComplaintSchema.post('save', async function (doc) {
   if (!doc.slaDueAt && doc.createdAt) {
-    await mongoose.model('GovernanceComplaint').updateOne(
-      { _id: doc._id, slaDueAt: { $exists: false } },
-      { $set: { slaDueAt: new Date(doc.createdAt.getTime() + 48 * 60 * 60 * 1000) } }
-    );
+    try {
+      const { resolveSlaDueAt } = require('../utils/slaRules');
+      const due = await resolveSlaDueAt(doc.category, doc.subcityId, doc.createdAt);
+      await mongoose.model('GovernanceComplaint').updateOne(
+        { _id: doc._id, slaDueAt: { $exists: false } },
+        { $set: { slaDueAt: due } }
+      );
+    } catch (err) {
+      await mongoose.model('GovernanceComplaint').updateOne(
+        { _id: doc._id, slaDueAt: { $exists: false } },
+        { $set: { slaDueAt: new Date(doc.createdAt.getTime() + 48 * 60 * 60 * 1000) } }
+      );
+    }
   }
 });
 

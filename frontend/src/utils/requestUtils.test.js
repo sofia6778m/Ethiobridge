@@ -7,6 +7,7 @@ import {
   classifyError,
   sleep,
   backoffDelay,
+  extractList,
 } from './requestUtils';
 
 vi.mock('../services/api', () => ({
@@ -139,5 +140,24 @@ describe('getWithRetry', () => {
     const controller = new AbortController();
     await getWithRetry('/x', { params: { page: 2 }, signal: controller.signal });
     expect(mockGet.mock.calls[0][1]).toMatchObject({ params: { page: 2 }, signal: controller.signal });
+  });
+});
+
+describe('extractList', () => {
+  it('extracts the array from every response shape the API returns', () => {
+    expect(extractList({ data: { success: true, subcities: [{ _id: '1' }] } }, 'subcities')).toEqual([{ _id: '1' }]);
+    expect(extractList({ data: { success: true, data: [{ _id: '2' }] } }, 'subcities')).toEqual([{ _id: '2' }]);
+    expect(extractList({ data: { success: true, data: { subcities: [{ _id: '3' }] } } }, 'subcities')).toEqual([{ _id: '3' }]);
+    expect(extractList({ data: { success: true, woredas: [{ _id: '4' }] } }, 'woredas')).toEqual([{ _id: '4' }]);
+    expect(extractList({ data: { success: true, data: [{ _id: '5' }] } }, 'woredas')).toEqual([{ _id: '5' }]);
+  });
+
+  it('returns [] instead of crashing on null, empty or malformed payloads', () => {
+    expect(extractList({ data: null }, 'subcities')).toEqual([]);
+    expect(extractList({}, 'subcities')).toEqual([]);
+    expect(extractList({ data: { success: true } }, 'subcities')).toEqual([]);
+    expect(extractList({ data: { success: true, subcities: 'nope' } }, 'subcities')).toEqual([]);
+    expect(extractList(undefined, 'subcities')).toEqual([]);
+    expect(extractList(null, 'subcities')).toEqual([]);
   });
 });

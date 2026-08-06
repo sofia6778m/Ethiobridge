@@ -10,6 +10,7 @@
  */
 const GovernmentOffice = require('../models/GovernmentOffice');
 const ComplaintCategory = require('../models/ComplaintCategory');
+const SlaRule = require('../models/SlaRule');
 const Subcity = require('../models/Subcity');
 const { DEFAULT_GOVERNANCE_CATEGORIES } = require('../models/GovernanceComplaint');
 
@@ -24,6 +25,15 @@ const DEFAULT_OFFICES = [
   { name: 'Social Affairs Office', description: 'Social protection and welfare services' },
   { name: 'Justice / Legal Affairs Office', description: 'Legal aid and dispute resolution support' },
   { name: 'Urban Planning & Development Office', description: 'Permits, construction and urban development' },
+];
+
+// Category-based SLA response deadlines (global). Subcity admins may add
+// per-subcity overrides on top of these via the management UI.
+const DEFAULT_SLA_RULES = [
+  { categoryName: 'Corruption / Bribery', responseDays: 3, description: 'High-priority handling — 3 day response deadline.' },
+  { categoryName: 'Unreasonable Delay', responseDays: 7, description: 'Service-delay complaints — 7 day response deadline.' },
+  { categoryName: 'Unprofessional Conduct', responseDays: 5, description: 'Conduct complaints — 5 day response deadline.' },
+  { categoryName: 'default', responseDays: 2, description: 'Default 48-hour response deadline for all other categories.' },
 ];
 
 const seedGovernanceMasterData = async () => {
@@ -59,7 +69,15 @@ const seedGovernanceMasterData = async () => {
       }
     }
 
-    console.log(`[Governance] Seed complete — ${officesCreated} office(s), ${categoriesCreated} categor(y/ies) created across ${subcities.length} subcities.`);
+    // Seed global SLA rules (idempotent — global defaults are never overwritten).
+    for (const rule of DEFAULT_SLA_RULES) {
+      const key = String(rule.categoryName).trim().toLowerCase();
+      const existing = await SlaRule.findOne({ key, subcityId: null });
+      if (existing) continue;
+      await SlaRule.create({ ...rule, key, subcityId: null, isActive: true });
+    }
+
+    console.log(`[Governance] Seed complete — ${officesCreated} office(s), ${categoriesCreated} categor(y/ies) created across ${subcities.length} subcities, ${DEFAULT_SLA_RULES.length} SLA rule(s) ensured.`);
   } catch (err) {
     console.warn('[Governance] Seed warning:', err.message);
   }

@@ -33,6 +33,20 @@ function Section({ title, children, action }) {
   );
 }
 
+function AttachmentChip({ url, label, onOpen, className }) {
+  return (
+    <span className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs border ${className || 'bg-gray-50 dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-700'}`}>
+      <button type="button" onClick={() => onOpen(url)} className="font-medium underline">{label}</button>
+      <a href={url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-primary-600 dark:text-primary-400 hover:underline">↗</a>
+    </span>
+  );
+}
+
+function slaRemaining(slaDueAt) {
+  if (!slaDueAt) return null;
+  return Math.ceil((new Date(slaDueAt).getTime() - Date.now()) / (24 * 3600000));
+}
+
 export default function GovernanceComplaintDetail({ basePath }) {
   const { id } = useParams();
   const { user } = useAuth();
@@ -59,6 +73,10 @@ export default function GovernanceComplaintDetail({ basePath }) {
   const [citizenResponse, setCitizenResponse] = useState('');
   const [citizenResponseFiles, setCitizenResponseFiles] = useState([]);
   const [infoRequest, setInfoRequest] = useState('');
+  const [officers, setOfficers] = useState([]);
+  const [officerId, setOfficerId] = useState('');
+  const [assignNote, setAssignNote] = useState('');
+  const [lightbox, setLightbox] = useState(null);
   const [busy, setBusy] = useState(false);
 
   const respondFileRef = useRef(null);
@@ -99,6 +117,16 @@ export default function GovernanceComplaintDetail({ basePath }) {
   const isWoredaOfficer = ['woreda', 'woreda_admin', 'WOREDA_ADMIN', 'WOREDA_HEAD', 'OFFICER'].includes(role);
   const canManage = isSubcityOfficer; // managers = admin/subcity roles
   const canRespond = isWoredaOfficer;
+
+  useEffect(() => {
+    if (!complaint || !canManage || isClosed(complaint.status)) return;
+    let active = true;
+    governanceComplaintAPI
+      .assignableOfficers(id)
+      .then((res) => { if (active) setOfficers(res.data.data || []); })
+      .catch(() => { if (active) setOfficers([]); });
+    return () => { active = false; };
+  }, [complaint, id, canManage]);
 
   const run = async (fn, successMsg) => {
     setBusy(true);
@@ -186,6 +214,18 @@ export default function GovernanceComplaintDetail({ basePath }) {
     run(() => governanceComplaintAPI.requestMoreInfo(id, { message: infoRequest.trim() }), 'Additional information requested');
   };
 
+  const handleAssign = () => {
+    if (!officerId) { toast.error('Select an officer'); return; }
+    const payload = { officerId };
+    if (assignNote.trim()) payload.note = assignNote.trim();
+    run(() => governanceComplaintAPI.assign(id, payload), 'Officer assigned');
+  };
+
+  const handleConfirmResolution = () => {
+    if (!window.confirm('Confirm that this complaint has been resolved to your satisfaction?')) return;
+    run(() => governanceComplaintAPI.confirmResolution(id), 'Resolution confirmed');
+  };
+
   if (loading) return <LoadingSpinner />;
   if (loadError && !complaint) {
     return (
@@ -224,6 +264,16 @@ export default function GovernanceComplaintDetail({ basePath }) {
             {complaint.isOverdue && !closed && (
               <span className="px-3 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">Overdue</span>
             )}
+            {complaint.slaDueAt && (
+              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                closed ? 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                  : complaint.isOverdue || (slaRemaining(complaint.slaDueAt) ?? 0) < 0 ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                    : (slaRemaining(complaint.slaDueAt) ?? 0) <= 1 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                      : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+              }`}>
+                SLA {closed ? 'met' : complaint.isOverdue ? 'breached' : `due in ${slaRemaining(complaint.slaDueAt)}d`}
+              </span>
+            )}
           </div>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-300 mt-4 whitespace-pre-wrap">{complaint.description}</p>
@@ -234,12 +284,14 @@ export default function GovernanceComplaintDetail({ basePath }) {
         <Meta label="Subcity" value={complaint.subcity || '—'} />
         <Meta label="Woreda" value={complaint.woredaName || '—'} />
         <Meta label="Office / Bureau" value={complaint.office || '—'} />
+        <Meta label="Assigned Officer" value={complaint.assignedTo?.fullName || '—'} />
         <Meta label="Reporter" value={complaint.isAnonymous ? 'Anonymous' : (complaint.reporterName || '—')} />
         <Meta label="Phone (tracking)" value={complaint.reporterPhone || '—'} />
         <Meta label="Incident Date" value={complaint.incidentDate ? fmtShortDate(complaint.incidentDate) : '—'} />
         <Meta label="Incident Time" value={complaint.incidentTime || '—'} />
         <Meta label="SLA Due" value={complaint.slaDueAt ? fmtShortDate(complaint.slaDueAt) : '—'} />
         {complaint.resolvedAt && <Meta label="Resolved On" value={fmtDate(complaint.resolvedAt)} />}
+        {complaint.confirmedByCitizen && <Meta label="Citizen Confirmation" value={`Yes · ${fmtDate(complaint.confirmedAt)}`} />}
         {complaint.escalatedAt && <Meta label="Escalated To" value={`${complaint.escalatedTo || ''} · ${fmtDate(complaint.escalatedAt)}`} />}
         {complaint.reopenedAt && <Meta label="Reopened On" value={fmtDate(complaint.reopenedAt)} />}
       </div>
@@ -290,6 +342,21 @@ export default function GovernanceComplaintDetail({ basePath }) {
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Investigation Note</p>
               <textarea rows={2} value={noteDraft} onChange={e => setNoteDraft(e.target.value)} placeholder="Internal investigation note…" className="input-field resize-none" />
               <button onClick={handleAddNote} disabled={busy} className="btn-secondary text-sm w-full">Add Note</button>
+            </div>
+
+            {/* Assign officer */}
+            <div className="space-y-2 border border-indigo-100 dark:border-indigo-800/40 rounded-lg p-3">
+              <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wider">Assign Officer</p>
+              <select value={officerId} onChange={e => setOfficerId(e.target.value)} className="input-field">
+                <option value="">Select an officer…</option>
+                {officers.map(o => (
+                  <option key={o._id} value={o._id}>
+                    {o.fullName} ({o.role === 'OFFICE_SUPERVISOR' ? 'Supervisor' : 'Officer'}) — {o.governmentOfficeName}
+                  </option>
+                ))}
+              </select>
+              <textarea rows={2} value={assignNote} onChange={e => setAssignNote(e.target.value)} placeholder="Assignment note (optional)…" className="input-field resize-none" />
+              <button onClick={handleAssign} disabled={busy} className="btn-secondary text-sm w-full">Assign Officer</button>
             </div>
 
             {/* Official documents */}
@@ -347,6 +414,21 @@ export default function GovernanceComplaintDetail({ basePath }) {
         </Section>
       )}
 
+      {/* Citizen resolution confirmation */}
+      {complaint.status === 'Resolved' && user && !complaint.confirmedByCitizen &&
+        (String(complaint.reporter || '') === String(user._id) ||
+          (!complaint.reporter && user.phone && String(complaint.reporterPhone || '').replace(/\s+/g, '') === String(user.phone).replace(/\s+/g, ''))) && (
+        <Section title="Confirm Resolution">
+          <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+            The Subcity Governance Office marked this complaint as resolved. If you are satisfied with the outcome,
+            please confirm so the case can be closed in the registry.
+          </p>
+          <button onClick={handleConfirmResolution} disabled={busy} className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors">
+            Confirm Resolution
+          </button>
+        </Section>
+      )}
+
       {/* Woreda response panel */}
       {canRespond && pendingWoredaRequests.length > 0 && (
         <Section title="Respond to Woreda Request">
@@ -374,7 +456,7 @@ export default function GovernanceComplaintDetail({ basePath }) {
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Citizen evidence</p>
               <div className="flex flex-wrap gap-2">
                 {complaint.evidenceFiles.map((url, i) => (
-                  <a key={i} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700">📎 Evidence {i + 1}</a>
+                  <AttachmentChip key={i} url={url} label={`Evidence ${i + 1}`} onOpen={setLightbox} />
                 ))}
               </div>
             </div>
@@ -384,7 +466,7 @@ export default function GovernanceComplaintDetail({ basePath }) {
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Official documents</p>
               <div className="flex flex-wrap gap-2">
                 {complaint.officialDocuments.map((url, i) => (
-                  <a key={i} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">📄 Official doc {i + 1}</a>
+                  <AttachmentChip key={i} url={url} label={`Official doc ${i + 1}`} onOpen={setLightbox} className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" />
                 ))}
               </div>
             </div>
@@ -406,7 +488,7 @@ export default function GovernanceComplaintDetail({ basePath }) {
                 {r.files?.length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
                     {r.files.map((url, j) => (
-                      <a key={j} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-emerald-600 underline">attachment {j + 1}</a>
+                      <AttachmentChip key={j} url={url} label={`attachment ${j + 1}`} onOpen={setLightbox} className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" />
                     ))}
                   </div>
                 )}
@@ -434,7 +516,7 @@ export default function GovernanceComplaintDetail({ basePath }) {
                     {r.responseFiles?.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-2">
                         {r.responseFiles.map((url, j) => (
-                          <a key={j} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary-600 underline">evidence {j + 1}</a>
+                          <AttachmentChip key={j} url={url} label={`evidence ${j + 1}`} onOpen={setLightbox} />
                         ))}
                       </div>
                     )}
@@ -458,7 +540,7 @@ export default function GovernanceComplaintDetail({ basePath }) {
                 {a.files?.length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
                     {a.files.map((url, j) => (
-                      <a key={j} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary-600 underline">attachment {j + 1}</a>
+                      <AttachmentChip key={j} url={url} label={`attachment ${j + 1}`} onOpen={setLightbox} className="bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800" />
                     ))}
                   </div>
                 )}
@@ -508,6 +590,29 @@ export default function GovernanceComplaintDetail({ basePath }) {
       <div className="text-center text-xs text-gray-400 pb-4">
         Active statuses: {ACTIVE_STATUSES.join(' · ')}
       </div>
+
+      {/* Attachment lightbox */}
+      {lightbox && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
+          <div className="relative max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute -top-3 -right-3 z-10 bg-gray-800 hover:bg-gray-700 text-white rounded-full w-9 h-9 text-base font-bold"
+              aria-label="Close preview"
+            >
+              ✕
+            </button>
+            {String(lightbox).split('?')[0].toLowerCase().endsWith('.pdf') ? (
+              <iframe src={lightbox} title="attachment preview" className="w-full h-[80vh] bg-white rounded-lg" />
+            ) : (
+              <img src={lightbox} alt="attachment preview" className="w-full max-h-[80vh] object-contain rounded-lg bg-white" />
+            )}
+            <a href={lightbox} target="_blank" rel="noreferrer" className="block text-center text-xs text-gray-300 hover:text-white mt-2 underline">
+              Open in new tab
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@ const net = require('net');
 const { Server } = require('socket.io');
 const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
+const { protect, protectOptional, authorize } = require('./middleware/auth');
 const { generalLimiter } = require('./middleware/rateLimiter');
 
 // Import routes
@@ -33,6 +34,7 @@ const workflowComplaintRoutes = require('./routes/workflowComplaintRoutes');
 const municipalComplaintRoutes = require('./routes/municipalComplaintRoutes');
 const governanceComplaintRoutes = require('./routes/governanceComplaintRoutes');
 const governanceManagementRoutes = require('./routes/governanceManagementRoutes');
+const subcityGovernanceRoutes = require('./routes/subcityGovernanceRoutes');
 const hierarchyRoutes = require('./routes/hierarchyRoutes');
 const userRoutes = require('./routes/userRoutes');
 const donationRoutes = require('./routes/donationRoutes');
@@ -136,11 +138,62 @@ app.use('/api/workflow-complaints', workflowComplaintRoutes);
 app.use('/api/municipal-complaints', municipalComplaintRoutes);
 app.use('/api/governance-complaints', governanceComplaintRoutes);
 app.use('/api/governance-management', governanceManagementRoutes);
-// Public alias routes for governance master-data dropdowns (specified as
-// GET /api/government-offices?subcityId= and GET /api/complaint-categories?officeId=).
-const { getOffices, getCategories } = require('./controllers/governanceManagementController');
+// Subcity-scoped governance management — exclusively for Subcity Admin users.
+// Mirrors /api/governance-management/* but restricted to subcity_* roles so the
+// ownership boundary is enforced at the route level as well as the controller.
+app.use('/api/subcity', subcityGovernanceRoutes);
+// Public alias routes for governance master data (specified REST endpoints):
+//   GET  /api/government-offices
+//   POST /api/government-offices
+//   GET  /api/government-offices/by-subcity/:subcityId   (dynamic dropdown)
+//   GET  /api/government-offices/:id
+//   PUT  /api/government-offices/:id
+//   DELETE /api/government-offices/:id
+//   GET  /api/governance-users
+//   POST /api/governance-users
+//   GET  /api/governance-users/:id
+//   PUT  /api/governance-users/:id
+//   DELETE /api/governance-users/:id
+// The /api/government-offices/by-subcity/:subcityId route MUST be registered
+// before /api/government-offices/:id so Express doesn't treat "by-subcity" as
+// an office id. Reads are protectOptional (public complaint form + scoped admin
+// reads); writes are restricted to Subcity Admin roles — the controller also
+// enforces subcity isolation as a second layer of defence.
+const {
+  getOffices,
+  getOffice,
+  getOfficesBySubcityId,
+  getCategories,
+  createOffice,
+  updateOffice,
+  deleteOffice,
+  getOfficers,
+  getOfficer,
+  createOfficer,
+  updateOfficer,
+  deleteOfficer,
+} = require('./controllers/governanceManagementController');
+const subcityGovernanceRoles = ['SUBCITY_ADMIN', 'SUBCITY_HEAD', 'subcity_admin', 'subcity_bole'];
+
+// Reads (public dropdowns + scoped admin reads)
+app.get('/api/government-offices/by-subcity/:subcityId', protectOptional, getOfficesBySubcityId);
+// NOTE: GET /api/government-offices stays middleware-free so the public
+// complaint form (which passes ?subcityId=) always gets the public branch.
 app.get('/api/government-offices', getOffices);
+app.get('/api/government-offices/:id', protectOptional, getOffice);
 app.get('/api/complaint-categories', getCategories);
+
+// Government office writes — Subcity Admin only
+app.post('/api/government-offices', protect, authorize(...subcityGovernanceRoles), createOffice);
+app.put('/api/government-offices/:id', protect, authorize(...subcityGovernanceRoles), updateOffice);
+app.delete('/api/government-offices/:id', protect, authorize(...subcityGovernanceRoles), deleteOffice);
+
+// Governance user (officer) endpoints — Subcity Admin only
+app.get('/api/governance-users', protect, authorize(...subcityGovernanceRoles), getOfficers);
+app.post('/api/governance-users', protect, authorize(...subcityGovernanceRoles), createOfficer);
+app.get('/api/governance-users/:id', protect, authorize(...subcityGovernanceRoles), getOfficer);
+app.put('/api/governance-users/:id', protect, authorize(...subcityGovernanceRoles), updateOfficer);
+app.delete('/api/governance-users/:id', protect, authorize(...subcityGovernanceRoles), deleteOfficer);
 app.use('/api/hierarchy', hierarchyRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/donations', donationRoutes);

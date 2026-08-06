@@ -6,6 +6,8 @@ import { normalizeRole, getRoleDashboard } from '../../utils/roleRoutes';
 
 // Roles that render the shared locality dashboard directly under /dashboard.
 // These are the only roles whose canonical base path is /dashboard itself.
+// NOTE: subcity_* roles are intentionally excluded — they redirect to the
+// dedicated SubcityDashboard (/dashboard/subcity) for full multi-tenant isolation.
 const SHARED_ROLES = [
   'woreda',
   'inspector',
@@ -35,9 +37,14 @@ export default function DashboardRouter() {
     return <UnauthorizedPage />;
   }
 
-  // Derived subcity-admin roles (subcity_bole, subcity_koye, …) share the
-  // shared dashboard; the canonical subcity_admin uses the dedicated one.
-  if (role.startsWith('subcity_') || SHARED_ROLES.includes(role)) {
+  // All subcity_* roles — canonical (subcity_admin, SUBCITY_ADMIN) and derived
+  // (subcity_bole, subcity_yeka, subcity_koye, …) — get the dedicated
+  // SubcityDashboard so every subcity admin sees only their own data.
+  if (role.startsWith('subcity_') || role === 'SUBCITY_ADMIN') {
+    return <Navigate to="/dashboard/subcity" replace />;
+  }
+
+  if (SHARED_ROLES.includes(role)) {
     return <SharedDashboard />;
   }
 

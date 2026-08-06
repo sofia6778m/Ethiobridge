@@ -1,12 +1,17 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { toast } from 'react-toastify';
-import { governanceComplaintAPI, governanceManagementAPI } from '../../services/api';
-import { getWithRetry, isCanceledError } from '../../utils/requestUtils';
+import { governanceComplaintAPI } from '../../services/api';
+import { getWithRetry, isCanceledError, extractList } from '../../utils/requestUtils';
+import { useProfileForm } from '../../hooks/useProfileForm';
+import useSubcityOptions from '../../hooks/useSubcityOptions';
+import FormSection from '../../components/common/FormSection';
 import { URGENCY_LEVELS } from './governanceMeta';
 
 const MAX_TOTAL_FILES = 8;
 const MAX_FILE_MB = 50;
 const TOTAL_MB = 50;
+
+const PHONE_RE = /^(\+?251|0)?9\d{8}$/;
 
 const FILE_ICONS = {
   image: '🖼️',
@@ -15,8 +20,37 @@ const FILE_ICONS = {
   document: '📄',
 };
 
+// Module-scope wrapper (stable identity). Defining it inside the component body
+// would make React remount it on every keystroke and drop input focus.
+const UploadZone = ({ icon, label, hint, fileList, onPick, onRemove, zoneCls = '' }) => (
+  <div>
+    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{label}</label>
+    <div
+      onClick={onPick}
+      className={`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-5 text-center cursor-pointer hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50/30 dark:hover:bg-emerald-900/10 transition-colors ${zoneCls}`}
+    >
+      <span className="text-2xl">{icon}</span>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{hint}</p>
+    </div>
+    {fileList.length > 0 && (
+      <div className="space-y-2 mt-3">
+        {fileList.map((f, i) => (
+          <div key={i} className="flex items-center gap-2 bg-gray-50 dark:bg-gray-700 rounded-lg px-3 py-2 text-xs group">
+            <span className="text-gray-400">{FILE_ICONS[f.type.startsWith('image/') ? 'image' : f.type.startsWith('video/') ? 'video' : f.type.startsWith('audio/') ? 'audio' : 'document']}</span>
+            <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{f.name}</span>
+            <span className="text-gray-400">{(f.size / 1024 / 1024).toFixed(1)}MB</span>
+            <button type="button" onClick={() => onRemove(i)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
 export default function GovernanceComplaintForm({ user, onSuccess, submitLabel = 'Submit Complaint', backLink }) {
-  const [form, setForm] = useState({
+  // Initialized ONCE from the profile — never re-initialized on re-renders, so
+  // the auto-filled contact fields stay editable without losing focus.
+  const { form, set, errors, setErrors } = useProfileForm(() => ({
     fullName: user?.fullName || '',
     phone: user?.phone || '',
     email: user?.email || '',
@@ -35,9 +69,17 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     urgencyLevel: 'Medium',
     isAnonymous: false,
     consent: false,
+  }));
+  // Stable onError identity so useSubcityOptions never aborts/restarts the
+  // in-flight subcity request on every keystroke (that left the dropdown stuck
+  // on "Loading subcities…").
+  const onSubcitiesError = useCallback(
+    () => toast.error('Unable to load subcities. Please try again.'),
+    []
+  );
+  const { subcities, subcitiesLoading, subcitiesError, reloadSubcities } = useSubcityOptions({
+    onError: onSubcitiesError,
   });
-  const [errors, setErrors] = useState({});
-  const [subcities, setSubcities] = useState([]);
   const [woredas, setWoredas] = useState([]);
   const [offices, setOffices] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -45,36 +87,23 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
   const [documents, setDocuments] = useState([]);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [routingLoading, setRoutingLoading] = useState(false);
+  const [woredasLoading, setWoredasLoading] = useState(false);
+  const [officesLoading, setOfficesLoading] = useState(false);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const imageRef = useRef(null);
   const documentRef = useRef(null);
   const videoRef = useRef(null);
-  const woredaReqRef = useRef(null);
+  const routingReqRef = useRef(null);
   const officeReqRef = useRef(null);
+  const loadedSubcityRef = useRef(null);
+  const loadedOfficeRef = useRef(null);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let cancelled = false;
-    getWithRetry('/public/subcities', { signal: controller.signal, timeout: 10000 })
-      .then((res) => { if (!cancelled) setSubcities(res.data.subcities || []); })
-      .catch((err) => { if (!cancelled && !isCanceledError(err)) toast.error('Could not load subcities'); });
-    return () => { cancelled = true; controller.abort(); };
-  }, []);
-
-  const set = useCallback((key, value) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    setErrors((prev) => { if (!prev[key]) return prev; const next = { ...prev }; delete next[key]; return next; });
-  }, []);
-
+  // ── Subcity → Woreda + Government Office ─────────────────────────────────────
   const handleSubcityChange = async (subcityId) => {
-    woredaReqRef.current?.abort();
-    officeReqRef.current?.abort();
-    const controller = new AbortController();
-    woredaReqRef.current = controller;
     const subcityRecord = subcities.find((s) => s._id === subcityId);
-    const subcity = subcityRecord?.name || '';
-    set('subcity', subcity);
+
+    // Reset every dependent value immediately so no stale data survives a change.
+    set('subcity', subcityRecord?.name || '');
     set('woredaId', '');
     set('officeId', '');
     set('office', '');
@@ -83,49 +112,97 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     setWoredas([]);
     setOffices([]);
     setCategories([]);
-    if (!subcityId) return;
-    setRoutingLoading(true);
-    try {
-      const [wr, officesRes] = await Promise.all([
-        getWithRetry('/public-complaints/subcity-woredas', {
-          params: { subcity },
-          signal: controller.signal,
-          timeout: 10000,
-        }),
-        governanceManagementAPI.getPublicOffices({ subcityId }).catch(() => null),
-      ]);
-      if (controller.signal.aborted) return;
-      const woredaList = wr.data.woredas || [];
-      setWoredas(woredaList);
-      const officeList = officesRes?.data?.data?.offices || [];
-      setOffices(officeList);
-    } catch (err) {
-      if (!isCanceledError(err)) toast.error('Could not load woredas');
-    } finally {
-      setRoutingLoading(false);
-    }
-  };
 
-  const handleOfficeChange = async (officeId) => {
+    // Cleared selection — stop; nothing to load.
+    if (!subcityId) {
+      loadedSubcityRef.current = null;
+      return;
+    }
+    // Validate the selected subcity exists before making any request.
+    if (!subcityRecord || !subcityRecord._id) {
+      toast.error('Please choose a valid subcity.');
+      return;
+    }
+    // Prevent duplicate requests when the same subcity is re-selected.
+    if (loadedSubcityRef.current === subcityRecord._id) return;
+    loadedSubcityRef.current = subcityRecord._id;
+
+    routingReqRef.current?.abort();
     officeReqRef.current?.abort();
     const controller = new AbortController();
-    officeReqRef.current = controller;
+    routingReqRef.current = controller;
+
+    setWoredasLoading(true);
+    setOfficesLoading(true);
+
+    const woredaTask = getWithRetry('/woredas', {
+      params: { subcityId },
+      signal: controller.signal,
+      timeout: 10000,
+    })
+      .then((res) => (controller.signal.aborted ? [] : extractList(res, 'woredas')))
+      .catch((err) => {
+        if (isCanceledError(err)) return null;
+        toast.error('Unable to load woredas. Please try again.');
+        return null;
+      })
+      .finally(() => { if (!controller.signal.aborted) setWoredasLoading(false); });
+
+    const officeTask = getWithRetry(`/government-offices/by-subcity/${subcityRecord._id}`, {
+      signal: controller.signal,
+      timeout: 10000,
+    })
+      .then((res) => (controller.signal.aborted ? [] : res.data?.data?.offices || []))
+      .catch((err) => {
+        if (isCanceledError(err)) return null;
+        toast.error('Unable to load government offices. Please try again.');
+        return null;
+      })
+      .finally(() => { if (!controller.signal.aborted) setOfficesLoading(false); });
+
+    const [woredaList, officeList] = await Promise.all([woredaTask, officeTask]);
+    if (controller.signal.aborted) return;
+    setWoredas(Array.isArray(woredaList) ? woredaList : []);
+    setOffices(Array.isArray(officeList) ? officeList : []);
+  };
+
+  // ── Government Office → Complaint Categories ─────────────────────────────────
+  const handleOfficeChange = async (officeId) => {
     const office = offices.find((o) => o._id === officeId);
     set('officeId', officeId);
     set('office', office?.name || '');
     set('categoryId', '');
     set('category', '');
     setCategories([]);
-    if (!officeId) return;
+    if (!officeId) {
+      loadedOfficeRef.current = null;
+      return;
+    }
+    if (!office || !office._id) {
+      toast.error('Please choose a valid government office.');
+      return;
+    }
+    // Prevent duplicate requests when the same office is re-selected.
+    if (loadedOfficeRef.current === office._id) return;
+    loadedOfficeRef.current = office._id;
+
+    officeReqRef.current?.abort();
+    const controller = new AbortController();
+    officeReqRef.current = controller;
     setCategoriesLoading(true);
     try {
-      const res = await governanceManagementAPI.getPublicCategories({ officeId });
+      const res = await getWithRetry('/complaint-categories', {
+        params: { officeId },
+        signal: controller.signal,
+        timeout: 10000,
+      });
       if (controller.signal.aborted) return;
-      setCategories(res.data?.data?.categories || []);
+      const list = res.data?.data?.categories || res.data?.categories || [];
+      setCategories(Array.isArray(list) ? list : []);
     } catch (err) {
-      if (!isCanceledError(err)) toast.error('Could not load complaint categories');
+      if (!isCanceledError(err)) toast.error('Unable to load complaint categories. Please try again.');
     } finally {
-      setCategoriesLoading(false);
+      if (!controller.signal.aborted) setCategoriesLoading(false);
     }
   };
 
@@ -184,8 +261,9 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
   const validate = () => {
     const err = {};
     if (!form.isAnonymous && !form.fullName.trim()) err.fullName = 'Full name is required';
+    else if (!form.isAnonymous && form.fullName.trim().length < 3) err.fullName = 'Full name must be at least 3 characters';
     if (!form.phone.trim()) err.phone = 'Phone number is required';
-    else if (form.phone.replace(/\s+/g, '').length < 9) err.phone = 'Enter a valid phone number';
+    else if (!PHONE_RE.test(form.phone.replace(/\s+/g, ''))) err.phone = 'Enter a valid Ethiopian phone number (e.g. 0911 234 567)';
     if (form.email.trim() && !/^\S+@\S+\.\S+$/.test(form.email.trim())) err.email = 'Enter a valid email';
     if (!form.subcity) err.subcity = 'Subcity is required';
     if (!form.woredaId) err.woreda = 'Woreda is required';
@@ -250,44 +328,6 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     <p className="text-xs text-red-500 dark:text-red-400 mt-1.5 flex items-center gap-1">⚠ {errors[key]}</p>
   );
 
-  const SectionCard = ({ icon, title, subtitle, children, className = '' }) => (
-    <section className={`rounded-2xl border border-gray-200 dark:border-gray-700 overflow-hidden ${className}`}>
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40">
-        <span className="w-9 h-9 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center text-lg shrink-0">{icon}</span>
-        <div>
-          <h3 className="font-bold text-gray-900 dark:text-gray-100">{title}</h3>
-          {subtitle && <p className="text-xs text-gray-500 dark:text-gray-400">{subtitle}</p>}
-        </div>
-      </div>
-      <div className="p-5 space-y-4">{children}</div>
-    </section>
-  );
-
-  const UploadZone = ({ icon, label, hint, fileList, onPick, onRemove, zoneCls = '' }) => (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{label}</label>
-      <div
-        onClick={onPick}
-        className={`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-5 text-center cursor-pointer hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50/30 dark:hover:bg-emerald-900/10 transition-colors ${zoneCls}`}
-      >
-        <span className="text-2xl">{icon}</span>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{hint}</p>
-      </div>
-      {fileList.length > 0 && (
-        <div className="space-y-2 mt-3">
-          {fileList.map((f, i) => (
-            <div key={i} className="flex items-center gap-2 bg-gray-50 dark:bg-gray-700 rounded-lg px-3 py-2 text-xs group">
-              <span className="text-gray-400">{FILE_ICONS[f.type.startsWith('image/') ? 'image' : f.type.startsWith('video/') ? 'video' : f.type.startsWith('audio/') ? 'audio' : 'document']}</span>
-              <span className="flex-1 truncate text-gray-700 dark:text-gray-300">{f.name}</span>
-              <span className="text-gray-400">{(f.size / 1024 / 1024).toFixed(1)}MB</span>
-              <button type="button" onClick={() => onRemove(i)} className="text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
   return (
     <form onSubmit={handleSubmit} noValidate className="card overflow-hidden space-y-6 animate-fade-in">
       {/* Form header */}
@@ -308,14 +348,13 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
 
       <div className="px-5 sm:px-6 pb-6 space-y-6">
         {/* ── Citizen Information ── */}
-        <SectionCard icon="👤" title="Citizen Information" subtitle="Your contact details — auto-filled for logged-in citizens">
+        <FormSection icon="👤" title="Citizen Information" subtitle="Your contact details — auto-filled from your account, edit if needed">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Full Name {!form.isAnonymous && <span className="text-red-500">*</span>}</label>
               <input value={form.fullName} onChange={(e) => set('fullName', e.target.value)}
-                disabled={!!user && !form.isAnonymous}
-                placeholder={user ? 'Auto-filled from your account' : 'Your full name'}
-                className={`${inputCls('fullName')} ${user && !form.isAnonymous ? 'bg-gray-100 dark:bg-gray-800 text-gray-500 cursor-not-allowed' : ''}`} />
+                placeholder="Your full name"
+                className={inputCls('fullName')} />
               {fieldError('fullName')}
             </div>
             <div>
@@ -333,36 +372,45 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Subcity <span className="text-red-500">*</span></label>
               <select value={form.subcity ? subcities.find((s) => s.name === form.subcity)?._id || '' : ''} onChange={(e) => handleSubcityChange(e.target.value)} className={inputCls('subcity')}>
-                <option value="">Select Subcity</option>
-                {subcities.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+                <option value="">{subcitiesLoading ? 'Loading subcities…' : 'Select Subcity'}</option>
+                {(subcities || []).map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
               </select>
+              {subcitiesError && (
+                <div className="flex items-center gap-2 mt-1.5">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">⚠ {subcitiesError}</p>
+                  <button type="button" onClick={reloadSubcities}
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">
+                    Try again
+                  </button>
+                </div>
+              )}
               {fieldError('subcity')}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Woreda <span className="text-red-500">*</span></label>
               <select value={form.woredaId} onChange={(e) => handleWoredaChange(e.target.value)}
-                disabled={!form.subcity || routingLoading} className={`${inputCls('woreda')} disabled:opacity-60`}>
+                disabled={!form.subcity || woredasLoading} className={`${inputCls('woreda')} disabled:opacity-60`}>
                 <option value="">
-                  {routingLoading ? 'Loading woredas…' : form.subcity ? 'Select Woreda' : 'Select a subcity first'}
+                  {woredasLoading ? 'Loading woredas…' : form.subcity ? 'Select Woreda' : 'Select a subcity first'}
                 </option>
-                {woredas.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+                {(woredas || []).map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
               </select>
               {fieldError('woreda')}
             </div>
           </div>
-        </SectionCard>
+        </FormSection>
 
         {/* ── Government Office ── */}
-        <SectionCard icon="🏛️" title="Government Office" subtitle="Which office / bureau and which service is involved">
+        <FormSection icon="🏛️" title="Government Office" subtitle="Which office / bureau and which service is involved">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Office / Bureau <span className="text-red-500">*</span></label>
               <select value={form.officeId} onChange={(e) => handleOfficeChange(e.target.value)}
-                disabled={!form.subcity || routingLoading} className={`${inputCls('office')} disabled:opacity-60`}>
+                disabled={!form.subcity || officesLoading} className={`${inputCls('office')} disabled:opacity-60`}>
                 <option value="">
-                  {routingLoading ? 'Loading offices…' : form.subcity ? (offices.length ? 'Select Office / Bureau' : 'No offices available') : 'Select a subcity first'}
+                  {officesLoading ? 'Loading offices…' : form.subcity ? (offices.length ? 'Select Office / Bureau' : 'No offices available') : 'Select a subcity first'}
                 </option>
-                {offices.map((o) => <option key={o._id} value={o._id}>{o.name}</option>)}
+                {(offices || []).map((o) => <option key={o._id} value={o._id}>{o.name}</option>)}
               </select>
               {fieldError('office')}
             </div>
@@ -374,10 +422,10 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
               {fieldError('serviceReceived')}
             </div>
           </div>
-        </SectionCard>
+        </FormSection>
 
         {/* ── Governance Issue Category ── */}
-        <SectionCard icon="⚖️" title="Governance Issue Category" subtitle="Choose the category that best describes the issue">
+        <FormSection icon="⚖️" title="Governance Issue Category" subtitle="Choose the category that best describes the issue">
           {!form.officeId ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">Select a government office first to see its complaint categories.</p>
           ) : categoriesLoading ? (
@@ -388,7 +436,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
             <p className="text-sm text-gray-500 dark:text-gray-400">This office has no active complaint categories yet.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {categories.map((c) => (
+              {(categories || []).map((c) => (
                 <button key={c._id} type="button" onClick={() => set('categoryId', c._id)}
                   className={`text-left px-3 py-2.5 rounded-xl border-2 text-sm font-medium transition-all duration-150
                     ${form.categoryId === c._id
@@ -401,10 +449,10 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
             </div>
           )}
           {fieldError('category')}
-        </SectionCard>
+        </FormSection>
 
         {/* ── Complaint Details ── */}
-        <SectionCard icon="📝" title="Complaint Details" subtitle="Describe what happened in as much detail as possible">
+        <FormSection icon="📝" title="Complaint Details" subtitle="Describe what happened in as much detail as possible">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Complaint Title <span className="text-red-500">*</span></label>
             <input value={form.title} onChange={(e) => set('title', e.target.value)} maxLength={200}
@@ -443,10 +491,10 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
                 placeholder="Names or positions, if known" className="input-field" />
             </div>
           </div>
-        </SectionCard>
+        </FormSection>
 
         {/* ── Evidence ── */}
-        <SectionCard icon="📎" title="Evidence" subtitle={`Photos, documents and videos (up to ${MAX_TOTAL_FILES} files, ${MAX_FILE_MB}MB each)`}>
+        <FormSection icon="📎" title="Evidence" subtitle={`Photos, documents and videos (up to ${MAX_TOTAL_FILES} files, ${MAX_FILE_MB}MB each)`}>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <UploadZone icon="🖼️" label="Upload Images" hint="Click to upload photos (JPG, PNG)" fileList={images}
               onPick={() => imageRef.current?.click()} onRemove={(i) => removeFile('image', i)} />
@@ -461,10 +509,10 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
           {allFiles.length > 0 && (
             <p className="text-xs text-emerald-600 dark:text-emerald-400">{allFiles.length}/{MAX_TOTAL_FILES} file(s) selected</p>
           )}
-        </SectionCard>
+        </FormSection>
 
         {/* ── Additional Options ── */}
-        <SectionCard icon="🔒" title="Additional Options" subtitle="How you want to submit and how urgent this is">
+        <FormSection icon="🔒" title="Additional Options" subtitle="How you want to submit and how urgent this is">
           {/* Anonymous */}
           <div className="flex items-center justify-between gap-3 border border-gray-200 dark:border-gray-700 rounded-xl p-4">
             <div>
@@ -506,7 +554,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
             </label>
             {fieldError('consent')}
           </div>
-        </SectionCard>
+        </FormSection>
 
         {/* Submit bar */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">

@@ -52,14 +52,25 @@ router.get('/departments', async (req, res) => {
 // @desc  Active subcity list for public complaint forms
 // @route GET /api/public/subcities
 // @access Public
+// Returns the subcity _id so dependent dropdowns (woredas, government offices,
+// complaint categories) can be resolved by id. Without the id the option values
+// are undefined and the whole subcity → woreda → office → category chain breaks.
 router.get('/subcities', async (req, res) => {
   try {
     const Subcity = require('../models/Subcity');
     const subcities = await Subcity.find({ status: 'Active' })
-      .select('name description')
+      .select('_id name nameLower description')
       .sort({ name: 1 })
       .lean();
-    res.json({ success: true, subcities: subcities.map(s => ({ name: s.name, description: s.description || '' })) });
+    res.json({
+      success: true,
+      subcities: subcities.map((s) => ({
+        _id: s._id,
+        name: s.name,
+        nameLower: s.nameLower || '',
+        description: s.description || '',
+      })),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

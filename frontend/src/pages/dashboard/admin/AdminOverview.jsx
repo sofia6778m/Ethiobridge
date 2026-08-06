@@ -76,23 +76,25 @@ export default function AdminOverview() {
           <div>
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">{t('admin.aggregates')}</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <StatCard icon="⏳" label={t('adminStats.pendingReports')}     value={stats.pendingReports}    color="bg-amber-100"  iconColor="text-amber-600" />
-              <StatCard icon="✅" label={t('adminStats.resolvedReports')}    value={stats.resolvedReports}   color="bg-green-100"  iconColor="text-green-600" />
-              <StatCard icon="📢" label={t('adminStats.publicComplaints')}  value={stats.publicComplaints}  color="bg-rose-100"   iconColor="text-rose-600" />
+              <StatCard icon="⏳" label={t('adminStats.pendingReports')}    value={stats.pendingReports}   color="bg-amber-100"  iconColor="text-amber-600" />
+              <StatCard icon="✅" label={t('adminStats.resolvedReports')}   value={stats.resolvedReports}  color="bg-green-100"  iconColor="text-green-600" />
+              <StatCard icon="📢" label={t('adminStats.publicComplaints')} value={stats.publicComplaints} color="bg-rose-100"   iconColor="text-rose-600" />
             </div>
           </div>
         </>
       )}
 
+      {/* Quick-action grid — governance management removed; use Governance Statistics for read-only view */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { to:'/dashboard/admin/users',      icon:'👥', label: t('admin.manageUsers'),       color:'bg-blue-50' },
-          { to:'/dashboard/admin/approvals',  icon:'✅', label: t('admin.pendingApprovals'),  color:'bg-amber-50' },
-          { to:'/dashboard/admin/reports',    icon:'📋', label: t('admin.allReports'),        color:'bg-red-50' },
-          { to:'/dashboard/admin/activity',   icon:'📜', label: t('admin.activityLog'),       color:'bg-indigo-50' },
-          { to:'/dashboard/admin/subcities',  icon:'🏙️', label:'Subcity Management',       color:'bg-teal-50' },
-          { to:'/dashboard/admin/news',       icon:'📰', label: t('admin.newsTitle'),         color:'bg-green-50' },
-          { to:'/dashboard/admin/analytics',  icon:'📈', label: t('dashboard.analyticsTitle'),color:'bg-purple-50' },
+          { to: '/dashboard/admin/users',           icon: '👥', label: t('admin.manageUsers'),        color: 'bg-blue-50' },
+          { to: '/dashboard/admin/approvals',        icon: '✅', label: t('admin.pendingApprovals'),   color: 'bg-amber-50' },
+          { to: '/dashboard/admin/reports',          icon: '📋', label: t('admin.allReports'),         color: 'bg-red-50' },
+          { to: '/dashboard/admin/activity',         icon: '📜', label: t('admin.activityLog'),        color: 'bg-indigo-50' },
+          { to: '/dashboard/admin/subcities',        icon: '🏙️', label: 'Subcity Management',        color: 'bg-teal-50' },
+          { to: '/dashboard/admin/governance-stats', icon: '🗂️', label: 'Governance Statistics',     color: 'bg-violet-50' },
+          { to: '/dashboard/admin/news',             icon: '📰', label: t('admin.newsTitle'),          color: 'bg-green-50' },
+          { to: '/dashboard/admin/analytics',        icon: '📈', label: t('dashboard.analyticsTitle'), color: 'bg-purple-50' },
         ].map(a => (
           <Link key={a.label} to={a.to} className={`${a.color} dark:bg-gray-700 rounded-xl p-4 text-center hover:shadow-md transition-shadow`}>
             <div className="text-2xl mb-1">{a.icon}</div>

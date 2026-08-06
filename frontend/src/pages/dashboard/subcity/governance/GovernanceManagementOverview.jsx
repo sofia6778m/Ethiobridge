@@ -61,9 +61,9 @@ export default function GovernanceManagementOverview() {
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard to="./offices" label="Government Offices" value={summary?.offices ?? 0} icon="🏛️" tone="bg-emerald-100 dark:bg-emerald-900/40" />
-          <StatCard to="./categories" label="Complaint Categories" value={summary?.categories ?? 0} icon="🏷️" tone="bg-violet-100 dark:bg-violet-900/40" />
-          <StatCard to="./officers" label="Governance Officers" value={summary?.officers ?? 0} icon="🧑‍💼" tone="bg-indigo-100 dark:bg-indigo-900/40" />
+          <StatCard to="./offices"    label="Government Offices"   value={summary?.offices    ?? 0} icon="🏛️" tone="bg-emerald-100 dark:bg-emerald-900/40" />
+          <StatCard to="./categories" label="Complaint Categories" value={summary?.categories  ?? 0} icon="🏷️" tone="bg-violet-100 dark:bg-violet-900/40" />
+          <StatCard to="./users"      label="Governance Officers"  value={summary?.officers    ?? 0} icon="🧑‍💼" tone="bg-indigo-100 dark:bg-indigo-900/40" />
           <StatCard to="../governance-complaints" label="Complaints Received" value={summary?.complaints ?? 0} icon="⚖️" tone="bg-amber-100 dark:bg-amber-900/40" />
         </div>
       )}
@@ -82,9 +82,9 @@ export default function GovernanceManagementOverview() {
               <p className="font-medium text-gray-800 dark:text-gray-200 text-sm">Complaint Categories</p>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define the issue types shown per office on the public form.</p>
             </Link>
-            <Link to="./officers" className="rounded-xl border-2 border-indigo-200 dark:border-indigo-800 p-4 hover:border-indigo-400 dark:hover:border-indigo-600 transition-colors">
+            <Link to="./users" className="rounded-xl border-2 border-indigo-200 dark:border-indigo-800 p-4 hover:border-indigo-400 dark:hover:border-indigo-600 transition-colors">
               <p className="text-lg mb-1">🧑‍💼</p>
-              <p className="font-medium text-gray-800 dark:text-gray-200 text-sm">Governance Officers</p>
+              <p className="font-medium text-gray-800 dark:text-gray-200 text-sm">User Management</p>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Create accounts for staff who process complaints.</p>
             </Link>
             <Link to="./analytics" className="rounded-xl border-2 border-indigo-200 dark:border-indigo-800 p-4 hover:border-indigo-400 dark:hover:border-indigo-600 transition-colors">

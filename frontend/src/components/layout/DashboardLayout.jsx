@@ -55,13 +55,29 @@ export default function DashboardLayout({ children, navItems, title }) {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-          {navItems.map((item) => (
-            <Link key={item.path} to={item.path} onClick={() => setSidebarOpen(false)}
-              className={`sidebar-link ${isActive(item.path) ? 'active' : ''}`}>
-              <span className="text-lg">{item.icon}</span>
-              <span className="text-sm">{item.label}</span>
-            </Link>
-          ))}
+          {navItems.map((item) => {
+            // Section header — renders a non-link divider label for visual grouping
+            if (item.sectionHeader) {
+              return (
+                <div key={`header-${item.path}`} className="pt-3 pb-1 px-2">
+                  <p className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+                    {item.label}
+                  </p>
+                </div>
+              );
+            }
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setSidebarOpen(false)}
+                className={`sidebar-link ${item.indent ? 'pl-7' : ''} ${isActive(item.path) ? 'active' : ''}`}
+              >
+                <span className="text-lg">{item.icon}</span>
+                <span className="text-sm">{item.label}</span>
+              </Link>
+            );
+          })}
         </nav>
 
         <div className="px-3 py-4 border-t border-gray-100 dark:border-gray-700">

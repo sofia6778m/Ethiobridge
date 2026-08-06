@@ -41,6 +41,7 @@ export default function CitizenGovernanceComplaintDetail() {
   const [evidenceFiles, setEvidenceFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const evidenceRef = useRef(null);
   const abortRef = useRef(null);
 
@@ -113,6 +114,20 @@ export default function CitizenGovernanceComplaintDetail() {
     }
   };
 
+  const handleConfirmResolution = async () => {
+    if (!window.confirm('Confirm that your complaint has been resolved to your satisfaction?')) return;
+    setConfirming(true);
+    try {
+      await governanceComplaintAPI.confirmResolution(id);
+      toast.success('Resolution confirmed');
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Could not confirm resolution');
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   if (loading) return <LoadingSpinner />;
   if (loadError && !complaint) {
     return (
@@ -160,7 +175,22 @@ export default function CitizenGovernanceComplaintDetail() {
         {canReopen && (
           <button onClick={() => setReopenOpen(true)} className="btn-secondary text-sm px-4 py-2">↩️ Reopen Complaint</button>
         )}
+        {complaint.status === 'Resolved' && !complaint.confirmedByCitizen && (
+          <button onClick={handleConfirmResolution} disabled={confirming} className="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition-colors">
+            {confirming ? 'Confirming…' : '✅ Confirm Resolution'}
+          </button>
+        )}
       </div>
+
+      {complaint.status === 'Resolved' && !complaint.confirmedByCitizen && (
+        <div className="card p-5 bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-200 dark:border-emerald-800">
+          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-1">Has your complaint been resolved?</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            The Subcity Governance Office marked this complaint as resolved. If you are satisfied with the outcome,
+            confirm below so the case can be closed in the registry.
+          </p>
+        </div>
+      )}
 
       {reopenOpen && (
         <div className="card p-5 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800">
@@ -185,6 +215,7 @@ export default function CitizenGovernanceComplaintDetail() {
         <Meta label="Incident Date" value={complaint.incidentDate ? new Date(complaint.incidentDate).toLocaleDateString() : '—'} />
         <Meta label="Incident Time" value={complaint.incidentTime || '—'} />
         <Meta label="Reported Anonymously" value={complaint.isAnonymous ? 'Yes' : 'No'} />
+        {complaint.confirmedByCitizen && <Meta label="Resolution Confirmed" value={fmtDate(complaint.confirmedAt)} />}
       </div>
 
       {/* Evidence */}
