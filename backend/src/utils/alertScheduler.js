@@ -2,9 +2,10 @@
  * alertScheduler.js
  *
  * Runs every minute and manages the PublicAlert lifecycle:
- *  1. Publish scheduled alerts whose scheduledAt has arrived → status 'active',
- *     sets publishedAt, notifies matching citizens, and emits `alert:new`.
- *  2. Expire active alerts whose expiresAt has passed → status 'expired',
+ *  1. Publish scheduled alerts whose start time has arrived → status 'published',
+ *     sets publishedAt, syncs the schedule/scheduledAt mirrors, notifies matching
+ *     citizens, and emits `alert:new`.
+ *  2. Expire live alerts whose end time has passed → status 'expired',
  *     emits `alert:statusUpdate`.
  *
  * Requires: node-cron  (already a dependency).
@@ -48,19 +49,47 @@ async function runAlertSchedulerPass(io) {
   const now = new Date();
 
   // ── Pass 1: publish scheduled alerts whose time has come ──────────────────
+  // A scheduled alert is due when EITHER the canonical `schedule.startAt` or the
+  // legacy `scheduledAt` mirror has arrived (in case legacy rows were written
+  // without a `schedule` subdoc). Alerts that have also already expired are
+  // excluded here and handled by the expiry pass — we never publish an expired
+  // alert. All comparisons use UTC `Date` values straight from MongoDB.
   const due = await PublicAlert.find({
     status: 'scheduled',
-    scheduledAt: { $lte: now },
+    $or: [
+      { 'schedule.startAt': { $lte: now } },
+      { scheduledAt: { $lte: now } },
+    ],
   });
 
   for (const alert of due) {
     try {
+      const start = alert.schedule?.startAt || alert.scheduledAt || null;
+      const end = alert.schedule?.endAt || alert.expiresAt || null;
+
+      // Safety net: if the alert expired before (or exactly when) it was due to
+      // go live, mark it expired instead of broadcasting a dead alert.
+      if (end && end <= now) {
+        alert.status = 'expired';
+        alert.auditHistory.push({ action: 'expired', userName: 'System', userRole: 'scheduler', at: now });
+        await alert.save();
+        if (io) {
+          io.emit('alert:statusUpdate', { _id: alert._id, status: 'expired', severity: alert.severity });
+        }
+        console.log(`[AlertScheduler] Skipped publishing expired scheduled alert: ${alert.title}`);
+        continue;
+      }
+
       alert.status = 'published';
+      alert.isPublished = true;
       alert.publishedAt = now;
+      alert.schedule = { startAt: start, endAt: end };
+      if (start) alert.scheduledAt = start;
+      if (end) alert.expiresAt = end;
       alert.auditHistory.push({ action: 'published', userName: 'System', userRole: 'scheduler', at: now });
       await alert.save();
 
-      const stats = await notifyCitizens(alert, io);
+      const stats = await notifyCitizens(alert, io, null);
       alert.deliveryStats = stats;
       await alert.save();
 
@@ -69,15 +98,21 @@ async function runAlertSchedulerPass(io) {
           _id: alert._id,
           title: alert.title,
           category: alert.category,
+          customCategory: alert.customCategory,
           severity: alert.severity,
           description: alert.description,
+          targetType: alert.targetType,
+          targetLabel: alert.targetLabel,
           scope: alert.scope,
           subcityName: alert.subcityName,
+          subcityNames: alert.subcityNames || [],
           woredaName: alert.woredaName,
+          woredaNames: alert.woredaNames || [],
           status: alert.status,
           pinned: alert.pinned,
           publishedAt: alert.publishedAt,
           expiresAt: alert.expiresAt,
+          attachments: alert.attachments || [],
           createdByName: alert.createdByName,
           createdAt: alert.createdAt,
         });
@@ -88,10 +123,18 @@ async function runAlertSchedulerPass(io) {
     }
   }
 
-  // ── Pass 2: expire live alerts past their expiry ───────────────────────────
+  // ── Pass 2: expire live (or still-scheduled) alerts past their expiry ────
+  // Expiry comes from the canonical `schedule.endAt` or the legacy `expiresAt`
+  // mirror (which the model keeps in sync via pre('validate')). Comparisons use
+  // UTC `Date` values stored in MongoDB. `scheduled` alerts are included so a
+  // stale scheduled alert whose expiry has already passed is expired rather
+  // than ever being published by pass 1.
   const overdue = await PublicAlert.find({
-    status: { $in: LIVE_STATUSES },
-    expiresAt: { $lte: now },
+    status: { $in: [...LIVE_STATUSES, 'scheduled'] },
+    $or: [
+      { 'schedule.endAt': { $lte: now } },
+      { expiresAt: { $lte: now } },
+    ],
   });
 
   for (const alert of overdue) {

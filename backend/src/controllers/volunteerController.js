@@ -58,6 +58,7 @@ exports.registerVolunteer = async (req, res) => {
     const io = getIo(req);
     await createNotification({
       recipient: campaign.createdBy,
+      actorId: req.user?._id,
       title: 'New Volunteer Registration',
       message: `${volunteer.fullName} volunteered for "${campaign.title}". Review their registration in your dashboard.`,
       type: 'volunteer_registered',
@@ -247,6 +248,7 @@ exports.updateVolunteerStatus = async (req, res) => {
       };
       await createNotification({
         recipient: volunteer.user,
+        actorId: req.user._id,
         title: `Volunteer ${status}`,
         message: messageMap[status] || `Your volunteer status is now ${status}.`,
         type: status === 'approved' ? 'volunteer_approved' : status === 'declined' ? 'volunteer_declined' : 'volunteer_registered',

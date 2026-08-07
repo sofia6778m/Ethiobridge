@@ -34,6 +34,7 @@ const sendMessage = async (req, res) => {
 
     await createNotification({
       recipient: recipientId,
+      actorId: req.user._id,
       title: 'New Message',
       message: `You have a new message from ${req.user.fullName}.`,
       type: 'message',

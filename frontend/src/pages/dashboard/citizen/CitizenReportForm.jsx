@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { infraAPI, publicAPI } from '../../../services/api';
+import { notifyComplaintsChanged } from '../../../services/complaintService';
 import { useAuth } from '../../../context/AuthContext';
 import { toast } from 'react-toastify';
 
@@ -197,7 +198,8 @@ export default function CitizenReportForm() {
       videos.forEach(v => fd.append('media', v));
       await infraAPI.create(fd);
       toast.success(t('report.submitted') || 'Report submitted successfully');
-      navigate('/dashboard/citizen/my-reports');
+      notifyComplaintsChanged();
+      navigate('/dashboard/citizen/my-complaints');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Submission failed. Please try again.');
     } finally {

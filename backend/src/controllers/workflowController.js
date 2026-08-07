@@ -185,6 +185,7 @@ const forwardReport = async (req, res) => {
     if (report.submittedBy) {
       await createNotification({
         recipient: report.submittedBy,
+        actorId: officer._id,
         title: 'Report Forwarded',
         message: `Your report ${report.reportId} has been forwarded to ${LEVEL_LABELS[toLevel]}. ${comment || ''}`,
         type: 'report_status',
@@ -240,6 +241,7 @@ const resolveReport = async (req, res) => {
     if (report.submittedBy) {
       await createNotification({
         recipient: report.submittedBy,
+        actorId: officer._id,
         title: 'Report Resolved',
         message: `Your report ${report.reportId} has been resolved by ${LEVEL_LABELS[report.currentLevel]}. ${comment || ''}`,
         type: 'report_status',
@@ -295,6 +297,7 @@ const closeCase = async (req, res) => {
     if (report.submittedBy) {
       await createNotification({
         recipient: report.submittedBy,
+        actorId: officer._id,
         title: 'Case Closed',
         message: `Your report ${report.reportId} has been closed by the Federal Ministry. ${comment || ''}`,
         type: 'report_status',

@@ -31,6 +31,9 @@ const auditLogSchema = new mongoose.Schema(
         'governance_document_uploaded', 'governance_admin_action',
         'governance_evidence_added', 'governance_viewed', 'governance_overdue',
         'governance_resolution_confirmed',
+        // Alert workflow actions
+        'alert_create', 'alert_update', 'alert_scheduled', 'alert_publish',
+        'alert_archive', 'alert_delete',
       ],
     },
     resource: { type: String },

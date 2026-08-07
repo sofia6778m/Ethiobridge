@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { notifAPI } from '../../services/api';
+import { notifAPI, alertAPI } from '../../services/api';
 import { useSocket } from '../../context/SocketContext';
+import { useAuth } from '../../context/AuthContext';
 import { toast } from 'react-toastify';
 
 export default function NotificationBell() {
   const { t } = useTranslation();
   const { on } = useSocket() || {};
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unread, setUnread] = useState(0);
+  const [alertUnread, setAlertUnread] = useState(0);
+
+  const isCitizen = user?.role === 'citizen' || user?.role === 'CITIZEN';
 
   const fetchNotifs = async () => {
     try {
@@ -19,11 +24,23 @@ export default function NotificationBell() {
     } catch { /* silent */ }
   };
 
+  const fetchAlertUnread = useCallback(async () => {
+    if (!isCitizen) return;
+    try {
+      const res = await alertAPI.getUnreadCount();
+      setAlertUnread(res.data?.data?.unread || 0);
+    } catch { /* silent */ }
+  }, [isCitizen]);
+
   useEffect(() => {
     fetchNotifs();
-    const interval = setInterval(fetchNotifs, 30000);
+    fetchAlertUnread();
+    const interval = setInterval(() => {
+      fetchNotifs();
+      fetchAlertUnread();
+    }, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchAlertUnread]);
 
   const handleNewNotification = useCallback((notif) => {
     setNotifications(prev => {
@@ -34,11 +51,20 @@ export default function NotificationBell() {
     setUnread(prev => prev + 1);
   }, []);
 
+  const handleNewAlert = useCallback(() => {
+    if (!isCitizen) return;
+    setAlertUnread(prev => prev + 1);
+  }, [isCitizen]);
+
   useEffect(() => {
     if (!on) return;
-    const cleanup = on('notification:new', handleNewNotification);
-    return cleanup;
-  }, [on, handleNewNotification]);
+    const cleanupNotif = on('notification:new', handleNewNotification);
+    const cleanupAlert = on('alert:new', handleNewAlert);
+    return () => {
+      if (typeof cleanupNotif === 'function') cleanupNotif();
+      if (typeof cleanupAlert === 'function') cleanupAlert();
+    };
+  }, [on, handleNewNotification, handleNewAlert]);
 
   const markRead = async (id) => {
     await notifAPI.markRead(id);
@@ -72,6 +98,11 @@ export default function NotificationBell() {
         aria-label={t('common.notifications')}
       >
         <span className="text-xl">🔔</span>
+        {alertUnread > 0 && (
+          <span className="absolute bottom-1 right-1 w-4 h-4 bg-amber-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold leading-none" title="Unread public alerts">
+            {alertUnread > 9 ? '9+' : alertUnread}
+          </span>
+        )}
         {unread > 0 && (
           <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold leading-none animate-pulse">
             {unread > 9 ? '9+' : unread}

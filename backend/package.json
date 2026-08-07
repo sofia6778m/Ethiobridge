@@ -10,7 +10,6 @@
     "migrate:departments": "node src/utils/migrateDepartments.js",
     "migrate:passwords": "node scripts/migratePasswords.js",
     "migrate:roles": "node scripts/migrateRoles.js",
-    "migrate:report-type": "node scripts/backfillReportType.js",
     "test": "node --test"
   },
   "dependencies": {

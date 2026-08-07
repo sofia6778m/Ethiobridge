@@ -111,4 +111,33 @@ const governanceUpload = multer({
   },
 });
 
-module.exports = { cloudinary, upload, imageUpload, videoUpload, governanceUpload };
+// Public alert attachments: images (jpg/jpeg/png) and PDFs, up to 3 files of
+// 5MB each. PDFs are stored as raw resources so they stay downloadable as-is.
+const alertStorage = new CloudinaryStorage({
+  cloudinary,
+  params: (req, file) => {
+    const mime = file.mimetype || '';
+    if (mime === 'application/pdf') {
+      return { folder: 'zda/alerts', resource_type: 'raw', allowed_formats: ['pdf'] };
+    }
+    return {
+      folder: 'zda/alerts',
+      resource_type: 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png'],
+      transformation: [{ width: 1600, crop: 'limit', quality: 'auto' }],
+    };
+  },
+});
+
+const alertUpload = multer({
+  storage: alertStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const mime = file.mimetype || '';
+    const ok = mime === 'application/pdf' || mime.startsWith('image/');
+    if (ok) cb(null, true);
+    else cb(new Error('Only PDF and image (jpg/jpeg/png) files are allowed'), false);
+  },
+});
+
+module.exports = { cloudinary, upload, imageUpload, videoUpload, governanceUpload, alertUpload };

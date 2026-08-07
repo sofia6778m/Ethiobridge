@@ -2,14 +2,10 @@ require('dotenv').config({ path: 'C:/Users/p/Pictures/dagi/ethiobridge/backend/.
 const mongoose = require('mongoose');
 (async () => {
   await mongoose.connect(process.env.MONGO_URI);
-  const PublicComplaint = require('C:/Users/p/Pictures/dagi/ethiobridge/backend/src/models/PublicComplaint');
   const Woreda = require('C:/Users/p/Pictures/dagi/ethiobridge/backend/src/models/Woreda');
   const Subcity = require('C:/Users/p/Pictures/dagi/ethiobridge/backend/src/models/Subcity');
   const Department = require('C:/Users/p/Pictures/dagi/ethiobridge/backend/src/models/Department');
   const User = require('C:/Users/p/Pictures/dagi/ethiobridge/backend/src/models/User');
-  console.log('PublicComplaints count:', await PublicComplaint.countDocuments());
-  console.log(JSON.stringify(await PublicComplaint.find().sort({ createdAt: -1 }).limit(3)
-    .select('trackingNumber title status subcity woredaName department createdAt').lean(), null, 2));
   console.log('Woredas:', JSON.stringify(await Woreda.find().select('name subcity departments').lean(), null, 2));
   console.log('Subcities:', JSON.stringify(await Subcity.find().select('name').lean(), null, 2));
   console.log('Departments:', JSON.stringify(await Department.find().select('name').lean(), null, 2));

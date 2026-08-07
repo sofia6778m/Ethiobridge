@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   getCategory,
   getSeverity,
+  categoryLabel,
   SEVERITY_STYLES,
   STATUS_STYLES,
   getCategoryBadge,
@@ -11,7 +12,7 @@ import {
 
 export default function AlertCard({ alert, link = `/alerts/${alert._id}` }) {
   const { t } = useTranslation();
-  const cat = getCategory(alert.category);
+  const cat = getCategory(alert.category) || { icon: '📢' };
   const sev = getSeverity(alert.severity);
   const sevStyle = SEVERITY_STYLES[alert.severity] || SEVERITY_STYLES.information;
   const expiresSoon = alert.expiresAt && new Date(alert.expiresAt) - Date.now() < 24 * 60 * 60 * 1000;
@@ -34,10 +35,12 @@ export default function AlertCard({ alert, link = `/alerts/${alert._id}` }) {
               </span>
             </div>
             <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 mt-1.5 flex-wrap">
-              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${getCategoryBadge(alert.category)}`}>
-                {cat.label}
-              </span>
-              <span>📍 {locationString(alert)}</span>
+              {alert.category && (
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${getCategoryBadge(alert.category)}`}>
+                  {categoryLabel(alert.category, alert.customCategory)}
+                </span>
+              )}
+              <span>📍 {alert.targetLabel || locationString(alert)}</span>
             </div>
           </div>
         </div>

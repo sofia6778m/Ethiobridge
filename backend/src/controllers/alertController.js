@@ -1,9 +1,14 @@
 const mongoose = require('mongoose');
 const PublicAlert = require('../models/PublicAlert');
 const AlertDelivery = require('../models/AlertDelivery');
-const PublicComplaint = require('../models/PublicComplaint');
+const AlertRecipient = require('../models/AlertRecipient');
+const AlertRead = require('../models/AlertRead');
+const AlertAnalytics = require('../models/AlertAnalytics');
 const User = require('../models/User');
+const Subcity = require('../models/Subcity');
+const Woreda = require('../models/Woreda');
 const AuditLog = require('../models/AuditLog');
+const Notification = require('../models/Notification');
 const createNotification = require('../utils/createNotification');
 const { logAction } = require('../middleware/auditLog');
 const { SUBCITY_ROLE_MAP } = require('../utils/scopeFilter');
@@ -13,7 +18,9 @@ const {
   ALERT_STATUSES,
   LIVE_STATUSES,
   safetyInstructionsFor,
+  isCriticalSeverity,
 } = require('../utils/alertMetadata');
+const { validatePublishWindow, parseDate, MESSAGES: ALERT_DATE_MESSAGES } = require('../utils/alertDateUtils');
 const PDFDocument = require('pdfkit');
 
 const getIo = (req) => req.app?.get('io') || null;
@@ -29,12 +36,63 @@ function mapScopeType(scope) {
 
 // ── Scope helpers ────────────────────────────────────────────────────────────
 
-const SUB_CITY_ADMIN_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD'];
-const WOREDA_ADMIN_ROLES = ['woreda', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN'];
+const SUB_CITY_ADMIN_ROLES = ['subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD', 'SUBCITY_ADMIN'];
+const WOREDA_ADMIN_ROLES = ['woreda', 'woreda_admin', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN'];
 const ALERT_CREATOR_ROLES = ['admin', 'ADMIN', 'government', ...SUB_CITY_ADMIN_ROLES, ...WOREDA_ADMIN_ROLES];
 const GLOBAL_ALERT_ROLES = ['admin', 'ADMIN', 'government'];
 
 const esc = (s) => (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Malformed/stale ids arriving from the client must never throw a CastError
+// (which would surface as a generic 500 "Failed to create alert"). Only keep
+// values that are well-formed ObjectIds for $in lookups.
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+const onlyValidIds = (ids) => (Array.isArray(ids) ? ids.filter(isValidObjectId) : []);
+
+// Map a thrown error to a useful, human-readable response. Known mongoose
+// errors become 400s with a `field`; everything else stays a 500 but includes
+// the real cause in development builds so it is not hidden behind a generic
+// "Failed to create alert".
+function alertErrorResponse(res, err, verb) {
+  if (err && err.name === 'CastError') {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid identifier supplied while trying to ${verb} the alert. Please refresh and try again.`,
+      field: err.path || undefined,
+    });
+  }
+  if (err && err.name === 'ValidationError') {
+    const first = Object.values(err.errors || {})[0];
+    return res.status(400).json({
+      success: false,
+      message: first?.message || 'The alert data is invalid.',
+      field: first?.path || undefined,
+    });
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(500).json({ success: false, message: `Failed to ${verb} alert. Please try again.` });
+  }
+  return res.status(500).json({ success: false, message: `Failed to ${verb} alert: ${err?.message || err}` });
+}
+
+function isGlobalUser(user) {
+  return user && GLOBAL_ALERT_ROLES.includes(user.role);
+}
+
+function isSubcityUser(user) {
+  return (
+    user &&
+    (SUB_CITY_ADMIN_ROLES.includes(user.role) || (typeof user.role === 'string' && user.role.startsWith('subcity_')))
+  );
+}
+
+function isWoredaUser(user) {
+  return user && WOREDA_ADMIN_ROLES.includes(user.role);
+}
+
+function userSubcityName(user) {
+  return user?.subcity || SUBCITY_ROLE_MAP[user?.role] || '';
+}
 
 // Management-list scope. Admins/government see everything; subcity admins see
 // city-wide + their own subcity; woreda officers see city-wide + their woreda.
@@ -42,168 +100,386 @@ function buildAlertScope(user) {
   if (!user) return {};
   if (GLOBAL_ALERT_ROLES.includes(user.role)) return {};
 
-  if (SUB_CITY_ADMIN_ROLES.includes(user.role)) {
-    const name = user.subcity || SUBCITY_ROLE_MAP[user.role];
-    return {
-      $or: [
-        { scope: 'all' },
-        { subcityName: { $regex: `^${esc(name)}$`, $options: 'i' } },
-        ...(user.subcityId ? [{ subcityId: user.subcityId }] : []),
-      ],
-    };
+  if (isSubcityUser(user)) {
+    const name = user.subcity || SUBCITY_ROLE_MAP[user.role] || '';
+    const $or = [
+      { scope: 'all' },
+      { targetType: 'city' },
+      { scopeType: 'city' },
+    ];
+    if (name) {
+      $or.push({ subcityName: { $regex: `^${esc(name)}$`, $options: 'i' } });
+      $or.push({ subcityNames: { $regex: `^${esc(name)}$`, $options: 'i' } });
+    }
+    if (user.subcityId) {
+      $or.push({ subcityId: user.subcityId });
+      $or.push({ subcityIds: user.subcityId });
+    }
+    return { $or };
   }
 
-  if (WOREDA_ADMIN_ROLES.includes(user.role)) {
-    return {
-      $or: [
-        { scope: 'all' },
-        ...(user.woredaId ? [{ woredaId: user.woredaId }] : []),
-        ...(user.woredaName ? [{ woredaName: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } }] : []),
-        ...(user.subcity ? [{ subcityName: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } }] : []),
-      ],
-    };
+  if (isWoredaUser(user)) {
+    const $or = [
+      { scope: 'all' },
+      { targetType: 'city' },
+      { scopeType: 'city' },
+    ];
+    if (user.woredaId) {
+      $or.push({ woredaId: user.woredaId });
+      $or.push({ woredaIds: user.woredaId });
+    }
+    if (user.woredaName) {
+      $or.push({ woredaName: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
+      $or.push({ woredaNames: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
+    }
+    if (user.subcity) {
+      $or.push({ subcityName: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
+      $or.push({ subcityNames: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
+    }
+    return { $or };
   }
 
   return {};
 }
 
-function isGlobalUser(user) {
-  return GLOBAL_ALERT_ROLES.includes(user.role);
-}
-
-function isSubcityUser(user) {
-  return SUB_CITY_ADMIN_ROLES.includes(user.role);
-}
-
-function isWoredaUser(user) {
-  return WOREDA_ADMIN_ROLES.includes(user.role);
-}
-
-function userSubcityName(user) {
-  return user.subcity || SUBCITY_ROLE_MAP[user.role] || '';
-}
-
 function canManageAlert(user, alert) {
   if (!user || !alert) return false;
   if (isGlobalUser(user)) return true;
+
   if (isSubcityUser(user)) {
     const mine = userSubcityName(user);
-    if (!mine) return false;
-    if (alert.scope === 'all') return true;
-    if (alert.subcityName && alert.subcityName.toLowerCase() === mine.toLowerCase()) return true;
+    if (!mine && !user.subcityId) return false;
+    if (alert.scope === 'all' || alert.targetType === 'city') return true;
+    if (alert.subcityName && mine && alert.subcityName.toLowerCase() === mine.toLowerCase()) return true;
+    if (Array.isArray(alert.subcityNames) && mine && alert.subcityNames.some((n) => n.toLowerCase() === mine.toLowerCase())) return true;
     if (user.subcityId && alert.subcityId && String(alert.subcityId) === String(user.subcityId)) return true;
+    if (user.subcityId && Array.isArray(alert.subcityIds) && alert.subcityIds.some((id) => String(id) === String(user.subcityId))) return true;
     return false;
   }
+
   if (isWoredaUser(user)) {
-    if (alert.scope === 'all') return true;
+    if (alert.scope === 'all' || alert.targetType === 'city') return true;
     if (user.woredaId && alert.woredaId && String(alert.woredaId) === String(user.woredaId)) return true;
+    if (user.woredaId && Array.isArray(alert.woredaIds) && alert.woredaIds.some((id) => String(id) === String(user.woredaId))) return true;
     if (user.woredaName && alert.woredaName && alert.woredaName.toLowerCase() === user.woredaName.toLowerCase()) return true;
+    if (user.woredaName && Array.isArray(alert.woredaNames) && alert.woredaNames.some((n) => n.toLowerCase() === user.woredaName.toLowerCase())) return true;
     if (user.subcity && alert.subcityName && alert.subcityName.toLowerCase() === user.subcity.toLowerCase()) return true;
     return false;
   }
+
   return false;
 }
 
-// Resolve targeting from the request. Admin/government may pick any scope; a
-// subcity admin is locked to their subcity (optionally a woreda within it);
-// a woreda officer is locked to their woreda.
-function resolveTargeting(user, body) {
+// STRICT modification scope for edit/delete. A city-wide alert is visible in a
+// subcity/woreda admin's management list but it is NOT "in their assigned
+// subcity/woreda", so they may never edit or delete it. Subcity admins may only
+// modify alerts that specifically target their own subcity (and, for woreda
+// officers, alerts that specifically target their own woreda).
+function canModifyAlert(user, alert) {
+  if (!user || !alert) return false;
+  if (isGlobalUser(user)) return true;
+
+  if (isSubcityUser(user)) {
+    if (alert.scope === 'all' || alert.targetType === 'city') return false;
+    const mine = userSubcityName(user);
+    const mineId = user.subcityId ? String(user.subcityId) : null;
+    const targetsMine =
+      (Array.isArray(alert.subcityIds) && mineId && alert.subcityIds.some((id) => String(id) === mineId)) ||
+      (Array.isArray(alert.subcityNames) && mine && alert.subcityNames.some((n) => n.toLowerCase() === mine.toLowerCase())) ||
+      (alert.subcityId && mineId && String(alert.subcityId) === mineId) ||
+      (alert.subcityName && mine && alert.subcityName.toLowerCase() === mine.toLowerCase());
+    if (!targetsMine) return false;
+    if (isWoredaUser(user)) {
+      // Woreda officer: the alert must target their specific woreda too.
+      const wName = (user.woredaName || '').toLowerCase();
+      const wId = user.woredaId ? String(user.woredaId) : null;
+      return Boolean(
+        (Array.isArray(alert.woredaIds) && wId && alert.woredaIds.some((id) => String(id) === wId)) ||
+        (Array.isArray(alert.woredaNames) && wName && alert.woredaNames.some((n) => n.toLowerCase() === wName)) ||
+        (alert.woredaId && wId && String(alert.woredaId) === wId) ||
+        (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName)
+      );
+    }
+    return true;
+  }
+
+  if (isWoredaUser(user)) {
+    if (alert.scope === 'all' || alert.targetType === 'city') return false;
+    const wName = (user.woredaName || '').toLowerCase();
+    const wId = user.woredaId ? String(user.woredaId) : null;
+    return Boolean(
+      (Array.isArray(alert.woredaIds) && wId && alert.woredaIds.some((id) => String(id) === wId)) ||
+      (Array.isArray(alert.woredaNames) && wName && alert.woredaNames.some((n) => n.toLowerCase() === wName)) ||
+      (alert.woredaId && wId && String(alert.woredaId) === wId) ||
+      (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName)
+    );
+  }
+
+  return false;
+}
+
+const toArray = (v) => {
+  if (Array.isArray(v)) return v.filter(Boolean);
+  if (v) return [v];
+  return [];
+};
+
+function buildTargetLabel(targetType, subcityNames, woredaNames) {
+  if (targetType === 'city' || (!subcityNames.length && !woredaNames.length)) return 'Addis Ababa (city-wide)';
+  const subs = subcityNames.join(', ');
+  if (woredaNames.length) return `${woredaNames.join(', ')} — ${subs}`;
+  return subs;
+}
+
+// Resolve targeting from the request. Admin/government may pick any subcities
+// (optionally woredas within them); a subcity admin is locked to their subcity
+// and must pick at least one woreda; a woreda officer is locked to their
+// subcity + woreda. Legacy single-target payloads (scope/subcityName/
+// woredaName) are also accepted so pre-existing clients keep working.
+async function resolveTargeting(user, body) {
+  const fallback = (targetType, scope) => ({
+    targetType,
+    scope,
+    scopeType: mapScopeType(scope),
+    subcityIds: [],
+    subcityNames: [],
+    woredaIds: [],
+    woredaNames: [],
+    targetLabel: buildTargetLabel(targetType, [], []),
+  });
+
   if (isGlobalUser(user)) {
-    const scope = body.scope || (body.woredaId || body.woredaName ? 'woreda' : body.subcityId || body.subcityName ? 'subcity' : 'all');
+    if (!body) return fallback('city', 'all');
+    if (body.scope === 'all' && !toArray(body.subcityIds).length && !toArray(body.subcityNames).length && !body.subcityName) {
+      return fallback('city', 'all');
+    }
+
+    let subcityIds = onlyValidIds(toArray(body.subcityIds));
+    let subcityNames = toArray(body.subcityNames);
+    let woredaIds = onlyValidIds(toArray(body.woredaIds));
+    let woredaNames = toArray(body.woredaNames);
+
+    // Legacy single-target payload.
+    if (body.subcityId && !subcityIds.length) subcityIds = onlyValidIds([body.subcityId]);
+    if (body.subcityName && !subcityIds.length && !subcityNames.length) subcityNames = [body.subcityName];
+    if (body.woredaId && !woredaIds.length) woredaIds = onlyValidIds([body.woredaId]);
+    if (body.woredaName && !woredaIds.length && !woredaNames.length) woredaNames = [body.woredaName];
+
+    // Cross-resolve ids ↔ names where possible.
+    if (subcityIds.length && !subcityNames.length) {
+      const docs = await Subcity.find({ _id: { $in: subcityIds } }).select('name').lean();
+      if (docs.length === subcityIds.length) subcityNames = docs.map((d) => d.name);
+    } else if (subcityNames.length && !subcityIds.length) {
+      const docs = await Subcity.find({ nameLower: { $in: subcityNames.map((n) => String(n).toLowerCase().trim()) } }).select('_id').lean();
+      if (docs.length === subcityNames.length) subcityIds = docs.map((d) => d._id);
+    }
+    if (woredaIds.length && !woredaNames.length) {
+      const docs = await Woreda.find({ _id: { $in: woredaIds } }).select('name').lean();
+      if (docs.length === woredaIds.length) woredaNames = docs.map((d) => d.name);
+    }
+
+    const targetType = woredaIds.length || woredaNames.length ? 'woreda' : subcityIds.length || subcityNames.length ? 'subcity' : 'city';
+    const scope = targetType === 'city' ? 'all' : targetType === 'woreda' ? 'woreda' : 'subcity';
     return {
+      targetType,
       scope,
-      subcityId: body.subcityId || null,
-      subcityName: body.subcityName || (body.scope === 'subcity' ? '' : null),
-      woredaId: body.woredaId || null,
-      woredaName: body.woredaName || null,
+      scopeType: mapScopeType(scope),
+      subcityIds,
+      subcityNames,
+      woredaIds,
+      woredaNames,
+      targetLabel: buildTargetLabel(targetType, subcityNames, woredaNames),
     };
   }
 
   if (isSubcityUser(user)) {
     const mine = userSubcityName(user);
-    if (body.woredaId || body.woredaName) {
-      return {
-        scope: 'woreda',
-        subcityId: user.subcityId || null,
-        subcityName: mine || null,
-        woredaId: body.woredaId || null,
-        woredaName: body.woredaName || null,
-      };
+    const subcityIds = user.subcityId ? [user.subcityId] : [];
+    const subcityNames = mine ? [mine] : [];
+    let woredaIds = onlyValidIds(toArray(body?.woredaIds));
+    let woredaNames = toArray(body?.woredaNames);
+    if (body?.woredaId && !woredaIds.length) woredaIds = onlyValidIds([body.woredaId]);
+    if (body?.woredaName && !woredaIds.length && !woredaNames.length) woredaNames = [body.woredaName];
+    if (woredaIds.length && !woredaNames.length) {
+      const docs = await Woreda.find({ _id: { $in: woredaIds } }).select('name').lean();
+      if (docs.length === woredaIds.length) woredaNames = docs.map((d) => d.name);
     }
+    const targetType = woredaIds.length || woredaNames.length ? 'woreda' : 'subcity';
+    const scope = targetType === 'woreda' ? 'woreda' : 'subcity';
     return {
-      scope: 'subcity',
-      subcityId: user.subcityId || null,
-      subcityName: mine || null,
-      woredaId: null,
-      woredaName: null,
+      targetType,
+      scope,
+      scopeType: mapScopeType(scope),
+      subcityIds,
+      subcityNames,
+      woredaIds,
+      woredaNames,
+      targetLabel: buildTargetLabel(targetType, subcityNames, woredaNames),
     };
   }
 
   if (isWoredaUser(user)) {
     return {
+      targetType: 'woreda',
       scope: 'woreda',
-      subcityId: user.subcityId || null,
-      subcityName: user.subcity || null,
-      woredaId: user.woredaId || null,
-      woredaName: user.woredaName || null,
+      scopeType: 'woreda',
+      subcityIds: user.subcityId ? [user.subcityId] : [],
+      subcityNames: user.subcity ? [user.subcity] : [],
+      woredaIds: user.woredaId ? [user.woredaId] : [],
+      woredaNames: user.woredaName ? [user.woredaName] : [],
+      targetLabel: buildTargetLabel('woreda', user.subcity ? [user.subcity] : [], user.woredaName ? [user.woredaName] : []),
     };
   }
 
-  return { scope: 'all' };
+  return fallback('city', 'all');
+}
+
+// ── Analytics helpers ────────────────────────────────────────────────────────
+
+async function upsertAlertAnalytics(alertId, patch) {
+  try {
+    await AlertAnalytics.updateOne(
+      { alert: alertId },
+      { $setOnInsert: { alert: alertId }, $inc: patch },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('[Alert] Analytics upsert error:', err.message);
+  }
+}
+
+async function refreshClickThroughRate(alertId) {
+  const a = await AlertAnalytics.findOne({ alert: alertId }).lean();
+  if (!a) return;
+  const ctr = a.dashboardViews > 0 ? Math.round((a.reads / a.dashboardViews) * 10000) / 100 : 0;
+  await AlertAnalytics.updateOne({ alert: alertId }, { $set: { clickThroughRate: ctr } });
+}
+
+// ── Citizen visibility helpers ───────────────────────────────────────────────
+
+// Mongo `$or` clauses for alerts a citizen should see, based on their saved
+// location (subcity / woreda).
+function citizenVisibilityQuery(user) {
+  const clauses = [
+    { targetType: 'city' },
+    { scopeType: 'city' },
+  ];
+  if (user.subcity) {
+    clauses.push({ subcityNames: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
+    clauses.push({ subcityName: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
+  }
+  if (user.subcityId) {
+    clauses.push({ subcityIds: user.subcityId });
+    clauses.push({ subcityId: user.subcityId });
+  }
+  if (user.woredaName) {
+    clauses.push({ woredaNames: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
+    clauses.push({ woredaName: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
+  }
+  if (user.woredaId) {
+    clauses.push({ woredaIds: user.woredaId });
+    clauses.push({ woredaId: user.woredaId });
+  }
+  return { $or: clauses };
+}
+
+function isAlertVisibleToCitizen(alert, user) {
+  if (!alert || !user) return false;
+  if (alert.scope === 'all' || alert.targetType === 'city' || alert.scopeType === 'city') return true;
+  const scName = (user.subcity || '').toLowerCase();
+  const scId = user.subcityId ? String(user.subcityId) : null;
+  const wName = (user.woredaName || '').toLowerCase();
+  const wId = user.woredaId ? String(user.woredaId) : null;
+
+  if ((alert.subcityIds || []).some((id) => scId && String(id) === scId)) return true;
+  if ((alert.subcityNames || []).some((n) => scName && n.toLowerCase() === scName)) return true;
+  if ((alert.woredaIds || []).some((id) => wId && String(id) === wId)) return true;
+  if ((alert.woredaNames || []).some((n) => wName && n.toLowerCase() === wName)) return true;
+  // Legacy singular fields.
+  if (alert.subcityId && scId && String(alert.subcityId) === scId) return true;
+  if (alert.subcityName && scName && alert.subcityName.toLowerCase() === scName) return true;
+  if (alert.woredaId && wId && String(alert.woredaId) === wId) return true;
+  if (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName) return true;
+  return false;
 }
 
 // ── Notification pipeline ────────────────────────────────────────────────────
 
-// Deliver a newly-published alert to matching citizens. Emergency alerts are
-// always delivered; other alerts respect each citizen's subscription
-// preferences (master toggle + category filter). SMS/Email/Push are recorded
-// as delivery rows (placeholders for real providers); the in-app channel
-// creates a Notification so it appears in the bell immediately.
-async function notifyCitizens(alert, io) {
+// Mongo query for citizens located in the alert's targeted area. Shared by the
+// initial broadcast (notifyCitizens) and the "alert updated" follow-up
+// (notifyAlertUpdated) so the two never drift apart.
+function buildCitizenTargetQuery(alert) {
   const userQuery = { role: { $in: ['citizen', 'CITIZEN'] } };
-  if (alert.scope === 'subcity' && alert.subcityName) {
-    userQuery.$or = [
-      { subcity: { $regex: `^${esc(alert.subcityName)}$`, $options: 'i' } },
-      ...(alert.subcityId ? [{ subcityId: alert.subcityId }] : []),
-    ];
-  } else if (alert.scope === 'woreda') {
-    userQuery.$or = [
-      ...(alert.woredaId ? [{ woredaId: alert.woredaId }] : []),
-      ...(alert.woredaName ? [{ woredaName: { $regex: `^${esc(alert.woredaName)}$`, $options: 'i' } }] : []),
-      ...(alert.subcityName ? [{ subcity: { $regex: `^${esc(alert.subcityName)}$`, $options: 'i' } }] : []),
-    ];
+  const targetType = alert.targetType || (alert.scope === 'all' ? 'city' : alert.scope);
+  const locClauses = [];
+  if (targetType !== 'city' && alert.scope !== 'all') {
+    if (Array.isArray(alert.subcityIds) && alert.subcityIds.length) locClauses.push({ subcityId: { $in: alert.subcityIds } });
+    if (Array.isArray(alert.subcityNames) && alert.subcityNames.length) {
+      locClauses.push({ subcity: { $in: alert.subcityNames.map((n) => new RegExp(`^${esc(n)}$`, 'i')) } });
+    }
+    if (Array.isArray(alert.woredaIds) && alert.woredaIds.length) locClauses.push({ woredaId: { $in: alert.woredaIds } });
+    if (Array.isArray(alert.woredaNames) && alert.woredaNames.length) {
+      locClauses.push({ woredaName: { $in: alert.woredaNames.map((n) => new RegExp(`^${esc(n)}$`, 'i')) } });
+    }
+    // Legacy singular fields.
+    if (alert.subcityId) locClauses.push({ subcityId: alert.subcityId });
+    if (alert.subcityName) locClauses.push({ subcity: { $regex: `^${esc(alert.subcityName)}$`, $options: 'i' } });
+    if (alert.woredaId) locClauses.push({ woredaId: alert.woredaId });
+    if (alert.woredaName) locClauses.push({ woredaName: { $regex: `^${esc(alert.woredaName)}$`, $options: 'i' } });
   }
+  if (locClauses.length) userQuery.$or = locClauses;
+  return userQuery;
+}
 
-  const isEmergency = alert.severity === 'emergency';
-  const isGlobal = alert.scope === 'all';
+// Deliver a newly-published alert to matching citizens. Critical/emergency
+// alerts are ALWAYS delivered (all channels); other alerts respect each
+// citizen's subscription preferences (master toggle + category filter).
+// SMS/Email/Push are recorded as delivery rows (placeholders for real
+// providers); the in-app channel creates a Notification so it appears in the
+// bell immediately.
+async function notifyCitizens(alert, io, actorId) {
+  const userQuery = buildCitizenTargetQuery(alert);
+  const isEmergency = isCriticalSeverity(alert.severity);
 
   const matches = [];
   const cursor = User.find(userQuery).select(
-    '_id fullName emailNotifications smsNotifications pushNotifications alertSubscriptions'
+    '_id fullName email emailNotifications smsNotifications pushNotifications alertSubscriptions'
   ).cursor();
 
   for await (const user of cursor) {
     const sub = user.alertSubscriptions || {};
     if (!isEmergency && sub.enabled === false) continue;
     const cats = Array.isArray(sub.categories) ? sub.categories : [];
-    if (!isEmergency && cats.length > 0 && !cats.includes(alert.category)) continue;
+    // Category-based opt-out only applies to alerts carrying a known,
+    // subscribable category. Free-text or empty categories have no predefined
+    // value to match against, so they are delivered like an all-categories
+    // alert instead of silently suppressing the notification.
+    if (!isEmergency && cats.length > 0 && alert.category && CATEGORY_VALUES.includes(alert.category) && !cats.includes(alert.category)) continue;
 
-    const channels = sub.channels || {};
-    const email = !!(channels.email ?? user.emailNotifications ?? false);
-    const sms = !!(channels.sms ?? user.smsNotifications ?? false);
-    const push = !!(channels.push ?? user.pushNotifications ?? false);
-    const inApp = channels.inApp !== false;
+    let channels;
+    if (isEmergency) {
+      channels = { inApp: true, email: true, sms: true, push: true };
+    } else {
+      const ch = sub.channels || {};
+      channels = {
+        inApp: ch.inApp !== false,
+        email: !!(ch.email ?? user.emailNotifications ?? false),
+        sms: !!(ch.sms ?? user.smsNotifications ?? false),
+        push: !!(ch.push ?? user.pushNotifications ?? false),
+      };
+    }
 
     const activeChannels = [];
-    if (inApp) activeChannels.push('inApp');
-    if (email) activeChannels.push('email');
-    if (sms) activeChannels.push('sms');
-    if (push) activeChannels.push('push');
+    if (channels.inApp) activeChannels.push('inApp');
+    if (channels.email) activeChannels.push('email');
+    if (channels.sms) activeChannels.push('sms');
+    if (channels.push) activeChannels.push('push');
 
     matches.push({ user, activeChannels });
   }
 
   const deliveryOps = [];
+  const recipientOps = [];
   const notifPromises = [];
   let inAppCount = 0;
   let emailCount = 0;
@@ -211,12 +487,24 @@ async function notifyCitizens(alert, io) {
   let pushCount = 0;
 
   for (const { user, activeChannels } of matches) {
+    const row = {
+      channels: activeChannels,
+      status: 'delivered',
+      deliveredAt: new Date(),
+    };
     deliveryOps.push({
+      updateOne: {
+        filter: { alert: alert._id, user: user._id },
+        update: { $setOnInsert: { alert: alert._id, user: user._id }, $set: row },
+        upsert: true,
+      },
+    });
+    recipientOps.push({
       updateOne: {
         filter: { alert: alert._id, user: user._id },
         update: {
           $setOnInsert: { alert: alert._id, user: user._id },
-          $set: { channels: activeChannels, status: 'delivered', deliveredAt: new Date() },
+          $set: { ...row, smsSent: activeChannels.includes('sms'), emailSent: activeChannels.includes('email') },
         },
         upsert: true,
       },
@@ -233,9 +521,11 @@ async function notifyCitizens(alert, io) {
       notifPromises.push(
         createNotification({
           recipient: user._id,
+          actorId,
           title: `${isEmergency ? '🚨 ' : ''}${alert.title}`,
           message: `${severityLabel(alert.severity)} — ${alert.description.slice(0, 180)}`,
           type: isEmergency ? 'emergency_alert' : 'public_alert',
+          alertId: alert._id,
           io,
         })
       );
@@ -244,6 +534,7 @@ async function notifyCitizens(alert, io) {
 
   if (deliveryOps.length) {
     await AlertDelivery.bulkWrite(deliveryOps);
+    await AlertRecipient.bulkWrite(recipientOps);
   }
   await Promise.all(notifPromises);
 
@@ -256,15 +547,120 @@ async function notifyCitizens(alert, io) {
   };
   if (matches.length > 0) {
     await PublicAlert.updateOne({ _id: alert._id }, { $set: { deliveryStats: stats } });
+    await upsertAlertAnalytics(alert._id, {
+      totalRecipients: matches.length,
+      inAppDelivered: inAppCount,
+      emailDelivered: emailCount,
+      smsDelivered: smsCount,
+    });
   }
   console.log(
-    `[Alert] notifyCitizens → alert="${alert.title}" (id=${alert._id}, scope=${alert.scope}) notified ${matches.length} citizen(s) — inApp=${inAppCount}, email=${emailCount}, sms=${smsCount}, push=${pushCount}`
+    `[Alert] notifyCitizens → alert="${alert.title}" (id=${alert._id}, target=${alert.targetType || alert.scope}) notified ${matches.length} citizen(s) — inApp=${inAppCount}, email=${emailCount}, sms=${smsCount}, push=${pushCount}`
   );
   return stats;
 }
 
+// Follow-up in-app notification when a LIVE alert is edited. Uses the exact
+// same audience as the original broadcast so "affected citizens" match, while
+// respecting the same subscription rules. Unlike notifyCitizens it does NOT
+// create delivery/recipient rows or bump deliveryStats — an edit is a
+// correction, not a re-broadcast.
+async function notifyAlertUpdated(alert, io, actorId) {
+  const userQuery = buildCitizenTargetQuery(alert);
+  const isEmergency = isCriticalSeverity(alert.severity);
+
+  const notifPromises = [];
+  let count = 0;
+
+  const cursor = User.find(userQuery).select('_id alertSubscriptions').cursor();
+  for await (const user of cursor) {
+    if (String(user._id) === String(actorId)) continue;
+    const sub = user.alertSubscriptions || {};
+    if (!isEmergency && sub.enabled === false) continue;
+    const ch = sub.channels || {};
+    if (!isEmergency && ch.inApp === false) continue;
+    const cats = Array.isArray(sub.categories) ? sub.categories : [];
+    if (!isEmergency && cats.length > 0 && alert.category && CATEGORY_VALUES.includes(alert.category) && !cats.includes(alert.category)) continue;
+
+    notifPromises.push(
+      createNotification({
+        recipient: user._id,
+        actorId,
+        title: `✏️ Updated: ${alert.title}`,
+        message: `${severityLabel(alert.severity)} — ${alert.description.slice(0, 180)}`,
+        type: 'public_alert',
+        alertId: alert._id,
+        io,
+      })
+    );
+    count += 1;
+  }
+
+  await Promise.all(notifPromises);
+  if (count > 0) {
+    await upsertAlertAnalytics(alert._id, { updateNotifications: count });
+  }
+  console.log(`[Alert] notifyAlertUpdated → alert="${alert.title}" (id=${alert._id}) notified ${count} citizen(s)`);
+  return count;
+}
+
+// In-app notification to the RESPONSIBLE OFFICES for an alert: the subcity
+// admins of every targeted subcity and the woreda officers of every targeted
+// woreda. City-wide alerts reach every subcity/woreda office. Best-effort —
+// never fails the caller.
+async function notifyOffices(alert, io, actorId) {
+  try {
+    const officeRoles = [...SUB_CITY_ADMIN_ROLES, ...WOREDA_ADMIN_ROLES];
+    const roleClauses = [
+      { role: { $in: officeRoles } },
+      { role: { $regex: '^subcity_' } },
+    ];
+    const q = { $or: roleClauses };
+
+    if (alert.scope !== 'all' && alert.targetType !== 'city') {
+      const locClauses = [];
+      if (Array.isArray(alert.subcityNames) && alert.subcityNames.length) {
+        locClauses.push({ subcity: { $in: alert.subcityNames.map((n) => new RegExp(`^${esc(n)}$`, 'i')) } });
+      }
+      if (alert.subcityName) locClauses.push({ subcity: { $regex: `^${esc(alert.subcityName)}$`, $options: 'i' } });
+      if (Array.isArray(alert.woredaNames) && alert.woredaNames.length) {
+        locClauses.push({ woredaName: { $in: alert.woredaNames.map((n) => new RegExp(`^${esc(n)}$`, 'i')) } });
+      }
+      if (alert.woredaName) locClauses.push({ woredaName: { $regex: `^${esc(alert.woredaName)}$`, $options: 'i' } });
+      // An office is responsible when its subcity OR its woreda is targeted.
+      if (locClauses.length) q.$and = [{ $or: locClauses }];
+    }
+
+    const isEmergency = isCriticalSeverity(alert.severity);
+    const notifPromises = [];
+    let count = 0;
+
+    const cursor = User.find(q).select('_id').cursor();
+    for await (const user of cursor) {
+      if (String(user._id) === String(actorId)) continue;
+      notifPromises.push(
+        createNotification({
+          recipient: user._id,
+          actorId,
+          title: `${isEmergency ? '🚨 ' : '📢 '}Office: ${alert.title}`,
+          message: `${severityLabel(alert.severity)} — target: ${alert.targetLabel || alert.targetType || 'city-wide'}`,
+          type: isEmergency ? 'emergency_alert' : 'public_alert',
+          alertId: alert._id,
+          io,
+        })
+      );
+      count += 1;
+    }
+
+    await Promise.all(notifPromises);
+    console.log(`[Alert] notifyOffices → alert="${alert.title}" (id=${alert._id}) notified ${count} office account(s)`);
+  } catch (err) {
+    console.error(`[Alert] notifyOffices failed for "${alert.title}":`, err.message);
+  }
+}
+
 function severityLabel(severity) {
-  const map = { information: 'Information', warning: 'Warning', emergency: 'Emergency' };
+  const map = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', information: 'Information', warning: 'Warning', emergency: 'Emergency' };
   return map[severity] || 'Information';
 }
 
@@ -278,21 +674,41 @@ function toSocketPayload(alert) {
     _id: alert._id,
     title: alert.title,
     category: alert.category,
+    customCategory: alert.customCategory,
     severity: alert.severity,
     description: alert.description,
+    targetType: alert.targetType,
+    targetLabel: alert.targetLabel,
+    subcityNames: alert.subcityNames || [],
+    woredaNames: alert.woredaNames || [],
     scope: alert.scope,
     subcityName: alert.subcityName,
     woredaName: alert.woredaName,
     status: alert.status,
+    isPublished: alert.isPublished,
     pinned: alert.pinned,
     publishedAt: alert.publishedAt,
     expiresAt: alert.expiresAt,
+    attachments: alert.attachments || [],
     createdByName: alert.createdByName,
+    createdByOrg: alert.createdByOrg,
     createdAt: alert.createdAt,
   };
 }
 
-// @desc  Create a new public alert (admin/government/subcity/woreda)
+function buildAttachments(req) {
+  const fromFiles = (req.files || []).map((f) => ({
+    url: f.path,
+    publicId: f.filename,
+    fileName: f.originalname || f.filename,
+    mimeType: f.mimetype || '',
+    size: f.size || 0,
+  }));
+  const fromBody = Array.isArray(req.body && req.body.attachments) ? req.body.attachments : [];
+  return [...fromFiles, ...fromBody].slice(0, 3);
+}
+
+// @desc  Create an alert (draft / scheduled / published)
 // @route POST /api/alerts
 const createAlert = async (req, res) => {
   try {
@@ -302,16 +718,23 @@ const createAlert = async (req, res) => {
     }
 
     const {
-      title, category, severity, description,
-      scheduledAt, expiresAt, subcityId, subcityName, woredaId, woredaName,
-      source, relatedComplaintIds, clusterLabel,
+      title, category, customCategory, severity, description,
+      startAt, endAt, scheduledAt, expiresAt,
+      emergencyContact, sourceAuthority, status: requestedStatus,
     } = req.body;
+
+    // Category is OPTIONAL and free-text: null / "" / undefined are all valid
+    // and stored as null; any non-empty string (e.g. "Flood Warning") is kept
+    // verbatim. There is no predefined list and no validation error when the
+    // field is empty.
+    const rawCategory = typeof category === 'string' ? category.trim() : category;
+    const normalizedCategory = rawCategory || null;
 
     if (!title || !title.trim() || title.trim().length > 200) {
       return res.status(400).json({ success: false, message: 'A title (max 200 chars) is required.' });
     }
-    if (!CATEGORY_VALUES.includes(category)) {
-      return res.status(400).json({ success: false, message: 'A valid alert category is required.' });
+    if (normalizedCategory && normalizedCategory.length > 120) {
+      return res.status(400).json({ success: false, message: 'Category must be under 120 characters.' });
     }
     if (!SEVERITY_VALUES.includes(severity)) {
       return res.status(400).json({ success: false, message: 'A valid severity level is required.' });
@@ -320,123 +743,331 @@ const createAlert = async (req, res) => {
       return res.status(400).json({ success: false, message: 'A description is required.' });
     }
 
-    const targeting = resolveTargeting(user, { scope: req.body.scope, subcityId, subcityName, woredaId, woredaName });
+    const targeting = await resolveTargeting(user, req.body);
 
-    // Guard: a subcity/woreda admin cannot quietly target outside their scope.
-    if (!isGlobalUser(user) && targeting.scope === 'all') {
-      return res.status(403).json({ success: false, message: 'Only city-wide administrators can create city-wide alerts.' });
+    // Role-based targeting guards.
+    if (isGlobalUser(user) && targeting.targetType !== 'city' && targeting.subcityIds.length === 0 && targeting.subcityNames.length === 0) {
+      return res.status(400).json({ success: false, message: 'Select at least one target subcity.' });
+    }
+    if (isSubcityUser(user) && !targeting.woredaIds.length && !targeting.woredaNames.length && !targeting.subcityNames.length && !targeting.subcityIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Choose a target for this alert — your whole subcity or at least one woreda within it.',
+        field: 'targeting',
+      });
+    }
+    if (!isGlobalUser(user) && !isSubcityUser(user) && !isWoredaUser(user)) {
+      return res.status(403).json({ success: false, message: 'Only city-wide, subcity or woreda administrators can create alerts.' });
     }
 
     const now = new Date();
-    const parsedScheduled = scheduledAt ? new Date(scheduledAt) : null;
-    const parsedExpires = expiresAt ? new Date(expiresAt) : null;
-    const isFuture = parsedScheduled && parsedScheduled > now;
-    // Canonical lifecycle: scheduled → published → expired/archived.
-    const status = isFuture ? 'scheduled' : 'published';
 
-    // Guard: an immediately-published alert must never be born already expired,
-    // otherwise it is invisible everywhere while still looking "published".
-    if (!isFuture && parsedExpires && parsedExpires <= now) {
-      return res.status(400).json({
-        success: false,
-        message: 'Expiry must be in the future for an alert that publishes immediately.',
+    // Resolve the publish/expiry window using the shared validation utility so
+    // the backend and the frontend enforce identical rules. Drafts bypass the
+    // window checks (they may be saved without dates and completed later).
+    let publishWindow = null;
+    if (requestedStatus !== 'draft') {
+      const startRaw = startAt !== undefined ? startAt : scheduledAt;
+      const endRaw = endAt !== undefined ? endAt : expiresAt;
+      publishWindow = validatePublishWindow({
+        publishMode: req.body.publishMode,
+        startAt: startRaw,
+        endAt: endRaw,
+        now,
       });
+      if (publishWindow.errors.length) {
+        const first = publishWindow.errors[0];
+        return res.status(400).json({ success: false, message: first.message, field: first.field });
+      }
     }
+
+    const start = publishWindow ? publishWindow.start : parseDate(startAt ?? scheduledAt);
+    const end = publishWindow ? publishWindow.end : parseDate(endAt ?? expiresAt);
+    let status = requestedStatus === 'draft' ? 'draft' : publishWindow.mode === 'schedule' ? 'scheduled' : 'published';
 
     const alert = await PublicAlert.create({
       title: title.trim(),
-      category,
+      category: normalizedCategory,
+      customCategory: normalizedCategory === 'other' ? customCategory.trim() : undefined,
       severity,
       description: description.trim(),
-      safetyInstructions: safetyInstructionsFor(category),
+      safetyInstructions: safetyInstructionsFor(normalizedCategory),
+      targetType: targeting.targetType,
       scope: targeting.scope,
-      scopeType: mapScopeType(targeting.scope),
-      subcityId: targeting.subcityId || undefined,
-      subcityName: targeting.subcityName || undefined,
-      woredaId: targeting.woredaId || undefined,
-      woredaName: targeting.woredaName || undefined,
+      scopeType: targeting.scopeType,
+      subcityIds: targeting.subcityIds,
+      subcityNames: targeting.subcityNames,
+      woredaIds: targeting.woredaIds,
+      woredaNames: targeting.woredaNames,
+      targetLabel: targeting.targetLabel,
+      subcityId: targeting.subcityIds[0] || undefined,
+      subcityName: targeting.subcityNames[0] || undefined,
+      woredaId: targeting.woredaIds[0] || undefined,
+      woredaName: targeting.woredaNames[0] || undefined,
+      schedule: { startAt: start || undefined, endAt: end || undefined },
+      emergencyContact: emergencyContact || undefined,
+      sourceAuthority: sourceAuthority || undefined,
+      attachments: buildAttachments(req),
       status,
-      isPublished: status === 'published',
-      pinned: severity === 'emergency',
-      scheduledAt: parsedScheduled || undefined,
+      scheduledAt: start || undefined,
       publishedAt: status === 'published' ? now : undefined,
-      expiresAt: parsedExpires || undefined,
+      expiresAt: end || undefined,
+      pinned: isCriticalSeverity(severity),
       createdBy: user._id,
       createdByName: user.fullName || '',
       createdByRole: user.role,
+      roleCreatedBy: user.role,
       createdByOrg: user.organizationName || '',
-      source: source === 'complaint_cluster' ? 'complaint_cluster' : 'manual',
-      relatedComplaintIds: relatedComplaintIds || [],
-      clusterLabel: clusterLabel || undefined,
-      auditHistory: [{ action: status === 'scheduled' ? 'scheduled' : 'published', userName: user.fullName || '', userRole: user.role, at: now }],
+      source: 'manual',
+      auditHistory: [{ action: status, userName: user.fullName || '', userRole: user.role, at: now }],
     });
 
     if (status === 'published') {
-      const stats = await notifyCitizens(alert, getIo(req));
-      alert.deliveryStats = stats;
-      await alert.save();
+      // The alert is already saved above — a delivery/notification failure must
+      // never turn a successful create into a "Failed to create alert". Deliver
+      // best-effort and surface the problem in the log instead.
+      try {
+        const stats = await notifyCitizens(alert, getIo(req), user._id);
+        alert.deliveryStats = stats;
+        await alert.save();
+      } catch (notifyErr) {
+        console.error(`[Alert] Notification delivery failed for "${alert.title}" (id=${alert._id}):`, notifyErr);
+        alert.deliveryStats = { notifiedCitizens: 0, inApp: 0, email: 0, sms: 0, push: 0 };
+      }
+      await notifyOffices(alert, getIo(req), user._id);
       emitAlert(req, 'alert:new', toSocketPayload(alert));
       console.log(
-        `[Alert] PUBLISHED "${alert.title}" (id=${alert._id}, status=published, scope=${alert.scope}, scopeType=${alert.scopeType}, publishedAt=${alert.publishedAt.toISOString()}, by=${user.fullName || user.role})`
+        `[Alert] PUBLISHED "${alert.title}" (id=${alert._id}, target=${alert.targetType}, targetLabel="${alert.targetLabel}", by=${user.fullName || user.role})`
       );
     } else {
       console.log(
-        `[Alert] SCHEDULED "${alert.title}" (id=${alert._id}, scheduledAt=${alert.scheduledAt.toISOString()}) — will auto-publish by scheduler.`
+        `[Alert] ${status.toUpperCase()} "${alert.title}" (id=${alert._id}, targetLabel="${alert.targetLabel}")${status === 'scheduled' ? ` — publishes at ${alert.scheduledAt.toISOString()}` : ''}`
       );
     }
 
-    logAction({ user, action: 'alert_create', resource: 'alert', resourceId: alert._id, details: { title: alert.title, severity: alert.severity, scope: alert.scope, status: alert.status }, req });
+    logAction({ user, action: 'alert_create', resource: 'alert', resourceId: alert._id, details: { title: alert.title, severity: alert.severity, target: alert.targetType, status: alert.status }, req });
 
     res.status(201).json({ success: true, message: 'Alert created successfully', data: { alert } });
   } catch (err) {
     console.error('[Alert] Create error:', err);
-    res.status(500).json({ success: false, message: 'Failed to create alert' });
+    return alertErrorResponse(res, err, 'create');
   }
 };
 
-// @desc  Update an alert (scheduled alerts can be edited; active limited fields)
+// @desc  Update an alert (scheduled/draft alerts can be edited; live limited fields)
 // @route PUT /api/alerts/:id
 const updateAlert = async (req, res) => {
   try {
     const alert = await PublicAlert.findById(req.params.id);
     if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
-    if (!canManageAlert(req.user, alert)) {
+    if (!canModifyAlert(req.user, alert)) {
       return res.status(403).json({ success: false, message: 'You cannot modify this alert.' });
     }
 
-    const { title, description, severity, expiresAt, scheduledAt, subcityId, subcityName, woredaId, woredaName, safetyInstructions } = req.body;
+    const {
+      title, category, description, severity, customCategory, safetyInstructions,
+      startAt, endAt, scheduledAt, expiresAt,
+      emergencyContact, sourceAuthority, status,
+    } = req.body;
 
-    if (title) {
+    if (title !== undefined) {
       if (!title.trim() || title.trim().length > 200) return res.status(400).json({ success: false, message: 'Title must be between 1 and 200 characters.' });
       alert.title = title.trim();
     }
-    if (description) alert.description = description.trim();
-    if (severity) {
+    // Category is optional and free-text — null / "" / undefined all mean
+    // "no category", any other string is stored as-is.
+    if (category !== undefined) {
+      const normalized = typeof category === 'string' ? category.trim() : category;
+      if (normalized && normalized.length > 120) return res.status(400).json({ success: false, message: 'Category must be under 120 characters.' });
+      alert.category = normalized || null;
+    }
+    if (description !== undefined) alert.description = description.trim();
+    if (severity !== undefined) {
       if (!SEVERITY_VALUES.includes(severity)) return res.status(400).json({ success: false, message: 'Invalid severity.' });
       alert.severity = severity;
-      alert.pinned = severity === 'emergency';
+      alert.pinned = isCriticalSeverity(severity);
     }
+    if (customCategory !== undefined) alert.customCategory = customCategory;
     if (Array.isArray(safetyInstructions)) alert.safetyInstructions = safetyInstructions;
-    if (expiresAt !== undefined) alert.expiresAt = expiresAt ? new Date(expiresAt) : null;
-    if (scheduledAt !== undefined) alert.scheduledAt = scheduledAt ? new Date(scheduledAt) : null;
 
-    if (isGlobalUser(req.user) && (subcityId || subcityName || woredaId || woredaName || req.body.scope)) {
-      const targeting = resolveTargeting(req.user, { scope: req.body.scope, subcityId, subcityName, woredaId, woredaName });
-      alert.scope = targeting.scope;
-      alert.subcityId = targeting.subcityId || null;
-      alert.subcityName = targeting.subcityName || null;
-      alert.woredaId = targeting.woredaId || null;
-      alert.woredaName = targeting.woredaName || null;
+    const wantsTargeting =
+      req.body.scope !== undefined ||
+      req.body.subcityIds !== undefined ||
+      req.body.subcityNames !== undefined ||
+      req.body.subcityName !== undefined ||
+      req.body.woredaIds !== undefined ||
+      req.body.woredaNames !== undefined ||
+      req.body.woredaName !== undefined;
+    if (wantsTargeting) {
+      const t = await resolveTargeting(req.user, req.body);
+      alert.targetType = t.targetType;
+      alert.scope = t.scope;
+      alert.scopeType = t.scopeType;
+      alert.subcityIds = t.subcityIds;
+      alert.subcityNames = t.subcityNames;
+      alert.woredaIds = t.woredaIds;
+      alert.woredaNames = t.woredaNames;
+      alert.targetLabel = t.targetLabel;
+      alert.subcityId = t.subcityIds[0] || null;
+      alert.subcityName = t.subcityNames[0] || null;
+      alert.woredaId = t.woredaIds[0] || null;
+      alert.woredaName = t.woredaNames[0] || null;
+    }
+
+    const hasScheduleEdit = startAt !== undefined || endAt !== undefined || scheduledAt !== undefined || expiresAt !== undefined;
+    if (hasScheduleEdit) {
+      const now = new Date();
+      const currentStart = alert.schedule?.startAt || alert.scheduledAt || null;
+      const currentEnd = alert.schedule?.endAt || alert.expiresAt || null;
+      const startRaw = startAt !== undefined ? startAt : scheduledAt;
+      const endRaw = endAt !== undefined ? endAt : expiresAt;
+
+      if (startRaw !== undefined) {
+        const parsed = startRaw === '' || startRaw === null ? null : parseDate(startRaw);
+        if (startRaw !== '' && startRaw !== null && parsed === null) {
+          return res.status(400).json({ success: false, message: ALERT_DATE_MESSAGES.invalidStartAt, field: 'startAt' });
+        }
+        alert.schedule = { ...alert.schedule, startAt: parsed || undefined };
+        alert.scheduledAt = parsed || undefined;
+      }
+      if (endRaw !== undefined) {
+        const parsed = endRaw === '' || endRaw === null ? null : parseDate(endRaw);
+        if (endRaw !== '' && endRaw !== null && parsed === null) {
+          return res.status(400).json({ success: false, message: ALERT_DATE_MESSAGES.invalidEndAt, field: 'endAt' });
+        }
+        alert.schedule = { ...alert.schedule, endAt: parsed || undefined };
+        alert.expiresAt = parsed || undefined;
+      }
+
+      // Validate the resulting window with the same rules as create (expiry
+      // stays optional on update so clearing a legacy expiry keeps working).
+      if (alert.status !== 'draft') {
+        const nextStart = alert.schedule?.startAt || alert.scheduledAt || null;
+        const nextEnd = alert.schedule?.endAt || alert.expiresAt || null;
+        const window = validatePublishWindow({
+          startAt: nextStart,
+          endAt: nextEnd,
+          now,
+          strict: false,
+        });
+        if (window.errors.length) {
+          const first = window.errors[0];
+          return res.status(400).json({ success: false, message: first.message, field: first.field });
+        }
+      }
+    }
+
+    if (emergencyContact !== undefined) alert.emergencyContact = emergencyContact;
+    if (sourceAuthority !== undefined) alert.sourceAuthority = sourceAuthority;
+
+    const newAttachments = buildAttachments(req);
+    if (newAttachments.length) alert.attachments = newAttachments;
+
+    if (status !== undefined) {
+      if (!ALERT_STATUSES.includes(status)) return res.status(400).json({ success: false, message: 'Invalid status.' });
+      alert.status = status;
     }
 
     alert.auditHistory.push({ action: 'updated', userName: req.user.fullName || '', userRole: req.user.role, at: new Date() });
     await alert.save();
 
+    // Real-time: every dashboard/public banner refreshes immediately.
+    emitAlert(req, 'alert:updated', toSocketPayload(alert));
+
+    // Editing a LIVE alert re-notifies the affected citizens so corrections
+    // reach the same audience as the original broadcast. Best-effort — an edit
+    // must never fail because a follow-up notification could not be sent.
+    if (isLiveStatus(alert.status)) {
+      try {
+        await notifyAlertUpdated(alert, getIo(req), req.user?._id);
+      } catch (notifyErr) {
+        console.error(`[Alert] Update notification failed for "${alert.title}" (id=${alert._id}):`, notifyErr);
+      }
+    }
+
     logAction({ user: req.user, action: 'alert_update', resource: 'alert', resourceId: alert._id, details: { title: alert.title }, req });
     res.json({ success: true, message: 'Alert updated', data: { alert } });
   } catch (err) {
     console.error('[Alert] Update error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update alert' });
+    return alertErrorResponse(res, err, 'update');
+  }
+};
+
+// @desc  Publish a draft/scheduled alert immediately (or schedule when startAt
+//        is still in the future)
+// @route POST /api/alerts/:id/publish
+const publishAlert = async (req, res) => {
+  try {
+    const alert = await PublicAlert.findById(req.params.id);
+    if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
+    if (!canManageAlert(req.user, alert)) {
+      return res.status(403).json({ success: false, message: 'You cannot publish this alert.' });
+    }
+
+    const now = new Date();
+    const start = alert.schedule?.startAt || alert.scheduledAt || null;
+    const isFuture = start && start > now;
+
+    if (isLiveStatus(alert.status)) {
+      return res.json({ success: true, message: 'Alert is already live', data: { alert } });
+    }
+
+    if (isFuture && alert.status === 'draft') {
+      alert.status = 'scheduled';
+      alert.auditHistory.push({ action: 'scheduled', userName: req.user.fullName || '', userRole: req.user.role, at: now });
+      await alert.save();
+      emitAlert(req, 'alert:statusUpdate', { _id: alert._id, status: 'scheduled', severity: alert.severity });
+      logAction({ user: req.user, action: 'alert_scheduled', resource: 'alert', resourceId: alert._id, details: { title: alert.title }, req });
+      return res.json({ success: true, message: 'Alert scheduled', data: { alert } });
+    }
+
+    alert.status = 'published';
+    alert.isPublished = true;
+    alert.publishedAt = now;
+    alert.auditHistory.push({ action: 'published', userName: req.user.fullName || '', userRole: req.user.role, at: now });
+    await alert.save();
+
+    try {
+      const stats = await notifyCitizens(alert, getIo(req), req.user?._id);
+      alert.deliveryStats = stats;
+      await alert.save();
+    } catch (notifyErr) {
+      console.error(`[Alert] Notification delivery failed for "${alert.title}" (id=${alert._id}):`, notifyErr);
+      alert.deliveryStats = { notifiedCitizens: 0, inApp: 0, email: 0, sms: 0, push: 0 };
+    }
+    await notifyOffices(alert, getIo(req), req.user?._id);
+
+    emitAlert(req, 'alert:new', toSocketPayload(alert));
+    logAction({ user: req.user, action: 'alert_publish', resource: 'alert', resourceId: alert._id, details: { title: alert.title }, req });
+    console.log(`[Alert] PUBLISHED "${alert.title}" (id=${alert._id}) via /publish`);
+    res.json({ success: true, message: 'Alert published', data: { alert } });
+  } catch (err) {
+    console.error('[Alert] Publish error:', err);
+    return alertErrorResponse(res, err, 'publish');
+  }
+};
+
+// @desc  Archive an alert (hidden from citizens, kept for records)
+// @route POST /api/alerts/:id/archive
+const archiveAlert = async (req, res) => {
+  try {
+    const alert = await PublicAlert.findById(req.params.id);
+    if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
+    if (!canManageAlert(req.user, alert)) {
+      return res.status(403).json({ success: false, message: 'You cannot archive this alert.' });
+    }
+
+    alert.status = 'archived';
+    alert.isPublished = false;
+    alert.auditHistory.push({ action: 'archived', userName: req.user.fullName || '', userRole: req.user.role, at: new Date() });
+    await alert.save();
+
+    emitAlert(req, 'alert:statusUpdate', { _id: alert._id, status: 'archived', severity: alert.severity });
+    logAction({ user: req.user, action: 'alert_archive', resource: 'alert', resourceId: alert._id, details: { title: alert.title }, req });
+    res.json({ success: true, message: 'Alert archived', data: { alert } });
+  } catch (err) {
+    console.error('[Alert] Archive error:', err);
+    res.status(500).json({ success: false, message: 'Failed to archive alert' });
   }
 };
 
@@ -447,7 +1078,8 @@ const getAlerts = async (req, res) => {
     const { page = 1, limit = 20, status, category, severity, scope } = req.query;
     const query = buildAlertScope(req.user);
     if (status) query.status = status;
-    if (category) query.category = category;
+    // Free-text category: case-insensitive substring match.
+    if (category) query.category = { $regex: esc(category), $options: 'i' };
     if (severity) query.severity = severity;
     if (scope) query.scope = scope;
 
@@ -485,20 +1117,19 @@ const getManagedAlert = async (req, res) => {
 const getPublicAlerts = async (req, res) => {
   try {
     const { page = 1, limit = 20, category, severity, subcity, woreda, q } = req.query;
-    // Only published (or legacy 'active') alerts that have not expired.
     const query = { status: { $in: LIVE_STATUSES }, isPublished: true };
 
-    // Past-due alerts that the scheduler has not yet flipped are hidden.
     query.$or = [{ expiresAt: { $gt: new Date() } }, { expiresAt: null }];
 
-    if (category) query.category = category;
+    // Free-text category: case-insensitive substring match.
+    if (category) query.category = { $regex: esc(category), $options: 'i' };
     if (severity) query.severity = severity;
     if (q && q.trim()) {
       query.title = { $regex: esc(q.trim()), $options: 'i' };
     }
     const locationClauses = [
-      ...(subcity ? [{ $or: [{ subcityName: { $regex: `^${esc(subcity)}$`, $options: 'i' } }, { scope: 'all' }] }] : []),
-      ...(woreda ? [{ $or: [{ woredaName: { $regex: `^${esc(woreda)}$`, $options: 'i' } }, { scope: 'all' }] }] : []),
+      ...(subcity ? [{ $or: [{ subcityName: { $regex: `^${esc(subcity)}$`, $options: 'i' } }, { subcityNames: { $regex: `^${esc(subcity)}$`, $options: 'i' } }, { scope: 'all' }] }] : []),
+      ...(woreda ? [{ $or: [{ woredaName: { $regex: `^${esc(woreda)}$`, $options: 'i' } }, { woredaNames: { $regex: `^${esc(woreda)}$`, $options: 'i' } }, { scope: 'all' }] }] : []),
     ];
     if (locationClauses.length) query.$and = locationClauses;
 
@@ -510,14 +1141,13 @@ const getPublicAlerts = async (req, res) => {
 
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, data: { alerts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) } });
-    console.log(`[Alert] Public list → ${alerts.length} returned / ${total} total (filters: ${JSON.stringify({ category, severity, subcity, woreda, q })})`);
   } catch (err) {
     console.error('[Alert] Public list error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
   }
 };
 
-// @desc  Get an active alert by ID (public) — increments views
+// @desc  Get an active alert by ID (public) — increments views + analytics clicks
 // @route GET /api/alerts/:id
 const getPublicAlertById = async (req, res) => {
   try {
@@ -531,6 +1161,7 @@ const getPublicAlertById = async (req, res) => {
 
     alert.views += 1;
     await alert.save();
+    await upsertAlertAnalytics(alert._id, { clicks: 1 });
 
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, data: { alert } });
@@ -542,35 +1173,17 @@ const getPublicAlertById = async (req, res) => {
 
 // @desc  Alerts relevant to the logged-in citizen's location
 // @route GET /api/alerts/my
-// Visible to a citizen when:
-//   • scopeType 'city' (city-wide)        → everyone
-//   • scopeType 'subcity'                 → citizens whose subcity matches
-//   • scopeType 'woreda'                  → citizens whose woreda matches
 const getMyAlerts = async (req, res) => {
   try {
     const user = req.user;
     const { page = 1, limit = 20, category, severity } = req.query;
     const query = { status: { $in: LIVE_STATUSES }, isPublished: true };
 
-    // Not-yet-flipped overdue alerts are hidden.
     query.$or = [{ expiresAt: { $gt: new Date() } }, { expiresAt: null }];
+    query.$and = [citizenVisibilityQuery(user)];
 
-    const locationClauses = [{ scopeType: 'city' }];
-    if (user.subcity) {
-      locationClauses.push({ subcityName: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
-    }
-    if (user.woredaName) {
-      locationClauses.push({ woredaName: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
-    }
-    if (user.subcityId) {
-      locationClauses.push({ subcityId: user.subcityId });
-    }
-    if (user.woredaId) {
-      locationClauses.push({ woredaId: user.woredaId });
-    }
-    query.$and = [{ $or: locationClauses }];
-
-    if (category) query.category = category;
+    // Free-text category: case-insensitive substring match.
+    if (category) query.category = { $regex: esc(category), $options: 'i' };
     if (severity) query.severity = severity;
 
     const total = await PublicAlert.countDocuments(query);
@@ -579,14 +1192,86 @@ const getMyAlerts = async (req, res) => {
       .skip((parseInt(page) - 1) * parseInt(limit))
       .limit(parseInt(limit));
 
+    // Count each dashboard view (only the first page so pagination does not
+    // inflate the analytics figure on every page flip).
+    if (parseInt(page) === 1 && alerts.length) {
+      const ids = alerts.map((a) => a._id);
+      await AlertAnalytics.updateMany({ alert: { $in: ids } }, { $inc: { dashboardViews: 1 } }).catch(() => {});
+    }
+
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, data: { alerts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) } });
-    console.log(
-      `[Alert] Citizen ${user._id} (subcity="${user.subcity || ''}", woreda="${user.woredaName || ''}") → ${alerts.length} location-matched alert(s) of ${total}`
-    );
   } catch (err) {
     console.error('[Alert] Citizen list error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
+  }
+};
+
+// @desc  Unread count for the citizen alert badge
+// @route GET /api/alerts/my/unread-count
+const getUnreadAlertCount = async (req, res) => {
+  try {
+    const user = req.user;
+    const query = {
+      status: { $in: LIVE_STATUSES },
+      isPublished: true,
+      $and: [citizenVisibilityQuery(user)],
+      $or: [{ expiresAt: { $gt: new Date() } }, { expiresAt: null }],
+    };
+
+    const visible = await PublicAlert.find(query).select('_id').lean();
+    const ids = visible.map((a) => a._id);
+    if (!ids.length) return res.json({ success: true, data: { unread: 0 } });
+
+    const read = await AlertRead.find({ user: user._id, alert: { $in: ids } }).select('alert').lean();
+    const readSet = new Set(read.map((r) => String(r.alert)));
+    const unread = ids.filter((id) => !readSet.has(String(id))).length;
+
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: { unread } });
+  } catch (err) {
+    console.error('[Alert] Unread count error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch unread count' });
+  }
+};
+
+// @desc  Mark an alert as read for the logged-in citizen
+// @route POST /api/alerts/:id/read
+const markAlertRead = async (req, res) => {
+  try {
+    const user = req.user;
+    const alert = await PublicAlert.findById(req.params.id);
+    if (!alert || !isLiveStatus(alert.status) || !alert.isPublished) {
+      return res.status(404).json({ success: false, message: 'Alert not found' });
+    }
+    if (alert.expiresAt && alert.expiresAt < new Date()) {
+      return res.status(404).json({ success: false, message: 'Alert has expired' });
+    }
+    if (!isAlertVisibleToCitizen(alert, user)) {
+      return res.status(404).json({ success: false, message: 'Alert not found' });
+    }
+
+    const now = new Date();
+    const existing = await AlertRead.findOne({ alert: alert._id, user: user._id }).lean();
+    const isFirst = !existing;
+
+    await AlertRead.updateOne(
+      { alert: alert._id, user: user._id },
+      {
+        $setOnInsert: { alert: alert._id, user: user._id },
+        $inc: { readCount: 1 },
+        $set: { lastReadAt: now, ...(isFirst ? { firstReadAt: now } : {}) },
+      },
+      { upsert: true }
+    );
+
+    await upsertAlertAnalytics(alert._id, { reads: 1, ...(isFirst ? { uniqueReaders: 1 } : {}) });
+    await refreshClickThroughRate(alert._id);
+
+    res.json({ success: true, data: { read: true } });
+  } catch (err) {
+    console.error('[Alert] Mark read error:', err);
+    res.status(500).json({ success: false, message: 'Failed to mark alert as read' });
   }
 };
 
@@ -607,7 +1292,6 @@ const updateAlertStatus = async (req, res) => {
 
     const now = new Date();
     const prev = alert.status;
-    // Normalize the legacy 'active' status to the canonical 'published'.
     const target = status === 'active' ? 'published' : status;
 
     if (target === 'published') {
@@ -622,11 +1306,11 @@ const updateAlertStatus = async (req, res) => {
     alert.auditHistory.push({ action: target, userName: req.user.fullName || '', userRole: req.user.role, at: now });
     await alert.save();
 
-    // Notify citizens when a scheduled alert is published (or reactivated).
-    if (target === 'published' && (prev === 'scheduled' || prev === 'expired' || prev === 'archived')) {
-      const stats = await notifyCitizens(alert, getIo(req));
+    if (target === 'published' && (prev === 'scheduled' || prev === 'expired' || prev === 'archived' || prev === 'draft')) {
+      const stats = await notifyCitizens(alert, getIo(req), req.user?._id);
       alert.deliveryStats = stats;
       await alert.save();
+      await notifyOffices(alert, getIo(req), req.user?._id);
       const fresh = await PublicAlert.findById(alert._id);
       emitAlert(req, 'alert:new', toSocketPayload(fresh));
       console.log(`[Alert] STATUS → published "${alert.title}" (id=${alert._id}, from=${prev}, isPublished=true)`);
@@ -643,19 +1327,25 @@ const updateAlertStatus = async (req, res) => {
   }
 };
 
-// @desc  Delete an alert (admin only)
+// @desc  Delete an alert (role-scoped via canModifyAlert)
 // @route DELETE /api/alerts/:id
 const deleteAlert = async (req, res) => {
   try {
     const alert = await PublicAlert.findById(req.params.id);
     if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
-    if (!isGlobalUser(req.user)) {
-      return res.status(403).json({ success: false, message: 'Only city-wide administrators can delete alerts.' });
+    if (!canModifyAlert(req.user, alert)) {
+      return res.status(403).json({ success: false, message: 'You cannot delete this alert.' });
     }
 
     const id = alert._id;
     await alert.deleteOne();
     await AlertDelivery.deleteMany({ alert: id });
+    await AlertRecipient.deleteMany({ alert: id });
+    await AlertRead.deleteMany({ alert: id });
+    await AlertAnalytics.deleteMany({ alert: id });
+    // Remove every citizen bell notification for this alert so deleted alerts
+    // vanish from notification centers immediately.
+    await Notification.deleteMany({ alertId: id });
 
     emitAlert(req, 'alert:deleted', { _id: id });
     logAction({ user: req.user, action: 'alert_delete', resource: 'alert', resourceId: id, details: { title: alert.title }, req });
@@ -671,38 +1361,41 @@ const deleteAlert = async (req, res) => {
 const getAlertStats = async (req, res) => {
   try {
     const scope = buildAlertScope(req.user);
-    const [statusCounts, categoryCounts, severityCounts, scopeCounts, total, activeEmergency] = await Promise.all([
+    const [statusCounts, categoryCounts, severityCounts, scopeCounts, total, activeCritical] = await Promise.all([
       PublicAlert.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
       PublicAlert.aggregate([{ $match: scope }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
       PublicAlert.aggregate([{ $match: scope }, { $group: { _id: '$severity', count: { $sum: 1 } } }]),
       PublicAlert.aggregate([{ $match: scope }, { $group: { _id: '$scope', count: { $sum: 1 } } }]),
       PublicAlert.countDocuments(scope),
-      PublicAlert.countDocuments({ ...scope, status: { $in: LIVE_STATUSES }, severity: 'emergency' }),
+      PublicAlert.countDocuments({ ...scope, status: { $in: LIVE_STATUSES }, severity: { $in: ['critical', 'emergency'] } }),
     ]);
 
     const byStatus = {}, byCategory = {}, bySeverity = {}, byScope = {};
     statusCounts.forEach((s) => { byStatus[s._id] = s.count; });
-    // Combined "live" bucket so clients reading `byStatus.active` keep working.
     byStatus.active = (byStatus.published || 0) + (byStatus.active || 0);
     categoryCounts.forEach((c) => { byCategory[c._id] = c.count; });
     severityCounts.forEach((s) => { bySeverity[s._id] = s.count; });
     scopeCounts.forEach((s) => { byScope[s._id] = s.count; });
 
-    res.json({ success: true, data: { total, byStatus, byCategory, bySeverity, byScope, activeEmergency } });
+    res.json({ success: true, data: { total, byStatus, byCategory, bySeverity, byScope, activeEmergency: activeCritical } });
   } catch (err) {
     console.error('[Alert] Stats error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch stats' });
   }
 };
 
-// @desc  Analytics: per-alert performance + trend + breakdowns
+// @desc  Analytics: per-alert performance + trend + breakdowns + delivery stats
 // @route GET /api/alerts/analytics
 const getAlertAnalytics = async (req, res) => {
   try {
     const scope = buildAlertScope(req.user);
     const alerts = await PublicAlert.find(scope).select(
-      'title category severity status scope views deliveryStats createdAt publishedAt expiresAt source clusterLabel pinned'
+      'title category severity status scope targetLabel subcityNames woredaNames views deliveryStats createdAt publishedAt expiresAt source clusterLabel pinned'
     ).sort({ createdAt: -1 }).lean();
+
+    const ids = alerts.map((a) => a._id);
+    const anaDocs = await AlertAnalytics.find({ alert: { $in: ids } }).lean();
+    const anaById = new Map(anaDocs.map((a) => [String(a.alert), a]));
 
     const since = new Date();
     since.setDate(since.getDate() - 30);
@@ -719,13 +1412,22 @@ const getAlertAnalytics = async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
+    const sum = (key) => anaDocs.reduce((acc, a) => acc + (a[key] || 0), 0);
+
     res.json({
       success: true,
       data: {
-        alerts,
+        alerts: alerts.map((a) => ({ ...a, analytics: anaById.get(String(a._id)) || null })),
         totals: {
-          views: alerts.reduce((a, c) => a + (c.views || 0), 0),
-          notified: alerts.reduce((a, c) => a + (c.deliveryStats?.notifiedCitizens || 0), 0),
+          views: alerts.reduce((acc, c) => acc + (c.views || 0), 0),
+          notified: alerts.reduce((acc, c) => acc + (c.deliveryStats?.notifiedCitizens || 0), 0),
+          totalRecipients: sum('totalRecipients'),
+          smsDelivered: sum('smsDelivered'),
+          emailDelivered: sum('emailDelivered'),
+          dashboardViews: sum('dashboardViews'),
+          clicks: sum('clicks'),
+          reads: sum('reads'),
+          uniqueReaders: sum('uniqueReaders'),
         },
         trend: createdByDay,
         severityBreakdown: alerts.reduce((acc, a) => {
@@ -751,26 +1453,26 @@ const exportAlerts = async (req, res) => {
     const format = req.query.format === 'pdf' ? 'pdf' : 'csv';
     const query = buildAlertScope(req.user);
     if (req.query.status) query.status = req.query.status;
-    if (req.query.category) query.category = req.query.category;
+    // Free-text category: case-insensitive substring match.
+    if (req.query.category) query.category = { $regex: esc(req.query.category), $options: 'i' };
     if (req.query.severity) query.severity = req.query.severity;
 
     const alerts = await PublicAlert.find(query)
       .sort({ createdAt: -1 })
-      .select('title category severity status scope subcityName woredaName createdByName views deliveryStats publishedAt createdAt expiresAt')
+      .select('title category severity status scope targetLabel subcityNames woredaNames createdByName views deliveryStats publishedAt createdAt expiresAt')
       .lean();
 
     const stamp = new Date().toISOString().slice(0, 10);
+    const targetOf = (a) => a.targetLabel || [a.subcityNames || a.subcityName, a.woredaNames || a.woredaName].filter(Boolean).join(' — ') || 'Addis Ababa (city-wide)';
 
     if (format === 'csv') {
-      const header = 'Title,Category,Severity,Status,Scope,Subcity,Woreda,Published By,Views,Notified,Published At,Expires At,Created At';
+      const header = 'Title,Category,Severity,Status,Target,Published By,Views,Notified,Published At,Expires At,Created At';
       const rows = alerts.map((a) => [
         `"${(a.title || '').replace(/"/g, '""')}"`,
         a.category || '',
         a.severity || '',
         a.status || '',
-        a.scope || '',
-        a.subcityName || '',
-        a.woredaName || '',
+        `"${targetOf(a).replace(/"/g, '""')}"`,
         `"${(a.createdByName || '').replace(/"/g, '""')}"`,
         a.views || 0,
         a.deliveryStats?.notifiedCitizens || 0,
@@ -795,12 +1497,10 @@ const exportAlerts = async (req, res) => {
     const svc = (s) => (s || '').toString();
 
     for (const a of alerts) {
-      doc.fontSize(11).fillColor(a.severity === 'emergency' ? '#dc2626' : a.severity === 'warning' ? '#d97706' : '#1d4ed8')
+      doc.fontSize(11).fillColor(a.severity === 'critical' || a.severity === 'emergency' ? '#dc2626' : a.severity === 'high' || a.severity === 'warning' ? '#d97706' : '#1d4ed8')
         .text(`[${(a.status || '').toUpperCase()}] ${a.title}`);
       doc.fillColor('#111827');
-      doc.fontSize(9).text(
-        `${svc(a.category)} • ${svc(a.severity)} • Scope: ${svc(a.scope)}${a.subcityName ? ` / ${a.subcityName}` : ''}${a.woredaName ? ` / ${a.woredaName}` : ''}`
-      );
+      doc.fontSize(9).text(`${svc(a.category)} • ${svc(a.severity)} • Target: ${targetOf(a)}`);
       doc.fontSize(9).text(
         `By ${svc(a.createdByName)} • ${a.publishedAt ? `Published ${new Date(a.publishedAt).toLocaleString()}` : 'Not published'}${a.expiresAt ? ` • Expires ${new Date(a.expiresAt).toLocaleString()}` : ''}`
       );
@@ -816,7 +1516,7 @@ const exportAlerts = async (req, res) => {
 };
 
 // @desc  Get the current user's alert subscription preferences
-// @route GET /api/alerts/subscriptions
+// @route GET /api/alerts/subscriptions/me
 const getSubscriptions = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('alertSubscriptions');
@@ -863,52 +1563,6 @@ const updateSubscriptions = async (req, res) => {
   }
 };
 
-// @desc  Complaint clusters (integration with complaint analytics)
-// Groups recent unresolved complaints by subcity + category and returns
-// clusters big enough to warrant a public alert.
-// @route GET /api/alerts/complaint-clusters
-const getComplaintClusters = async (req, res) => {
-  try {
-    const since = new Date();
-    since.setDate(since.getDate() - parseInt(req.query.days || '7', 10));
-
-    const clusters = await PublicComplaint.aggregate([
-      { $match: { createdAt: { $gte: since }, subcity: { $ne: '' } } },
-      {
-        $group: {
-          _id: { subcity: '$subcity', category: '$category', department: '$department' },
-          count: { $sum: 1 },
-          priority: { $max: '$priority' },
-          complaintIds: { $push: '$_id' },
-          latestAt: { $max: '$createdAt' },
-        },
-      },
-      { $match: { count: { $gte: parseInt(req.query.min || '3', 10) } } },
-      { $sort: { count: -1 } },
-      { $limit: parseInt(req.query.limit || '20', 10) },
-    ]);
-
-    res.json({
-      success: true,
-      data: {
-        clusters: clusters.map((c) => ({
-          subcity: c._id.subcity,
-          category: c._id.category,
-          department: c._id.department,
-          count: c.count,
-          priority: c.priority,
-          complaintIds: c.complaintIds,
-          latestAt: c.latestAt,
-        })),
-        periodDays: parseInt(req.query.days || '7', 10),
-      },
-    });
-  } catch (err) {
-    console.error('[Alert] Complaint clusters error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch complaint clusters' });
-  }
-};
-
 // @desc  Alert audit trail (role-scoped to the alerts the user can manage)
 // @route GET /api/alerts/audit
 const getAlertAuditLog = async (req, res) => {
@@ -935,11 +1589,15 @@ const getAlertAuditLog = async (req, res) => {
 module.exports = {
   createAlert,
   updateAlert,
+  publishAlert,
+  archiveAlert,
   getAlerts,
   getManagedAlert,
   getPublicAlerts,
   getPublicAlertById,
   getMyAlerts,
+  getUnreadAlertCount,
+  markAlertRead,
   updateAlertStatus,
   deleteAlert,
   getAlertStats,
@@ -947,9 +1605,13 @@ module.exports = {
   exportAlerts,
   getSubscriptions,
   updateSubscriptions,
-  getComplaintClusters,
   getAlertAuditLog,
   buildAlertScope,
   canManageAlert,
+  canModifyAlert,
   notifyCitizens,
+  notifyAlertUpdated,
+  notifyOffices,
+  resolveTargeting,
+  isAlertVisibleToCitizen,
 };

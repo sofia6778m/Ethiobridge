@@ -28,6 +28,8 @@ const {
   reopenComplaint,
   closeComplaint,
   submitFeedback,
+  addCitizenEvidence,
+  downloadResolutionLetter,
 } = require('../controllers/municipalComplaintController');
 
 const SUB_CITY_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'subcity_admin'];
@@ -69,9 +71,11 @@ router.post('/:id/assign-technician', protect, authorize(...OFFICER_ROLES), assi
 router.post('/:id/start-work', protect, authorize(...FIELD_ROLES), startWork);
 router.post('/:id/complete-work', protect, authorize(...FIELD_ROLES), upload.array('photos', 8), completeWork);
 router.post('/:id/verify-resolution', protect, authorize(...OFFICER_ROLES), verifyResolution);
-router.post('/:id/reopen', protect, authorize(...OFFICER_ROLES), reopenComplaint);
-router.post('/:id/close', protect, authorize(...OFFICER_ROLES), closeComplaint);
+router.post('/:id/reopen', protect, authorize(...OFFICER_ROLES, 'citizen'), reopenComplaint);
+router.post('/:id/close', protect, authorize(...OFFICER_ROLES, 'citizen'), closeComplaint);
 router.post('/:id/feedback', protect, authorize('citizen', 'admin', 'government'), submitFeedback);
+router.post('/:id/evidence', protect, authorize(...VIEWER_ROLES), upload.array('evidence', 8), addCitizenEvidence);
+router.get('/:id/resolution-letter', protect, authorize(...VIEWER_ROLES), downloadResolutionLetter);
 router.get('/:id', protect, authorize(...VIEWER_ROLES), getComplaintById);
 
 module.exports = router;

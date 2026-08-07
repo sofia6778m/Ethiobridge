@@ -96,7 +96,7 @@ export default function AlertBanner() {
         <div className="space-y-3">
           {alerts.map(alert => {
             const sev = SEVERITY_STYLES[alert.severity] || SEVERITY_STYLES.information;
-            const cat = getCategory(alert.category);
+            const cat = getCategory(alert.category) || { icon: '📢' };
             const sevMeta = getSeverity(alert.severity);
             const isExpanded = expanded === alert._id;
 

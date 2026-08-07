@@ -10,6 +10,8 @@ const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
 const { protect, protectOptional, authorize } = require('./middleware/auth');
 const { generalLimiter } = require('./middleware/rateLimiter');
+const { trackLimiter } = require('./middleware/rateLimiter');
+const { publicTrack } = require('./controllers/publicTrackController');
 
 // Import routes
 const authRoutes = require('./routes/authRoutes');
@@ -22,7 +24,6 @@ const adminRoutes = require('./routes/adminRoutes');
 const publicRoutes = require('./routes/publicRoutes');
 const dropdownRoutes = require('./routes/dropdownRoutes');
 const workflowRoutes = require('./routes/workflowRoutes');
-const publicComplaintRoutes = require('./routes/publicComplaintRoutes');
 const alertRoutes = require('./routes/alertRoutes');
 const campaignRoutes = require('./routes/campaignRoutes');
 const subcityRoutes = require('./routes/subcityRoutes');
@@ -123,9 +124,6 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/workflow', workflowRoutes);
-app.use('/api/public-complaints', publicComplaintRoutes);
-// Alias so /api/complaints/* works alongside /api/public-complaints/*.
-app.use('/api/complaints', publicComplaintRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/campaigns', campaignRoutes);
@@ -202,9 +200,24 @@ app.use('/api/donations', donationRoutes);
 // and anonymous citizens alike.
 app.use('/api/reports', reportRoutes);
 
+// Public complaint tracking — no authentication. Phone + tracking id lookup,
+// rate-limited to deter enumeration. Returns a redacted record only when the
+// tracking id AND the phone number match.
+app.post('/api/public-track', trackLimiter, publicTrack);
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'EthioBridge API is running', timestamp: new Date() });
+});
+
+// Server clock — lets the alert form validate against the REAL server time
+// instead of the browser clock (which may be skewed or stale).
+app.get('/api/time', (req, res) => {
+  res.json({
+    success: true,
+    timezone: 'Africa/Addis_Ababa',
+    now: new Date().toISOString(),
+  });
 });
 
 // 404 handler
@@ -229,9 +242,31 @@ function isPortAvailable(port) {
   });
 }
 
+// MongoDB refuses a compound index over two array fields ("cannot index
+// parallel arrays [woredaIds] [subcityIds]"). Older schema versions created a
+// `targetType_1_subcityIds_1_woredaIds_1` index that survives in existing
+// databases and makes every INSERT fail once both arrays are populated. On
+// boot, drop any leftover index that keys both array fields together so alert
+// creation keeps working — the schema defines single-field multikey indexes.
+async function fixPublicAlertParallelArrayIndexes() {
+  try {
+    const collection = mongoose.connection.db.collection('publicalerts');
+    const indexes = await collection.indexes();
+    const stale = indexes.filter((i) => i.key.subcityIds !== undefined && i.key.woredaIds !== undefined);
+    for (const index of stale) {
+      await collection.dropIndex(index.name);
+      console.log(`[PublicAlert] Dropped stale parallel-array index "${index.name}" (subcityIds + woredaIds)`);
+    }
+  } catch (err) {
+    console.error('[PublicAlert] Index fix-up failed:', err.message);
+  }
+}
+
 async function startServer() {
   // Seed admin after DB is ready
   await connectDB();
+
+  await fixPublicAlertParallelArrayIndexes();
 
   // Align the Department collection's indexes with the schema. Drops the legacy
   // `unique_subcity_department` index so a subcity-level and a woreda-level

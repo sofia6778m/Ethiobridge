@@ -155,6 +155,7 @@ const createWorkflowComplaint = async (req, res) => {
     for (const wu of woredaUsers) {
       await createNotification({
         recipient: wu._id,
+        actorId: req.user?._id,
         title: 'New Complaint Assigned',
         message: `New ${issueType.department} complaint: "${title}" has been assigned to your woreda.`,
         type: 'info',
@@ -169,6 +170,7 @@ const createWorkflowComplaint = async (req, res) => {
     for (const admin of admins) {
       await createNotification({
         recipient: admin._id,
+        actorId: req.user?._id,
         title: 'New Workflow Complaint',
         message: `${issueType.subcity} / ${woreda.name} — ${issueType.department}: "${title}"`,
         type: 'info',
@@ -316,6 +318,7 @@ const woredaResolve = async (req, res) => {
     if (complaint.reporter) {
       await createNotification({
         recipient: complaint.reporter,
+        actorId: req.user._id,
         title: 'Complaint Resolved',
         message: `Your complaint ${complaint.trackingNumber} has been resolved by the woreda.`,
         type: 'success',
@@ -363,7 +366,7 @@ const woredaEscalate = async (req, res) => {
     await complaint.save();
 
     // Immediately escalate to subcity
-    await _escalateToSubcity(complaint, req.app?.get('io'));
+    await _escalateToSubcity(complaint, req.app?.get('io'), req.user._id);
 
     res.json({ success: true, message: 'Complaint escalated to subcity.', data: { complaint } });
   } catch (err) {
@@ -375,7 +378,7 @@ const woredaEscalate = async (req, res) => {
 
 // ── Internal helper — escalate a complaint to subcity ────────────────────────
 // Used by both the manual woreda-escalate endpoint and the cron scheduler.
-async function _escalateToSubcity(complaint, io) {
+async function _escalateToSubcity(complaint, io, actorId) {
   if (complaint.workflowStatus === 'escalated_to_subcity') return; // already done
 
   const prev = complaint.workflowStatus;
@@ -405,6 +408,7 @@ async function _escalateToSubcity(complaint, io) {
   for (const su of subcityUsers) {
     await createNotification({
       recipient: su._id,
+      actorId,
       title: 'Complaint Escalated to Your Subcity',
       message: `${complaint.department} complaint "${complaint.title}" (${complaint.trackingNumber}) has been escalated to your subcity.`,
       type: 'warning',
@@ -423,6 +427,7 @@ async function _escalateToSubcity(complaint, io) {
   for (const du of deptUsers) {
     await createNotification({
       recipient: du._id,
+      actorId,
       title: 'Escalated Complaint — Action Required',
       message: `${complaint.department} complaint "${complaint.title}" escalated to your department.`,
       type: 'warning',
@@ -476,6 +481,7 @@ const subcityResolve = async (req, res) => {
     if (complaint.reporter) {
       await createNotification({
         recipient: complaint.reporter,
+        actorId: req.user._id,
         title: 'Complaint Resolved by Subcity',
         message: `Your complaint ${complaint.trackingNumber} has been resolved by the ${complaint.subcity.replace('_', ' ')} subcity.`,
         type: 'success',

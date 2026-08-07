@@ -25,6 +25,8 @@ const {
   escalateComplaint,
   reopenComplaint,
   addEvidence,
+  sendCitizenReply,
+  submitFeedback,
   downloadAcknowledgment,
   getAuditTrail,
   getStats,
@@ -55,6 +57,8 @@ router.get('/:id/audit', protect, authorize(...GOVERNANCE_VIEWER_ROLES), getAudi
 router.get('/:id/acknowledgment', protect, authorize(...GOVERNANCE_VIEWER_ROLES), downloadAcknowledgment);
 router.post('/:id/reopen', protect, authorize('citizen', 'CITIZEN', ...GOVERNANCE_MANAGER_ROLES), reopenComplaint);
 router.post('/:id/evidence', protect, authorize('citizen', 'CITIZEN'), governanceUpload.array('evidence', 8), addEvidence);
+router.post('/:id/citizen-reply', protect, authorize('citizen', 'CITIZEN'), governanceUpload.array('evidence', 8), sendCitizenReply);
+router.post('/:id/feedback', protect, authorize('citizen', 'CITIZEN'), submitFeedback);
 router.post('/:id/request-woreda', protect, authorize(...SUB_CITY_OFFICER_ROLES), requestWoredaInfo);
 router.post('/:id/respond-woreda', protect, authorize(...WOREDA_OFFICER_ROLES), governanceUpload.array('evidence', 8), respondToWoredaRequest);
 router.post('/:id/respond', protect, authorize(...GOVERNANCE_MANAGER_ROLES), governanceUpload.array('evidence', 8), respondToCitizen);

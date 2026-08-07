@@ -116,6 +116,7 @@ const notifyAllStakeholders = async (req, { report, title, message, type, exclud
   for (const uid of userIds) {
     await createNotification({
       recipient: uid,
+      actorId: excludeUser,
       title,
       message,
       type,
@@ -212,6 +213,7 @@ const createReport = async (req, res) => {
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
+          actorId: req.user._id,
           title: 'New Report Assigned to Your Department',
           message: `A new report "${title}" has been submitted for ${finalDept} department.`,
           type: 'new_report',
@@ -228,6 +230,7 @@ const createReport = async (req, res) => {
       for (const u of woredaUsers) {
         await createNotification({
           recipient: u._id,
+          actorId: req.user._id,
           title: 'New Infrastructure Report in Your Woreda',
           message: `New ${finalDept} report: "${title}"`,
           type: 'new_report',
@@ -243,6 +246,7 @@ const createReport = async (req, res) => {
     for (const admin of admins) {
       await createNotification({
         recipient: admin._id,
+        actorId: req.user._id,
         title: 'New Infrastructure Report',
         message: `New report "${title}" (${category}) submitted from ${region}.`,
         type: 'new_report',
@@ -254,6 +258,7 @@ const createReport = async (req, res) => {
 
     await createNotification({
       recipient: report.submittedBy,
+      actorId: req.user._id,
       title: 'Report Submitted',
       message: `Your report "${title}" has been submitted and routed to the ${finalDept} department.`,
       type: 'report_status',
@@ -543,6 +548,7 @@ const verifyReport = async (req, res) => {
 
       await createNotification({
         recipient: responsibleUser._id,
+        actorId: req.user._id,
         title: 'New Report Assignment',
         message: `Report "${report.title}" (${report.reportId}) has been automatically assigned to you. Organization: ${orgName}.`,
         type: 'assignment',
@@ -553,6 +559,7 @@ const verifyReport = async (req, res) => {
 
       await createNotification({
         recipient: report.submittedBy,
+        actorId: req.user._id,
         title: 'Report Assigned',
         message: `Your report "${report.title}" has been approved and assigned to ${responsibleUser.fullName} (${orgName}).`,
         type: 'report_status',
@@ -566,6 +573,7 @@ const verifyReport = async (req, res) => {
         if (admin._id.toString() !== req.user._id.toString() && admin._id.toString() !== responsibleUser._id.toString()) {
           await createNotification({
             recipient: admin._id,
+            actorId: req.user._id,
             title: 'Report Auto-Assigned',
             message: `Report "${report.title}" (${report.reportId}) has been approved and auto-assigned to ${responsibleUser.fullName} (${orgName}).`,
             type: 'report_status',
@@ -639,6 +647,7 @@ const assignReport = async (req, res) => {
 
     await createNotification({
       recipient: assignedTo,
+      actorId: req.user._id,
       title: 'New Report Assignment',
       message: `You have been assigned report "${report.title}" (${report.reportId}).`,
       type: 'assignment',
@@ -649,6 +658,7 @@ const assignReport = async (req, res) => {
 
     await createNotification({
       recipient: report.submittedBy,
+      actorId: req.user._id,
       title: 'Report Assigned',
       message: `Your report "${report.title}" has been assigned to ${assignee.fullName}.`,
       type: 'report_status',
@@ -662,6 +672,7 @@ const assignReport = async (req, res) => {
       if (admin._id.toString() !== req.user._id.toString() && admin._id.toString() !== assignedTo.toString()) {
         await createNotification({
           recipient: admin._id,
+          actorId: req.user._id,
           title: 'Report Assigned',
           message: `Report "${report.title}" (${report.reportId}) has been assigned to ${assignee.fullName}.`,
           type: 'report_status',
@@ -795,6 +806,7 @@ const citizenVerify = async (req, res) => {
       for (const admin of admins) {
         await createNotification({
           recipient: admin._id,
+          actorId: req.user._id,
           title: 'Report Resolved',
           message: `Report "${report.title}" (${report.reportId}) has been verified as resolved by the citizen.`,
           type: 'report_status',
@@ -807,6 +819,7 @@ const citizenVerify = async (req, res) => {
       for (const gov of govUsers) {
         await createNotification({
           recipient: gov._id,
+          actorId: req.user._id,
           title: 'Report Resolved',
           message: `Report "${report.title}" (${report.reportId}) has been verified as resolved by the citizen.`,
           type: 'report_status',
@@ -837,6 +850,7 @@ const citizenVerify = async (req, res) => {
       for (const u of govUsers) {
         await createNotification({
           recipient: u._id,
+          actorId: req.user._id,
           title: 'Report Reopened',
           message: `Report "${report.title}" (${report.reportId}) was reopened by the citizen. Reason: ${note || 'No reason'}`,
           type: 'report_status',
@@ -1083,6 +1097,7 @@ const bulkVerify = async (req, res) => {
 
         await createNotification({
           recipient: report.submittedBy,
+          actorId: req.user._id,
           title: 'Report Rejected',
           message: `Your report "${report.title}" has been rejected. Reason: ${note || 'No reason'}`,
           type: 'verification',
@@ -1136,6 +1151,7 @@ const bulkVerify = async (req, res) => {
 
           await createNotification({
             recipient: responsibleUser._id,
+            actorId: req.user._id,
             title: 'New Report Assignment',
             message: `Report "${report.title}" (${report.reportId}) has been automatically assigned to you. Organization: ${orgName}.`,
             type: 'assignment',
@@ -1146,6 +1162,7 @@ const bulkVerify = async (req, res) => {
 
           await createNotification({
             recipient: report.submittedBy,
+            actorId: req.user._id,
             title: 'Report Assigned',
             message: `Your report "${report.title}" has been approved and assigned to ${responsibleUser.fullName} (${orgName}).`,
             type: 'report_status',
@@ -1156,6 +1173,7 @@ const bulkVerify = async (req, res) => {
         } else {
           await createNotification({
             recipient: report.submittedBy,
+            actorId: req.user._id,
             title: 'Report Approved',
             message: `Your report "${report.title}" has been approved. No matching government user found for automatic assignment.`,
             type: 'verification',
@@ -1234,6 +1252,7 @@ const bulkAssign = async (req, res) => {
 
       await createNotification({
         recipient: assignedTo,
+        actorId: req.user._id,
         title: 'New Report Assignment',
         message: `You have been assigned report "${report.title}" (${report.reportId}).`,
         type: 'assignment',
@@ -1244,6 +1263,7 @@ const bulkAssign = async (req, res) => {
 
       await createNotification({
         recipient: report.submittedBy,
+        actorId: req.user._id,
         title: 'Report Assigned',
         message: `Your report "${report.title}" has been assigned to ${assignee.fullName}.`,
         type: 'report_status',
@@ -1257,6 +1277,7 @@ const bulkAssign = async (req, res) => {
         if (admin._id.toString() !== req.user._id.toString() && admin._id.toString() !== assignedTo.toString()) {
           await createNotification({
             recipient: admin._id,
+            actorId: req.user._id,
             title: 'Report Assigned',
             message: `Report "${report.title}" (${report.reportId}) has been assigned to ${assignee.fullName}.`,
             type: 'report_status',

@@ -4,8 +4,9 @@
  * Runs every 15 minutes and auto-escalates:
  *  1. WorkflowComplaint  — whose escalationDeadline has passed and
  *     workflowStatus is still 'pending' / 'pending_escalation'.
- *  2. PublicComplaint    — 48h SLA exceeded  -> Subcity office
- *                         5-day SLA exceeded -> Subcity Administrator.
+ *  2. Municipal complaints — 48h SLA exceeded -> Subcity Department,
+ *     5-day SLA exceeded  -> Subcity Administrator.
+ *  3. Service Governance complaints — past their response deadline.
  *
  * Requires: node-cron  (install: npm i node-cron)
  */
@@ -18,12 +19,7 @@ try {
 }
 
 const WorkflowComplaint = require('../models/WorkflowComplaint');
-const PublicComplaint = require('../models/PublicComplaint');
 const { _escalateToSubcity } = require('../controllers/workflowComplaintController');
-const {
-  escalateToSubcity: escalatePublicToSubcity,
-  escalateToSubcityAdmin,
-} = require('../controllers/publicComplaintController');
 const { runEscalationPass: runMunicipalEscalationPass } = require('../controllers/municipalComplaintController');
 const { runGovernanceEscalationPass } = require('../controllers/governanceComplaintController');
 
@@ -69,44 +65,12 @@ async function runEscalationPass(io) {
       }
     }
 
-    // ── Pass 2: public complaints — 48h -> Subcity office ────────────────────
-    const overdueSubcity = await PublicComplaint.find({
-      status: { $nin: ['Resolved', 'Rejected', 'Closed'] },
-      escalatedToSubcityAt: { $exists: false },
-      escalationDeadline: { $lte: now },
-    });
-
-    for (const complaint of overdueSubcity) {
-      try {
-        await escalatePublicToSubcity(complaint, io);
-        console.log(`[Escalation] Public complaint -> subcity: ${complaint.trackingNumber}`);
-      } catch (err) {
-        console.error(`[Escalation] Public -> subcity failed for ${complaint.trackingNumber}:`, err.message);
-      }
-    }
-
-    // ── Pass 3: public complaints — 5 days -> Subcity Administrator ──────────
-    const overdueAdmin = await PublicComplaint.find({
-      status: { $nin: ['Resolved', 'Rejected', 'Closed'] },
-      escalatedToSubcityAdminAt: { $exists: false },
-      subcityEscalationDeadline: { $lte: now },
-    });
-
-    for (const complaint of overdueAdmin) {
-      try {
-        await escalateToSubcityAdmin(complaint, io);
-        console.log(`[Escalation] Public complaint -> administrator: ${complaint.trackingNumber}`);
-      } catch (err) {
-        console.error(`[Escalation] Public -> admin failed for ${complaint.trackingNumber}:`, err.message);
-      }
-    }
-
-    // ── Pass 4: municipal complaints ─────────────────────────────────────────
+    // ── Pass 2: municipal complaints ─────────────────────────────────────────
     // Stage 1: 48h no response at Woreda level -> Subcity Department.
     // Stage 2: 5 days no action after escalation -> Subcity Administrator.
     await runMunicipalEscalationPass(io);
 
-    // ── Pass 5: service governance complaints ────────────────────────────────
+    // ── Pass 3: service governance complaints ────────────────────────────────
     // Flags complaints past their response deadline and woreda requests whose
     // due date has elapsed (notifies the subcity governance office).
     await runGovernanceEscalationPass(io);

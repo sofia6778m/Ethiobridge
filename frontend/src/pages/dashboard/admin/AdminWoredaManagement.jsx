@@ -315,7 +315,6 @@ export default function AdminWoredaManagement() {
               <li>👥 Users linked: <b>{forceConfirm.deps.users}</b></li>
               <li>📋 Infrastructure reports: <b>{forceConfirm.deps.infraReports}</b></li>
               <li>🚨 Emergency reports: <b>{forceConfirm.deps.emergencyReports}</b></li>
-              <li>📝 Public complaints: <b>{forceConfirm.deps.publicComplaints}</b></li>
               <li>⚙️ Workflow complaints: <b>{forceConfirm.deps.workflowComplaints}</b></li>
             </ul>
 

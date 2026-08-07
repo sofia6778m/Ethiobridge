@@ -1,5 +1,4 @@
 const InfrastructureReport = require('../models/InfrastructureReport');
-const PublicComplaint = require('../models/PublicComplaint');
 const createNotification = require('../utils/createNotification');
 const { departmentMatchFilter } = require('../utils/departmentRecipients');
 
@@ -20,13 +19,9 @@ const getDepartmentStats = async (req, res) => {
   try {
     const scope = departmentScope(req.user);
     const infra = { ...scope, report_type: 'infrastructure' };
-    const complaints = { ...scope, report_type: 'public_complaint' };
 
     const [
       total, pending, assigned, inProgress, completed, resolved, rejected,
-      // PublicComplaint counts scoped to this department+woreda
-      totalComplaints, submittedComplaints, reviewingComplaints,
-      resolvedComplaints, rejectedComplaints,
     ] = await Promise.all([
       InfrastructureReport.countDocuments(infra),
       InfrastructureReport.countDocuments({ ...infra, status: { $in: ['Pending', 'Submitted'] } }),
@@ -35,26 +30,14 @@ const getDepartmentStats = async (req, res) => {
       InfrastructureReport.countDocuments({ ...infra, status: 'Completed' }),
       InfrastructureReport.countDocuments({ ...infra, status: 'Resolved' }),
       InfrastructureReport.countDocuments({ ...infra, status: 'Rejected' }),
-      PublicComplaint.countDocuments(complaints),
-      PublicComplaint.countDocuments({ ...complaints, status: 'Submitted' }),
-      PublicComplaint.countDocuments({ ...complaints, status: 'Under Review' }),
-      PublicComplaint.countDocuments({ ...complaints, status: 'Resolved' }),
-      PublicComplaint.countDocuments({ ...complaints, status: 'Rejected' }),
     ]);
 
     res.json({
       success: true,
       stats: {
         total, pending, assigned, inProgress, completed, resolved, rejected,
-        complaints: {
-          total: totalComplaints,
-          submitted: submittedComplaints,
-          reviewing: reviewingComplaints,
-          resolved: resolvedComplaints,
-          rejected: rejectedComplaints,
-        },
-        // Split analytics — count infrastructure reports and public complaints
-        // separately so dashboards can report each flow independently.
+        // Split analytics — count infrastructure reports separately so
+        // dashboards can report each flow independently.
         analytics: {
           infrastructure: {
             total,
@@ -64,13 +47,6 @@ const getDepartmentStats = async (req, res) => {
             completed,
             resolved,
             rejected,
-          },
-          publicComplaints: {
-            total: totalComplaints,
-            submitted: submittedComplaints,
-            reviewing: reviewingComplaints,
-            resolved: resolvedComplaints,
-            rejected: rejectedComplaints,
           },
         },
       },
@@ -215,6 +191,7 @@ const markComplete = async (req, res) => {
     if (report.submittedBy) {
       await createNotification({
         recipient: report.submittedBy,
+        actorId: req.user._id,
         title: 'Report Completed',
         message: `Your report "${report.title}" has been marked as completed by ${req.user.department} department.`,
         type: 'report_status',
@@ -230,104 +207,7 @@ const markComplete = async (req, res) => {
   }
 };
 
-// @desc  List PublicComplaint documents scoped to this department account
-// @route GET /api/department/complaints
-// @access Private (department)
-const getDepartmentComplaints = async (req, res) => {
-  try {
-    const scope = departmentScope(req.user);
-    const { status, search, page = 1, limit = 20 } = req.query;
-
-    // Hard-scope: the department user can ONLY see complaints for their
-    // exact woreda + department combination, regardless of query params.
-    const query = { ...scope, report_type: 'public_complaint' };
-    if (status) query.status = status;
-    if (search) {
-      const filters = [
-        { title:          { $regex: search, $options: 'i' } },
-        { description:    { $regex: search, $options: 'i' } },
-        { trackingNumber: { $regex: search, $options: 'i' } },
-        { reporterName:   { $regex: search, $options: 'i' } },
-      ];
-      query.$or = scope.$or ? scope.$or.concat(filters) : filters;
-    }
-
-    const total = await PublicComplaint.countDocuments(query);
-    const complaints = await PublicComplaint.find(query)
-      .populate('reporter', 'fullName email phone')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * Number(limit))
-      .limit(Number(limit))
-      .select('-timeline');
-
-    res.json({
-      success: true,
-      total,
-      page:  Number(page),
-      pages: Math.ceil(total / Number(limit)),
-      complaints,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// @desc  Update the status of a PublicComplaint (department-scoped)
-// @route PATCH /api/department/complaints/:id/status
-// @access Private (department)
-const updateDepartmentComplaintStatus = async (req, res) => {
-  try {
-    const { status, comment } = req.body;
-
-    const VALID = ['Submitted', 'Under Review', 'In Progress', 'Resolved', 'Rejected', 'Closed'];
-    if (!VALID.includes(status)) {
-      return res.status(400).json({ success: false, message: `Invalid status. Must be one of: ${VALID.join(', ')}` });
-    }
-
-    // Enforce scope: the complaint must belong to this exact dept+woreda.
-    const complaint = await PublicComplaint.findOne({ _id: req.params.id, ...departmentScope(req.user) });
-    if (!complaint) {
-      return res.status(404).json({ success: false, message: 'Complaint not found or not in your scope' });
-    }
-
-    const previousStatus = complaint.status;
-    complaint.status = status;
-    if (status === 'Resolved')   complaint.resolvedAt = new Date();
-    if (status === 'Under Review') complaint.assignedAt = new Date();
-
-    complaint.timeline.push({
-      action: 'status_changed',
-      description: comment || `Status changed to ${status}`,
-      performedBy:     req.user._id,
-      performedByName: req.user.fullName,
-      performedByRole: req.user.role,
-      previousStatus,
-      newStatus: status,
-    });
-
-    await complaint.save();
-
-    // Notify the reporter if non-anonymous.
-    if (complaint.reporter) {
-      await createNotification({
-        recipient: complaint.reporter,
-        title: 'Complaint Status Updated',
-        message: `Your complaint ${complaint.trackingNumber} has been updated to "${status}" by the ${req.user.department} department.`,
-        type: 'info',
-        relatedReport:     complaint._id,
-        relatedReportType: 'public_complaint',
-        io: req.app?.get('io') || null,
-      });
-    }
-
-    res.json({ success: true, message: 'Status updated', complaint });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
 module.exports = {
   getDepartmentStats, getDepartmentReports, getDepartmentReportDetail,
   acceptReport, rejectReport, startWorking, markComplete,
-  getDepartmentComplaints, updateDepartmentComplaintStatus,
 };

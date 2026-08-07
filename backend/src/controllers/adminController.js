@@ -1,7 +1,6 @@
 const User = require('../models/User');
 const InfrastructureReport = require('../models/InfrastructureReport');
 const EmergencyReport = require('../models/EmergencyReport');
-const PublicComplaint = require('../models/PublicComplaint');
 const Department = require('../models/Department');
 const Subcity = require('../models/Subcity');
 const AuditLog = require('../models/AuditLog');
@@ -106,7 +105,6 @@ const getStats = async (req, res) => {
       totalUsers, citizens, govOrgs, ngos, volunteers,
       totalInfra, activeInfra, resolvedInfra, pendingInfra,
       totalEmergency, activeEmergency, resolvedEmergency, pendingEmergency,
-      totalPublicComplaints, activePublicComplaints, pendingPublicComplaints, resolvedPublicComplaints,
       pendingApprovals,
     ] = await Promise.all([
       User.countDocuments({ isActive: true }),
@@ -122,10 +120,6 @@ const getStats = async (req, res) => {
       EmergencyReport.countDocuments({ status: { $in: ['Active', 'In Progress'] } }),
       EmergencyReport.countDocuments({ status: 'Resolved' }),
       EmergencyReport.countDocuments({ status: 'Pending' }),
-      PublicComplaint.countDocuments(),
-      PublicComplaint.countDocuments({ status: { $in: ['Pending', 'Submitted', 'Under Review', 'Assigned', 'In Progress'] } }),
-      PublicComplaint.countDocuments({ status: 'Pending' }),
-      PublicComplaint.countDocuments({ status: 'Resolved' }),
       User.countDocuments({ isApproved: false, role: { $in: ['government', 'ngo'] } }),
     ]);
 
@@ -135,13 +129,6 @@ const getStats = async (req, res) => {
         users: { total: totalUsers, citizens, govOrgs, ngos, volunteers },
         infrastructure: { total: totalInfra, active: activeInfra, resolved: resolvedInfra, pending: pendingInfra },
         emergency: { total: totalEmergency, active: activeEmergency, resolved: resolvedEmergency, pending: pendingEmergency },
-        publicComplaints: totalPublicComplaints,
-        publicComplaintStats: {
-          total: totalPublicComplaints,
-          active: activePublicComplaints,
-          pending: pendingPublicComplaints,
-          resolved: resolvedPublicComplaints,
-        },
         pendingApprovals,
         pendingReports: pendingInfra + pendingEmergency,
         resolvedReports: resolvedInfra + resolvedEmergency,
@@ -951,6 +938,7 @@ const approveUser = async (req, res) => {
 
     await createNotification({
       recipient: user._id,
+      actorId: req.user._id,
       title: `Account ${action === 'approve' ? 'Approved' : 'Rejected'}`,
       message: `Your ${user.role} account has been ${action === 'approve' ? 'approved. You can now log in.' : `rejected. ${note || ''}`}`,
       type: 'system',
@@ -1293,17 +1281,15 @@ const getWoredaDeps = async (req, res) => {
       userCount,
       infraCount,
       emergencyCount,
-      publicComplaintCount,
       workflowComplaintCount,
     ] = await Promise.all([
       User.countDocuments({ woredaId: woreda._id }),
       InfrastructureReport.countDocuments({ woredaId: woreda._id }),
       EmergencyReport.countDocuments({ woredaId: woreda._id }),
-      PublicComplaint.countDocuments({ woredaId: woreda._id }),
       WorkflowComplaint.countDocuments({ woredaId: woreda._id }),
     ]);
 
-    const total = userCount + infraCount + emergencyCount + publicComplaintCount + workflowComplaintCount;
+    const total = userCount + infraCount + emergencyCount + workflowComplaintCount;
 
     res.json({
       success: true,
@@ -1312,7 +1298,6 @@ const getWoredaDeps = async (req, res) => {
         users:             userCount,
         infraReports:      infraCount,
         emergencyReports:  emergencyCount,
-        publicComplaints:  publicComplaintCount,
         workflowComplaints: workflowComplaintCount,
         total,
       },
@@ -1336,15 +1321,14 @@ const deleteWoreda = async (req, res) => {
     const woreda = await Woreda.findById(req.params.id);
     if (!woreda) return res.status(404).json({ success: false, message: 'Woreda not found' });
 
-    const [userCount, infraCount, emergencyCount, publicComplaintCount, workflowComplaintCount] = await Promise.all([
+    const [userCount, infraCount, emergencyCount, workflowComplaintCount] = await Promise.all([
       User.countDocuments({ woredaId: woreda._id }),
       InfrastructureReport.countDocuments({ woredaId: woreda._id }),
       EmergencyReport.countDocuments({ woredaId: woreda._id }),
-      PublicComplaint.countDocuments({ woredaId: woreda._id }),
       WorkflowComplaint.countDocuments({ woredaId: woreda._id }),
     ]);
 
-    const total = userCount + infraCount + emergencyCount + publicComplaintCount + workflowComplaintCount;
+    const total = userCount + infraCount + emergencyCount + workflowComplaintCount;
 
     // ── Safe delete: no dependencies ─────────────────────────────────────────
     if (total === 0) {
@@ -1368,12 +1352,7 @@ const deleteWoreda = async (req, res) => {
         InfrastructureReport.updateMany({ woredaId: woreda._id }, { $unset: { woredaId: '' } }),
         // Emergency reports
         EmergencyReport.updateMany({ woredaId: woreda._id }, { $unset: { woredaId: '' } }),
-        // Public complaints: clear routing fields but keep the complaint record
-        PublicComplaint.updateMany(
-          { woredaId: woreda._id },
-          { $unset: { woredaId: '' }, $set: { woredaName: `[Deleted: ${woreda.name}]` } }
-        ),
-        // Workflow complaints: same treatment
+        // Workflow complaints: clear routing fields but keep the complaint record
         WorkflowComplaint.updateMany(
           { woredaId: woreda._id },
           { $unset: { woredaId: '' }, $set: { woredaName: `[Deleted: ${woreda.name}]` } }
@@ -1384,20 +1363,19 @@ const deleteWoreda = async (req, res) => {
 
       return res.json({
         success: true,
-        message: `Woreda "${woreda.name}" deleted. ${userCount} user(s), ${infraCount + emergencyCount} report(s), and ${publicComplaintCount + workflowComplaintCount} complaint(s) had their woreda reference cleared.`,
-        cleared: { users: userCount, reports: infraCount + emergencyCount, complaints: publicComplaintCount + workflowComplaintCount },
+        message: `Woreda "${woreda.name}" deleted. ${userCount} user(s), ${infraCount + emergencyCount} report(s), and ${workflowComplaintCount} complaint(s) had their woreda reference cleared.`,
+        cleared: { users: userCount, reports: infraCount + emergencyCount, complaints: workflowComplaintCount },
       });
     }
 
     // ── Blocked: dependencies exist and force not requested ──────────────────
     return res.status(400).json({
       success: false,
-      message: `Cannot delete — this woreda has ${userCount} user(s), ${infraCount + emergencyCount} report(s), and ${publicComplaintCount + workflowComplaintCount} complaint(s) linked to it.`,
+      message: `Cannot delete — this woreda has ${userCount} user(s), ${infraCount + emergencyCount} report(s), and ${workflowComplaintCount} complaint(s) linked to it.`,
       deps: {
         users: userCount,
         infraReports: infraCount,
         emergencyReports: emergencyCount,
-        publicComplaints: publicComplaintCount,
         workflowComplaints: workflowComplaintCount,
         total,
       },

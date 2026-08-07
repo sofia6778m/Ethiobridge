@@ -94,7 +94,7 @@ const dispatchDonationChannel = async ({ req, donation, event, channel, recipien
 const notifyDonor = async (req, donation, event, { title, message, type }) => {
   const io = getIo(req);
   if (donation.donor) {
-    await createNotification({ recipient: donation.donor, title, message, type, relatedReport: donation._id, relatedReportType: 'donation', io });
+    await createNotification({ recipient: donation.donor, actorId: req.user?._id, title, message, type, relatedReport: donation._id, relatedReportType: 'donation', io });
     await dispatchDonationChannel({ req, donation, event, channel: 'in_app', recipientUser: donation.donor, recipientContact: '', subject: title, message });
   }
   if (donation.email) {
@@ -107,9 +107,11 @@ const notifyDonor = async (req, donation, event, { title, message, type }) => {
 
 const notifyAdmins = async (req, donation, event, { title, message, type }) => {
   const io = getIo(req);
+  const actorKey = req.user?._id?.toString();
   const admins = await User.find({ role: { $in: ['admin', 'ADMIN'] } }).select('_id').lean();
   for (const admin of admins) {
-    await createNotification({ recipient: admin._id, title, message, type, relatedReport: donation._id, relatedReportType: 'donation', io });
+    if (admin._id.toString() === actorKey) continue;
+    await createNotification({ recipient: admin._id, actorId: req.user?._id, title, message, type, relatedReport: donation._id, relatedReportType: 'donation', io });
     await dispatchDonationChannel({ req, donation, event, channel: 'in_app', recipientUser: admin._id, recipientContact: '', subject: title, message });
   }
 };

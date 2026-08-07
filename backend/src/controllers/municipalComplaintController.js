@@ -4,10 +4,10 @@ const Woreda = require('../models/Woreda');
 const User = require('../models/User');
 const Department = require('../models/Department');
 const Subcity = require('../models/Subcity');
-const createNotification = require('../utils/createNotification');
+const { notifyUser } = require('../services/notificationService');
 const { sendEmail } = require('../services/emailService');
 const { sendSms } = require('../services/smsService');
-const { generateComplaintPDF, generateComplaintExcel } = require('../utils/complaintExport');
+const { generateComplaintPDF, generateComplaintExcel, generateResolutionLetterPDF } = require('../utils/complaintExport');
 const { verifySubmissionPassword } = require('../utils/verifySubmissionPassword');
 const { normalizeDepartmentName } = require('../utils/departmentNames');
 
@@ -253,18 +253,22 @@ const findSubcityAdmins = (subcity) =>
 
 // ── Notification dispatch (in-app + socket + prepared SMS/email hooks) ────────
 
-const dispatchNotification = async (io, complaint, targets, { event, title, message, type }) => {
+const dispatchNotification = async (io, complaint, targets, { event, title, message, type, actorId }) => {
   const seen = new Set();
   for (const target of targets) {
     if (!target || !target._id || seen.has(target._id.toString())) continue;
+    // Never notify the user who performed the action.
+    if (actorId && String(target._id) === String(actorId)) continue;
     seen.add(target._id.toString());
-    await createNotification({
-      recipient: target._id,
+    await notifyUser({
+      userId: target._id,
+      actorId,
       title,
       message,
       type: type || 'complaint_status',
       relatedReport: complaint._id,
       relatedReportType: 'municipal_complaint',
+      complaintId: complaint._id,
       io,
     });
     const channels = ['in-app'];
@@ -424,7 +428,7 @@ const createComplaint = async (req, res) => {
       const subcityAdmins = await findSubcityAdmins(complaint.subcity);
       const deptOfficers = await findSubcityDepartmentOfficers(complaint.subcity, department);
       if (subcityAdmins.length) complaint.assignedTo = subcityAdmins[0]._id;
-      await dispatchNotification(io, complaint, [...subcityAdmins, ...deptOfficers], event);
+      await dispatchNotification(io, complaint, [...subcityAdmins, ...deptOfficers], { ...event, actorId: req.user?._id });
     } else {
       const woredaOfficer = await findWoredaOfficer(complaint.woredaId);
       const deptOfficers = await findDepartmentOfficers(complaint.woredaId, department);
@@ -432,10 +436,12 @@ const createComplaint = async (req, res) => {
       if (woredaOfficer) candidates.push(woredaOfficer);
       candidates.push(...deptOfficers);
       if (woredaOfficer) complaint.assignedTo = woredaOfficer._id;
-      await dispatchNotification(io, complaint, candidates, event);
+      await dispatchNotification(io, complaint, candidates, { ...event, actorId: req.user?._id });
     }
 
-    // Notify the reporter and admins.
+    // Notify the reporter's handling office (routing targets above). The
+    // citizen themselves never gets an in-app notification for their own
+    // submission — the tracking ID is returned in the submit response.
     const reporter = req.user
       ? [{ _id: req.user._id, email: req.user.email, smsNotifications: req.user.smsNotifications, emailNotifications: req.user.emailNotifications }]
       : [];
@@ -443,14 +449,7 @@ const createComplaint = async (req, res) => {
       ...event,
       title: `Complaint submitted: ${complaint.trackingId}`,
       message: `Track your complaint with ID ${complaint.trackingId}. It was routed to the ${complaint.department} department in ${complaint.subcity} subcity.`,
-    });
-
-    const admins = await User.find({ role: 'admin', isActive: true }).select('-password').lean();
-    await dispatchNotification(io, complaint, admins, {
-      event: 'Report submitted',
-      title: `New complaint ${complaint.trackingId}`,
-      message: `${complaint.reporterName} submitted "${complaint.title}" (${department}, ${subcity}).`,
-      type: 'complaint_status',
+      actorId: req.user?._id,
     });
 
     await complaint.save();
@@ -663,7 +662,6 @@ const forwardComplaint = async (req, res) => {
 
     const io = getIO(req);
     const deptOfficers = await findSubcityDepartmentOfficers(complaint.subcity, toDepartment);
-    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
     if (deptOfficers.length) complaint.assignedTo = deptOfficers[0]._id;
 
     const event = {
@@ -672,7 +670,7 @@ const forwardComplaint = async (req, res) => {
       message: `Forwarded to the ${toDepartment} department in ${complaint.subcity} subcity. Reason: ${reason}`,
       type: 'complaint_forwarded',
     };
-    await dispatchNotification(io, complaint, [...deptOfficers, ...subcityAdmins], event);
+    await dispatchNotification(io, complaint, deptOfficers, { ...event, actorId: req.user._id });
 
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
     if (reporter) {
@@ -681,6 +679,7 @@ const forwardComplaint = async (req, res) => {
         title: `Your complaint ${complaint.trackingId} was forwarded`,
         message: `Your complaint was forwarded to the ${toDepartment} department in ${complaint.subcity} subcity. Reason: ${reason}`,
         type: 'complaint_forwarded',
+        actorId: req.user._id,
       });
     }
 
@@ -780,6 +779,7 @@ const updateStatus = async (req, res) => {
         title: `Complaint ${complaint.trackingId} is now ${newStatus}`,
         message: responseMessage || `Status updated to ${newStatus} by ${req.user.fullName}.`,
         type: CLOSED_STATUSES.includes(newStatus) ? 'complaint_resolved' : 'complaint_status',
+        actorId: req.user._id,
       });
     }
 
@@ -876,6 +876,7 @@ const acceptComplaint = async (req, res) => {
         title: `Complaint ${complaint.trackingId} accepted`,
         message: `Your complaint "${complaint.title}" has been accepted and is now under review.`,
         type: 'complaint_status',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -918,6 +919,7 @@ const rejectComplaint = async (req, res) => {
         title: `Complaint ${complaint.trackingId} rejected`,
         message: `Your complaint was rejected. Reason: ${reason}`,
         type: 'complaint_rejected',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -957,6 +959,7 @@ const assignInspector = async (req, res) => {
       title: `Inspection scheduled — ${complaint.trackingId}`,
       message: `You have been assigned to inspect "${complaint.title}" in ${complaint.subcity}${complaint.inspectorVisitAt ? ` on ${new Date(complaint.inspectorVisitAt).toLocaleString()}` : ''}.`,
       type: 'complaint_assigned',
+      actorId: req.user._id,
     });
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
     if (reporter) {
@@ -965,6 +968,7 @@ const assignInspector = async (req, res) => {
         title: `Complaint ${complaint.trackingId} assigned to inspector`,
         message: `An inspector has been assigned to investigate your complaint.`,
         type: 'complaint_assigned',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1005,6 +1009,7 @@ const assignTechnician = async (req, res) => {
       title: `Work order assigned — ${complaint.trackingId}`,
       message: `Work order for "${complaint.title}" (${complaint.department}, ${complaint.subcity}). ${complaint.technicianDueAt ? `Due by ${new Date(complaint.technicianDueAt).toLocaleString()}. ` : ''}${complaint.workOrderNotes || ''}`,
       type: 'complaint_assigned',
+      actorId: req.user._id,
     });
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
     if (reporter) {
@@ -1013,6 +1018,7 @@ const assignTechnician = async (req, res) => {
         title: `Complaint ${complaint.trackingId} assigned to technician`,
         message: `A technician has been assigned to work on your complaint.`,
         type: 'complaint_assigned',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1057,6 +1063,7 @@ const startWork = async (req, res) => {
         title: `Work started on ${complaint.trackingId}`,
         message: `Work on your complaint "${complaint.title}" has started.`,
         type: 'complaint_status',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1106,6 +1113,7 @@ const completeWork = async (req, res) => {
       title: `Work completed — ${complaint.trackingId} awaiting verification`,
       message: `Technician work on "${complaint.title}" is complete. Please verify the resolution before marking it resolved.`,
       type: 'complaint_status',
+      actorId: req.user._id,
     });
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
     if (reporter) {
@@ -1114,6 +1122,7 @@ const completeWork = async (req, res) => {
         title: `Work completed on ${complaint.trackingId}`,
         message: `Work on your complaint has been completed. It is now being verified by the department officer.`,
         type: 'complaint_status',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1180,6 +1189,7 @@ const verifyResolution = async (req, res) => {
           title: `Complaint ${complaint.trackingId} resolved`,
           message: `Your complaint "${complaint.title}" has been resolved and verified. Please rate your experience.`,
           type: 'complaint_resolved',
+          actorId: req.user._id,
         });
       } else {
         await dispatchNotification(io, complaint, [reporter], {
@@ -1187,6 +1197,7 @@ const verifyResolution = async (req, res) => {
           title: `Work on ${complaint.trackingId} needs revision`,
           message: 'The department officer could not confirm the resolution; work has been sent back.',
           type: 'complaint_status',
+          actorId: req.user._id,
         });
       }
     }
@@ -1200,6 +1211,7 @@ const verifyResolution = async (req, res) => {
             ? 'The department officer verified your completed work. Well done.'
             : `The department officer could not confirm your work: ${note}`,
           type: verified ? 'complaint_resolved' : 'complaint_status',
+          actorId: req.user._id,
         });
       }
     }
@@ -1242,6 +1254,7 @@ const reopenComplaint = async (req, res) => {
         title: `Complaint ${complaint.trackingId} reopened`,
         message: 'Your complaint has been reopened and is back under review.',
         type: 'complaint_status',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1276,6 +1289,7 @@ const closeComplaint = async (req, res) => {
         title: `Complaint ${complaint.trackingId} closed`,
         message: 'Your complaint has been officially closed.',
         type: 'complaint_status',
+        actorId: req.user._id,
       });
     }
     emitUpdate(io, complaint);
@@ -1297,7 +1311,7 @@ const submitFeedback = async (req, res) => {
     if (req.user.role === 'citizen' && String(complaint.reporter) !== String(req.user._id)) {
       return res.status(403).json({ success: false, message: 'Only the reporter can submit feedback.' });
     }
-    if (complaint.status !== 'Resolved') {
+    if (!['Resolved', 'Closed'].includes(complaint.status)) {
       return res.status(400).json({ success: false, message: 'Feedback is only available after the complaint is resolved.' });
     }
     if (complaint.citizenFeedback && complaint.citizenFeedback.rating) {
@@ -1317,15 +1331,90 @@ const submitFeedback = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const admins = await User.find({ role: 'admin', isActive: true }).select('-password').lean();
-    await dispatchNotification(io, complaint, admins, {
+    const targets = complaint.assignedLevel === 'Subcity'
+      ? await findSubcityDepartmentOfficers(complaint.subcity, complaint.assignedToDepartment || complaint.department)
+      : await findDepartmentOfficers(complaint.woredaId, complaint.assignedToDepartment || complaint.department);
+    if (complaint.assignedTo) {
+      const assigned = await User.findById(complaint.assignedTo).select('-password').lean();
+      if (assigned) targets.push(assigned);
+    }
+    await dispatchNotification(io, complaint, targets, {
       event: 'Citizen feedback',
       title: `Feedback on ${complaint.trackingId}: ${rating}/5`,
       message: `${complaint.reporterName} rated their experience ${rating}/5.`,
       type: 'complaint_feedback',
+      actorId: req.user._id,
     });
     emitUpdate(io, complaint);
     res.json({ success: true, message: 'Feedback submitted', data: complaint });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/municipal-complaints/:id/evidence  (citizen reporter or officer)
+// Reporter uploads additional evidence after submission. Files land in
+// evidenceFiles, get flagged in the audit trail and notify the handling office.
+const addCitizenEvidence = async (req, res) => {
+  try {
+    const complaint = await MunicipalComplaint.findById(req.params.id);
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    const userSubcity = await resolveUserSubcity(req.user);
+    if (!isComplaintInScope(req.user, complaint, userSubcity)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    if (req.user.role === 'citizen' && String(complaint.reporter) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Only the reporter can add evidence.' });
+    }
+    const urls = (req.files || []).map((f) => f.path);
+    if (!urls.length) return res.status(400).json({ success: false, message: 'No files uploaded.' });
+
+    complaint.evidenceFiles.push(...urls);
+    pushAudit(complaint, 'Evidence Added', req.user, `${urls.length} additional evidence file(s) attached by the reporter`);
+    complaint.responses.push({
+      message: 'Additional evidence uploaded by the reporter.',
+      evidenceFiles: urls,
+      officer: req.user._id,
+      officerName: req.user.fullName || req.user.role,
+      officerRole: req.user.role,
+      fromLevel: 'Woreda',
+    });
+
+    await complaint.save();
+
+    const io = getIO(req);
+    const targets = complaint.assignedLevel === 'Subcity'
+      ? await findSubcityDepartmentOfficers(complaint.subcity, complaint.assignedToDepartment || complaint.department)
+      : await findDepartmentOfficers(complaint.woredaId, complaint.assignedToDepartment || complaint.department);
+    if (complaint.assignedTo) {
+      const assigned = await User.findById(complaint.assignedTo).select('-password').lean();
+      if (assigned) targets.push(assigned);
+    }
+    await dispatchNotification(io, complaint, targets, {
+      event: 'Evidence Added',
+      title: `New evidence on ${complaint.trackingId}`,
+      message: 'The reporter uploaded additional evidence for their municipal complaint.',
+      type: 'complaint_status',
+      actorId: req.user._id,
+    });
+    emitUpdate(io, complaint);
+    res.json({ success: true, message: 'Evidence added', data: complaint });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /api/municipal-complaints/:id/resolution-letter
+// Downloads the official resolution letter (PDF) once the complaint is resolved.
+const downloadResolutionLetter = async (req, res) => {
+  try {
+    const complaint = await MunicipalComplaint.findById(req.params.id).lean();
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    const userSubcity = await resolveUserSubcity(req.user);
+    if (!isComplaintInScope(req.user, complaint, userSubcity)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    generateResolutionLetterPDF(complaint, res);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1369,12 +1458,13 @@ const escalateManually = async (req, res) => {
     pushAudit(complaint, 'Escalated', req.user, `Escalated to Subcity Administrator: ${reason}`);
 
     const io = getIO(req);
-    const admins = await User.find({ role: 'admin', isActive: true }).select('-password').lean();
-    await dispatchNotification(io, complaint, admins, {
+    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
+    await dispatchNotification(io, complaint, subcityAdmins, {
       event: 'Escalated',
       title: `Complaint ${complaint.trackingId} escalated`,
       message: `${complaint.reporterName}'s complaint was escalated to the Subcity Administrator (${reason}).`,
       type: 'complaint_escalated',
+      actorId: req.user._id,
     });
 
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
@@ -1384,6 +1474,7 @@ const escalateManually = async (req, res) => {
         title: `Complaint ${complaint.trackingId} escalated`,
         message: `Your complaint has been escalated to the Subcity Administrator.`,
         type: 'complaint_escalated',
+        actorId: req.user._id,
       });
     }
 
@@ -1465,8 +1556,8 @@ const escalateToSubcityAdmin = async (complaint, io, trigger = 'sla', reason = '
   });
   pushAudit(complaint, 'Escalated', null, 'Automatic escalation: no action within 5 days after escalation');
 
-  const admins = await User.find({ role: 'admin', isActive: true }).select('-password').lean();
-  await dispatchNotification(io, complaint, admins, {
+  const subcityAdmins = await findSubcityAdmins(complaint.subcity);
+  await dispatchNotification(io, complaint, subcityAdmins, {
     event: 'Escalated',
     title: `Complaint ${complaint.trackingId} escalated to Administrator`,
     message: `Automatic escalation (5-day SLA): ${complaint.title}`,
@@ -1505,7 +1596,8 @@ const markOverdueComplaints = async (io) => {
       await c.save();
       const woredaOfficer = await findWoredaOfficer(c.woredaId);
       const deptOfficers = await findDepartmentOfficers(c.woredaId, c.assignedToDepartment || c.department);
-      await dispatchNotification(io, c, [...(woredaOfficer ? [woredaOfficer] : []), ...deptOfficers], {
+      const subcityAdmins = await findSubcityAdmins(c.subcity);
+      await dispatchNotification(io, c, [...(woredaOfficer ? [woredaOfficer] : []), ...deptOfficers, ...subcityAdmins], {
         event: 'Overdue',
         title: `Complaint ${c.trackingId} is overdue`,
         message: `"${c.title}" exceeded its 48-hour SLA. Please respond promptly.`,
@@ -1720,6 +1812,8 @@ module.exports = {
   reopenComplaint,
   closeComplaint,
   submitFeedback,
+  addCitizenEvidence,
+  downloadResolutionLetter,
   buildMunicipalScope,
   isComplaintInScope,
   getIO,

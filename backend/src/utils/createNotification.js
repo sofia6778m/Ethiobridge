@@ -1,8 +1,25 @@
 const Notification = require('../models/Notification');
 
-const createNotification = async ({ recipient, title, message, type, relatedReport, relatedReportType, io }) => {
+// Global guard: a user never receives a notification about their own action.
+// Every creation path (direct util calls and notifyUser/notifyUsers) funnels
+// through here, so passing actorId is sufficient to exclude the actor.
+const isSelfNotification = (actorId, recipient) =>
+  Boolean(actorId && recipient && String(actorId) === String(recipient));
+
+const createNotification = async ({ recipient, actorId, title, message, type, relatedReport, relatedReportType, complaintId, alertId, io }) => {
   try {
-    const notification = await Notification.create({ recipient, title, message, type, relatedReport, relatedReportType });
+    if (isSelfNotification(actorId, recipient)) return null;
+    const notification = await Notification.create({
+      recipient,
+      actorId: actorId || undefined,
+      title,
+      message,
+      type,
+      relatedReport,
+      relatedReportType,
+      complaintId,
+      alertId,
+    });
 
     if (io) {
       io.to(recipient.toString()).emit('notification:new', {
@@ -12,6 +29,9 @@ const createNotification = async ({ recipient, title, message, type, relatedRepo
         type: notification.type,
         relatedReport: notification.relatedReport,
         relatedReportType: notification.relatedReportType,
+        complaintId: notification.complaintId,
+        alertId: notification.alertId,
+        actorId: notification.actorId,
         isRead: false,
         createdAt: notification.createdAt,
       });

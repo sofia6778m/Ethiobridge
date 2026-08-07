@@ -2,12 +2,150 @@ const express = require('express');
 const router = express.Router();
 const InfrastructureReport = require('../models/InfrastructureReport');
 const EmergencyReport = require('../models/EmergencyReport');
-const PublicComplaint = require('../models/PublicComplaint');
+const GovernanceComplaint = require('../models/GovernanceComplaint');
 const User = require('../models/User');
 const Department = require('../models/Department');
 const { getRegionStats } = require('../controllers/adminController');
 const { protect } = require('../middleware/auth');
 const createNotification = require('../utils/createNotification');
+
+// ── Public complaint display helpers ──────────────────────────────────────────
+// Community surfaces use the simplified citizen-facing status vocabulary. The
+// granular workflow enum is kept as-is internally (see governanceComplaintController).
+
+const PUBLIC_STATUS_ALIASES = {
+  'Submitted': 'New',
+  'Under Review': 'Received',
+  'In Progress': 'Under Investigation',
+  'Investigation in Progress': 'Under Investigation',
+  'Awaiting Woreda Response': 'Under Investigation',
+  'Need More Information': 'Need More Information',
+  'Action Taken': 'Action Taken',
+  'Resolved': 'Resolved',
+  'Rejected': 'Rejected',
+  'Reopened': 'Reopened',
+  'Escalated': 'Escalated',
+  'Closed': 'Closed',
+};
+
+const publicDisplayStatus = (c) => {
+  if (!c) return '';
+  if (c.status === 'Under Review' && (c.assignedTo || c.assignedToOffice)) return 'Assigned';
+  return PUBLIC_STATUS_ALIASES[c.status] || c.status;
+};
+
+// Redacted public summary of a governance complaint. Never exposes reporter
+// identity, internal investigation notes, audit trails or notification history.
+const publicComplaintSummary = (c) => ({
+  _id: c._id,
+  trackingId: c.trackingId,
+  category: c.category,
+  title: c.title,
+  description: c.description,
+  subcity: c.subcity,
+  woredaName: c.woredaName,
+  office: c.office,
+  status: c.status,
+  displayStatus: publicDisplayStatus(c),
+  urgencyLevel: c.urgencyLevel,
+  assignedToOffice: c.assignedToOffice,
+  assignedTo: c.assignedTo,
+  isOverdue: c.isOverdue,
+  createdAt: c.createdAt,
+  updatedAt: c.updatedAt,
+  resolvedAt: c.resolvedAt,
+  resolutionNote: c.resolutionNote,
+  rejectedAt: c.rejectedAt,
+  rejectionReason: c.rejectionReason,
+});
+
+// @desc  Community listing of public (non-anonymous) governance complaints.
+// @route GET /api/public/governance-complaints
+// @access Public
+router.get('/governance-complaints', async (req, res) => {
+  try {
+    const { category, subcity, status, search, page = 1, limit = 20 } = req.query;
+    const query = {
+      isAnonymous: false,
+      status: { $nin: ['Rejected', 'Cancelled'] },
+    };
+
+    if (category) query.category = { $regex: String(category), $options: 'i' };
+    if (subcity) query.subcity = { $regex: `^${String(subcity).replace(/[ _]+/g, '[ _]')}$`, $options: 'i' };
+    if (status) query.status = status;
+    if (search) {
+      const s = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { title: { $regex: s, $options: 'i' } },
+        { description: { $regex: s, $options: 'i' } },
+        { category: { $regex: s, $options: 'i' } },
+        { office: { $regex: s, $options: 'i' } },
+        { trackingId: { $regex: s, $options: 'i' } },
+      ];
+    }
+
+    const total = await GovernanceComplaint.countDocuments(query);
+    const complaints = await GovernanceComplaint.find(query)
+      .populate('assignedTo', 'fullName role')
+      .sort({ createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Math.min(Number(limit), 100))
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        complaints: complaints.map(publicComplaintSummary),
+        total,
+        page: Number(page),
+        pages: Math.max(1, Math.ceil(total / Math.min(Number(limit), 100))),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc  Community read-only detail of a public governance complaint.
+// @route GET /api/public/governance-complaints/:id
+// @access Public
+router.get('/governance-complaints/:id', async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id)
+      .populate('assignedTo', 'fullName role')
+      .lean();
+    if (!complaint || complaint.isAnonymous || ['Rejected', 'Cancelled'].includes(complaint.status)) {
+      return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...publicComplaintSummary(complaint),
+        incidentDate: complaint.incidentDate,
+        incidentTime: complaint.incidentTime,
+        incidentLocation: complaint.incidentLocation,
+        evidenceFiles: complaint.evidenceFiles,
+        officialDocuments: complaint.officialDocuments,
+        timeline: complaint.timeline,
+        officerResponses: complaint.officerResponses,
+        woredaRequests: complaint.woredaRequests,
+        escalated: complaint.escalated,
+        escalatedTo: complaint.escalatedTo,
+        escalatedAt: complaint.escalatedAt,
+        escalationReason: complaint.escalationReason,
+        resolvedByName: complaint.resolvedByName,
+        closedAt: complaint.closedAt,
+        closedByName: complaint.closedByName,
+        confirmedByCitizen: complaint.confirmedByCitizen,
+        confirmedAt: complaint.confirmedAt,
+        canReopen: false,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // @desc  Active department list for public forms (complaint submission routing)
 //        Optional ?subcity=<name|id> scopes the list to one subcity.
@@ -76,6 +214,30 @@ router.get('/subcities', async (req, res) => {
   }
 });
 
+// @desc  Woredas for a given subcity (drives the complaint/report form woreda
+//        dropdown). Case-insensitive match tolerant of underscore/space casing.
+// @route GET /api/public/subcity-woredas?subcity=<name>
+// @access Public
+router.get('/subcity-woredas', async (req, res) => {
+  try {
+    const raw = (req.query.subcity || '').trim();
+    if (!raw) {
+      return res.status(400).json({ success: false, message: 'A subcity query parameter is required' });
+    }
+    const Woreda = require('../models/Woreda');
+    const regex = new RegExp(`^${raw.replace(/[ _]+/g, '[ _]')}$`, 'i');
+    const woredas = await Woreda.find({
+      subcity: regex,
+      status: 'Active',
+    }).select('_id name departments').sort({ name: 1 });
+
+    res.json({ success: true, woredas });
+  } catch (error) {
+    console.error('[Public] getSubcityWoredas error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load woredas' });
+  }
+});
+
 // @desc  Woredas for a given subcity (drives the complaint form woreda dropdown)
 // @route GET /api/public/woredas?subcity=<name>
 // @access Public
@@ -103,12 +265,10 @@ router.get('/stats', async (req, res) => {
     const [
       totalReports, activeReports, resolvedReports,
       registeredCitizens, govOrgs, ngoOrgs, volunteers,
-      publicComplaints, resolvedComplaints,
     ] = await Promise.all([
       Promise.all([
         InfrastructureReport.countDocuments(),
         EmergencyReport.countDocuments(),
-        PublicComplaint.countDocuments(),
       ]).then(counts => counts.reduce((a, b) => a + b, 0)),
       Promise.all([
         InfrastructureReport.countDocuments({ status: { $in: ['Under Review', 'In Progress'] } }),
@@ -117,14 +277,11 @@ router.get('/stats', async (req, res) => {
       Promise.all([
         InfrastructureReport.countDocuments({ status: 'Resolved' }),
         EmergencyReport.countDocuments({ status: 'Resolved' }),
-        PublicComplaint.countDocuments({ status: 'Resolved' }),
       ]).then(counts => counts.reduce((a, b) => a + b, 0)),
       User.countDocuments({ role: 'citizen' }),
       User.countDocuments({ role: 'government', isApproved: true }),
       User.countDocuments({ role: 'ngo', isApproved: true }),
       User.countDocuments({ role: 'volunteer' }),
-      PublicComplaint.countDocuments(),
-      PublicComplaint.countDocuments({ status: 'Resolved' }),
     ]);
 
     res.json({
@@ -133,8 +290,6 @@ router.get('/stats', async (req, res) => {
         totalReports, activeReports, resolvedReports,
         registeredCitizens, govOrgs, ngoOrgs, volunteers,
         regionsCovered: 14,
-        publicComplaints,
-        resolvedComplaints,
       },
     });
   } catch (error) {

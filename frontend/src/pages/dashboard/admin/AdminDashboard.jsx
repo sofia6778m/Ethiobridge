@@ -20,9 +20,8 @@ import MunicipalComplaintDetail from '../municipal/MunicipalComplaintDetail';
 import GovernanceComplaintList from '../governance/GovernanceComplaintList';
 import GovernanceComplaintDetail from '../governance/GovernanceComplaintDetail';
 import AdminGovernanceStats from './AdminGovernanceStats';
-import AdminComplaints from './AdminComplaints';
 import AdminAlerts from './AdminAlerts';
-import CreateAlertForm from '../government/CreateAlertForm';
+import PublicAlertForm from '../alerts/PublicAlertForm';
 import AdminAlertAudit from './AdminAlertAudit';
 import AdminDonations from './AdminDonations';
 import AdminPaymentMethods from './AdminPaymentMethods';
@@ -38,7 +37,6 @@ export default function AdminDashboard() {
     { path: '/dashboard/admin/payment-methods', icon: '💳', label: 'Payment Methods' },
     { path: '/dashboard/admin/users',        icon: '👥', label: t('dashboard.userManagement') },
     { path: '/dashboard/admin/reports',      icon: '📋', label: t('dashboard.reportManagement') },
-    { path: '/dashboard/admin/complaints',   icon: '🏛️', label: 'Complaint Management' },
     { path: '/dashboard/admin/governance-complaints', icon: '⚖️', label: 'Governance Complaints' },
     { path: '/dashboard/admin/governance-stats', icon: '🗂️', label: 'Governance Statistics' },
     { path: '/dashboard/admin/activity',     icon: '📜', label: t('admin.activityLog') },
@@ -64,7 +62,6 @@ export default function AdminDashboard() {
         <Route path="payment-methods" element={<AdminPaymentMethods />} />
         <Route path="users"      element={<AdminUsers />} />
         <Route path="reports"    element={<AdminReports />} />
-        <Route path="complaints" element={<AdminComplaints />} />
         <Route path="municipal-complaints" element={<MunicipalComplaintList basePath="/dashboard/admin/municipal-complaints" />} />
         <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
         <Route path="governance-complaints" element={<GovernanceComplaintList basePath="/dashboard/admin/governance-complaints" />} />
@@ -79,7 +76,7 @@ export default function AdminDashboard() {
         <Route path="issue-types"   element={<AdminIssueTypes />} />
         <Route path="news"          element={<AdminNews />} />
         <Route path="alerts"        element={<AdminAlerts />} />
-        <Route path="alerts/create" element={<CreateAlertForm />} />
+        <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/admin/alerts" />} />
         <Route path="alerts/audit"  element={<AdminAlertAudit />} />
         <Route path="analytics"  element={<GovAnalytics />} />
         <Route path="messages"   element={<CitizenMessages />} />

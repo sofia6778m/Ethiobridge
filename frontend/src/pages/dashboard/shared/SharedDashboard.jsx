@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../../context/AuthContext';
 import DashboardLayout from '../../../components/layout/DashboardLayout';
 import SharedOverview from './SharedOverview';
-import SharedComplaints from './SharedComplaints';
 import SharedReports from './SharedReports';
 import SharedNotifications from './SharedNotifications';
 import SharedSettings from './SharedSettings';
@@ -17,7 +16,7 @@ import MunicipalComplaintDetail from '../municipal/MunicipalComplaintDetail';
 import GovernanceComplaintList from '../governance/GovernanceComplaintList';
 import GovernanceComplaintDetail from '../governance/GovernanceComplaintDetail';
 import SharedAlerts from './SharedAlerts';
-import CreateAlertForm from '../government/CreateAlertForm';
+import PublicAlertForm from '../alerts/PublicAlertForm';
 import SharedCampaigns from './SharedCampaigns';
 import SharedDonations from './SharedDonations';
 
@@ -52,7 +51,6 @@ export default function SharedDashboard() {
   const navItems = [
     { path: base, icon: '📊', label: t('dashboard.overview') },
     ...(isSubcity || isWoreda || isSubcityHead || isWoredaHead ? [{ path: `${base}/reports`, icon: '📋', label: 'Reports' }] : []),
-    ...(!isInspector && !isTechnician && !isGovernanceOfficer ? [{ path: `${base}/complaints`, icon: '📝', label: 'Complaints' }] : []),
     ...(!isInspector && !isTechnician && !isWoredaAdmin && !isDepartmentOfficer && !isGovernanceOfficer ? [
       { path: `${base}/municipal-complaints`, icon: '🏛️', label: isOfficer || isFieldTech ? 'My Work Orders' : 'Municipal Complaints' },
       { path: `${base}/workflow-complaints`, icon: '⚙️', label: 'Workflow Complaints' },
@@ -101,7 +99,6 @@ export default function SharedDashboard() {
       <Routes>
         <Route index element={<SharedOverview />} />
         {(isSubcity || isWoreda) && <Route path="reports" element={<SharedReports />} />}
-        {!isGovernanceOfficer && <Route path="complaints" element={<SharedComplaints />} />}
         {!isGovernanceOfficer && (
           <>
             <Route path="municipal-complaints" element={<MunicipalComplaintList basePath={`${base}/municipal-complaints`} />} />
@@ -122,7 +119,7 @@ export default function SharedDashboard() {
             <Route path="campaigns" element={<SharedCampaigns />} />
             <Route path="donations" element={<SharedDonations />} />
             <Route path="alerts" element={<SharedAlerts />} />
-            <Route path="alerts/create" element={<CreateAlertForm />} />
+            <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/alerts" />} />
           </>
         )}
         <Route path="notifications" element={<SharedNotifications />} />

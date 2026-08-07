@@ -5,7 +5,7 @@ const ComplaintCategory = require('../models/ComplaintCategory');
 const Woreda = require('../models/Woreda');
 const Subcity = require('../models/Subcity');
 const User = require('../models/User');
-const createNotification = require('../utils/createNotification');
+const { notifyUser } = require('../services/notificationService');
 const { logAction } = require('../middleware/auditLog');
 const { sendEmail } = require('../services/emailService');
 const { sendSms } = require('../services/smsService');
@@ -237,20 +237,47 @@ const findOfficeOfficers = (officeId) =>
 const findAdmins = () =>
   User.find({ role: { $in: ['admin', 'government', 'ADMIN'] }, isActive: true }).select('-password').lean();
 
+// Office supervisors are the escalation/oversight layer for an office's
+// complaints — they monitor assignments and citizen activity.
+const findOfficeSupervisors = (officeId) =>
+  User.find({ role: 'OFFICE_SUPERVISOR', governmentOfficeId: officeId, isActive: true }).select('-password').lean();
+
+// Recipients for citizen-driven activity (evidence, replies): the assigned
+// officer plus the office supervisors. Never the citizen themselves.
+const findAssignmentRecipients = async (complaint) => {
+  const ids = new Set();
+  const recipients = [];
+  const add = (user) => {
+    if (!user || !user._id || ids.has(user._id.toString())) return;
+    ids.add(user._id.toString());
+    recipients.push(user);
+  };
+  if (complaint.assignedTo) {
+    add(await User.findById(complaint.assignedTo).select('-password').lean());
+  }
+  const supervisors = await findOfficeSupervisors(complaint.officeId);
+  supervisors.forEach(add);
+  return recipients;
+};
+
 // ── Notification dispatch (in-app + socket + SMS/email hooks) ─────────────────
 
-const dispatchGovernanceNotification = async (io, complaint, targets, { event, title, message, type }) => {
+const dispatchGovernanceNotification = async (io, complaint, targets, { event, title, message, type, actorId }) => {
   const seen = new Set();
   for (const target of targets) {
     if (!target || !target._id || seen.has(target._id.toString())) continue;
+    // Never notify the user who performed the action.
+    if (actorId && String(target._id) === String(actorId)) continue;
     seen.add(target._id.toString());
-    await createNotification({
-      recipient: target._id,
+    await notifyUser({
+      userId: target._id,
+      actorId,
       title,
       message,
       type: type || 'governance_status',
       relatedReport: complaint._id,
       relatedReportType: 'governance_complaint',
+      complaintId: complaint._id,
       io,
     });
     const channels = ['in-app'];
@@ -487,30 +514,26 @@ const createComplaint = async (req, res) => {
       title: confirmTitle,
       message: confirmMessage,
       type: 'governance_submitted',
+      actorId: req.user?._id,
     });
 
-    // Notify the assigned office's officers, the subcity governance office and
-    // the platform admins.
+    // Notify the assigned office's officers and the subcity governance office
+    // (monitoring only). The citizen never gets an in-app notification for
+    // their own submission — the tracking ID is returned in the response.
     await dispatchGovernanceNotification(io, complaint, officeOfficers, {
       event: 'Submitted',
-      title: `New governance complaint ${complaint.trackingId}`,
+      title: `New public complaint ${complaint.trackingId}`,
       message: `${anonymous ? 'An anonymous citizen' : (complaint.reporterName || 'A citizen')} reported "${category.name}" against ${office.name} in ${complaint.subcity}.`,
       type: 'governance_status',
+      actorId: req.user?._id,
     });
 
     await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
       event: 'Submitted',
-      title: `New governance complaint ${complaint.trackingId}`,
+      title: `New public complaint ${complaint.trackingId}`,
       message: `${anonymous ? 'An anonymous citizen' : (complaint.reporterName || 'A citizen')} reported "${category.name}" against ${office.name} in ${complaint.subcity}.`,
       type: 'governance_status',
-    });
-
-    const admins = await findAdmins();
-    await dispatchGovernanceNotification(io, complaint, admins, {
-      event: 'Submitted',
-      title: `New governance complaint ${complaint.trackingId}`,
-      message: `${category.name} report against ${office.name} (${subcity}) — assigned to the ${office.name}.`,
-      type: 'governance_status',
+      actorId: req.user?._id,
     });
 
     await complaint.save();
@@ -738,18 +761,11 @@ const reopenByTracking = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
-    await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
+    const officeOfficers = complaint.officeId ? await findOfficeOfficers(complaint.officeId) : [];
+    await dispatchGovernanceNotification(io, complaint, officeOfficers, {
       event: 'Reopened',
       title: `Complaint ${complaint.trackingId} reopened`,
-      message: `${complaint.reporterName || 'The reporter'} reopened this governance complaint.`,
-      type: 'governance_reopened',
-    });
-    const admins = await findAdmins();
-    await dispatchGovernanceNotification(io, complaint, admins, {
-      event: 'Reopened',
-      title: `Complaint ${complaint.trackingId} reopened`,
-      message: 'A governance complaint was reopened by the reporter.',
+      message: `${complaint.reporterName || 'The reporter'} reopened this public complaint.`,
       type: 'governance_reopened',
     });
 
@@ -833,42 +849,39 @@ const updateStatus = async (req, res) => {
 const notifyStatusChange = async (complaint, req, { previous, status }) => {
   const io = getIO(req);
   const eventMap = {
-    'Under Review': { event: 'Under Review', type: 'governance_status', message: 'Your governance complaint is now under review.' },
-    'Need More Information': { event: 'Information Requested', type: 'governance_info_requested', message: 'The office needs more information on your governance complaint.' },
-    'In Progress': { event: 'In Progress', type: 'governance_status', message: 'Work has started on your governance complaint.' },
-    'Investigation in Progress': { event: 'Investigation Started', type: 'governance_status', message: 'An investigation has started on your governance complaint.' },
-    'Action Taken': { event: 'Action Taken', type: 'governance_action_taken', message: 'Administrative action has been taken on your governance complaint.' },
-    'Resolved': { event: 'Resolved', type: 'governance_resolved', message: `Your governance complaint has been resolved.${complaint.resolutionNote ? ` Note: ${complaint.resolutionNote}` : ''}` },
-    'Rejected': { event: 'Rejected', type: 'governance_rejected', message: `Your governance complaint was not accepted. Reason: ${complaint.rejectionReason}` },
-    'Closed': { event: 'Closed', type: 'governance_closed', message: 'Your governance complaint has been officially closed.' },
+    'Under Review': { event: 'Under Review', type: 'governance_status', message: 'Your public complaint is now under review.' },
+    'Need More Information': { event: 'Information Requested', type: 'governance_info_requested', message: 'The office needs more information on your public complaint.' },
+    'In Progress': { event: 'In Progress', type: 'governance_status', message: 'Work has started on your public complaint.' },
+    'Investigation in Progress': { event: 'Investigation Started', type: 'governance_status', message: 'An investigation has started on your public complaint.' },
+    'Action Taken': { event: 'Action Taken', type: 'governance_action_taken', message: 'Administrative action has been taken on your public complaint.' },
+    'Resolved': { event: 'Resolved', type: 'governance_resolved', message: `Your public complaint has been resolved.${complaint.resolutionNote ? ` Note: ${complaint.resolutionNote}` : ''}` },
+    'Rejected': { event: 'Rejected', type: 'governance_rejected', message: `Your public complaint was not accepted. Reason: ${complaint.rejectionReason}` },
+    'Closed': { event: 'Closed', type: 'governance_closed', message: 'Your public complaint has been officially closed.' },
   };
   const spec = eventMap[status];
   if (!spec) return;
   const title = `${complaint.trackingId} — ${status}`;
+  // The citizen is the sole recipient of officer-driven status changes — the
+  // acting officer is excluded, and subcity admins get no per-message noise.
+  const actorId = req?.user?._id || null;
 
-  const targets = [];
   if (complaint.reporter) {
     const reporter = await User.findById(complaint.reporter).select('-password').lean();
     if (reporter) {
-      targets.push({ _id: reporter._id, phone: reporter.phone, email: reporter.email, smsNotifications: true, emailNotifications: true });
+      await dispatchGovernanceNotification(io, complaint, [{ ...reporter, smsNotifications: true, emailNotifications: true }], {
+        ...spec,
+        title,
+        message: spec.message,
+        type: spec.type,
+        actorId,
+      });
     }
-  }
-  if (targets.length) {
-    await dispatchGovernanceNotification(io, complaint, targets, { ...spec, title, message: spec.message, type: spec.type });
   } else if (complaint.reporterPhone) {
     complaint.notificationHistory.push({ event: spec.event, title, message: spec.message, channels: 'sms' });
     await sendSms({ to: complaint.reporterPhone, message: spec.message });
     if (complaint.reporterEmail) await sendEmail({ to: complaint.reporterEmail, subject: title, text: spec.message });
     await complaint.save();
   }
-
-  const managers = [...(await findSubcityAdmins(complaint.subcity)), ...(await findAdmins())];
-  await dispatchGovernanceNotification(io, complaint, managers, {
-    event: spec.event,
-    title: `${complaint.trackingId} — ${previous} → ${status}`,
-    message: `${req.user?.fullName || 'An officer'} updated this complaint to ${status}.`,
-    type: spec.type,
-  });
 };
 
 // ── Officer assignment ────────────────────────────────────────────────────────
@@ -958,11 +971,13 @@ const assignOfficer = async (req, res) => {
     emitUpdate(getIO(req), complaint);
 
     const io = getIO(req);
-    await dispatchGovernanceNotification(io, complaint, [officer], {
+    const supervisors = await findOfficeSupervisors(complaint.officeId);
+    await dispatchGovernanceNotification(io, complaint, [officer, ...supervisors], {
       event: 'Assigned',
       title: `New assignment: ${complaint.trackingId}`,
       message: `You have been assigned to handle complaint ${complaint.trackingId} (${complaint.category}).`,
       type: 'governance_status',
+      actorId: req.user._id,
     });
 
     res.json({ success: true, message: `Complaint assigned to ${officer.fullName}`, data: withDisplay(complaint) });
@@ -1045,6 +1060,7 @@ const respondToCitizen = async (req, res) => {
           title: responseTitle,
           message: responseMessage,
           type: 'governance_status',
+          actorId: req.user._id,
         });
       }
     } else if (complaint.reporterPhone) {
@@ -1137,13 +1153,7 @@ const requestWoredaInfo = async (req, res) => {
       title: `Official request on ${complaint.trackingId}`,
       message: `${complaint.subcity} Subcity Governance requested information about "${complaint.office}". Due: ${dueAt.toLocaleDateString()}.`,
       type: 'governance_info_requested',
-    });
-    const admins = await findAdmins();
-    await dispatchGovernanceNotification(io, complaint, admins, {
-      event: 'Woreda Contacted',
-      title: `Woreda request on ${complaint.trackingId}`,
-      message: `${req.user.fullName} requested woreda information.`,
-      type: 'governance_info_requested',
+      actorId: req.user._id,
     });
 
     if (complaint.reporter) {
@@ -1154,6 +1164,7 @@ const requestWoredaInfo = async (req, res) => {
           title: `Update on ${complaint.trackingId}`,
           message: 'The Subcity Governance Office is coordinating with the woreda on your complaint.',
           type: 'governance_status',
+          actorId: req.user._id,
         });
       }
     }
@@ -1200,12 +1211,15 @@ const respondToWoredaRequest = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
-    await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
+    const requester = request.requestedBy
+      ? await User.findById(request.requestedBy).select('-password').lean()
+      : null;
+    await dispatchGovernanceNotification(io, complaint, requester ? [requester] : [], {
       event: 'Woreda Responded',
       title: `Woreda response on ${complaint.trackingId}`,
       message: `${req.user.fullName} responded to the information request.`,
       type: 'governance_status',
+      actorId: req.user._id,
     });
     await complaint.save();
     emitUpdate(io, complaint);
@@ -1403,19 +1417,13 @@ const escalateComplaint = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const admins = await findAdmins();
-    await dispatchGovernanceNotification(io, complaint, admins, {
-      event: 'Escalated',
-      title: `Complaint ${complaint.trackingId} escalated`,
-      message: `Escalated to ${complaint.escalatedTo}. Reason: ${reason}`,
-      type: 'governance_escalated',
-    });
     const subcityAdmins = await findSubcityAdmins(complaint.subcity);
     await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
       event: 'Escalated',
       title: `Complaint ${complaint.trackingId} escalated`,
       message: `Escalated to ${complaint.escalatedTo}. Reason: ${reason}`,
       type: 'governance_escalated',
+      actorId: req.user._id,
     });
 
     if (complaint.reporter) {
@@ -1424,8 +1432,9 @@ const escalateComplaint = async (req, res) => {
         await dispatchGovernanceNotification(io, complaint, [reporter], {
           event: 'Escalated',
           title: `Update on ${complaint.trackingId}`,
-          message: 'Your governance complaint has been escalated to a higher authority.',
+          message: 'Your public complaint has been escalated to a higher authority.',
           type: 'governance_escalated',
+          actorId: req.user._id,
         });
       }
     }
@@ -1467,12 +1476,13 @@ const reopenComplaint = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
-    await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
+    const recipients = await findAssignmentRecipients(complaint);
+    await dispatchGovernanceNotification(io, complaint, recipients, {
       event: 'Reopened',
       title: `Complaint ${complaint.trackingId} reopened`,
-      message: `${req.user.fullName} reopened this governance complaint.`,
+      message: `${req.user.fullName} reopened this public complaint.`,
       type: 'governance_reopened',
+      actorId: req.user._id,
     });
     emitUpdate(io, complaint);
     res.json({ success: true, message: 'Complaint reopened', data: withDisplay(complaint) });
@@ -1502,15 +1512,119 @@ const addEvidence = async (req, res) => {
     await complaint.save();
 
     const io = getIO(req);
-    const subcityAdmins = await findSubcityAdmins(complaint.subcity);
-    await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
+    const recipients = await findAssignmentRecipients(complaint);
+    await dispatchGovernanceNotification(io, complaint, recipients, {
       event: 'Evidence Added',
       title: `New evidence on ${complaint.trackingId}`,
       message: 'The reporter uploaded additional evidence.',
       type: 'governance_status',
+      actorId: req.user._id,
     });
     await complaint.save();
     res.json({ success: true, message: 'Evidence added', data: withDisplay(complaint) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/governance-complaints/:id/citizen-reply  (citizen reporter)
+// Lets the reporter answer a "Need More Information" request (or any follow-up)
+// with a text message and optional files. Replying to a complaint that is
+// awaiting information moves it back to "Under Review" so the office knows the
+// reporter has responded.
+const sendCitizenReply = async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id);
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    if (String(complaint.reporter) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Only the reporter can reply to this complaint.' });
+    }
+    if (!isComplaintInScope(req.user, complaint)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    const message = String(req.body.message || '').trim();
+    if (!message) return res.status(400).json({ success: false, message: 'A reply message is required.' });
+
+    const urls = fileUrls(req);
+    complaint.citizenReplies.push({
+      message,
+      files: urls,
+      user: req.user._id,
+      userName: req.user.fullName || req.user.role,
+    });
+
+    let previous = complaint.status;
+    if (complaint.status === 'Need More Information') {
+      complaint.status = 'Under Review';
+      complaint.isOverdue = false;
+    }
+    await recordAudit(req, complaint, 'Citizen Replied', req.user, `Reporter replied: ${message}`, { oldStatus: previous, newStatus: complaint.status });
+    pushTimeline(complaint, 'Citizen Replied', 'Citizen replied', message, req.user, urls);
+
+    await complaint.save();
+
+    const io = getIO(req);
+    const recipients = await findAssignmentRecipients(complaint);
+    await dispatchGovernanceNotification(io, complaint, recipients, {
+      event: 'Citizen Replied',
+      title: `Reporter replied on ${complaint.trackingId}`,
+      message: 'The citizen replied to your request for more information.',
+      type: 'governance_status',
+      actorId: req.user._id,
+    });
+
+    await complaint.save();
+    emitUpdate(io, complaint);
+    res.json({ success: true, message: 'Reply sent to the office', data: withDisplay(complaint) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/governance-complaints/:id/feedback  (citizen reporter)
+// Service rating (1-5) + optional comment once the complaint is resolved.
+const submitFeedback = async (req, res) => {
+  try {
+    const complaint = await GovernanceComplaint.findById(req.params.id);
+    if (!complaint) return res.status(404).json({ success: false, message: 'Complaint not found.' });
+    if (String(complaint.reporter) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Only the reporter can submit feedback.' });
+    }
+    if (!isComplaintInScope(req.user, complaint)) {
+      return res.status(403).json({ success: false, message: 'Not authorised.' });
+    }
+    if (!['Resolved', 'Closed'].includes(complaint.status)) {
+      return res.status(400).json({ success: false, message: 'Feedback is only available after the complaint is resolved.' });
+    }
+    if (complaint.citizenFeedback && complaint.citizenFeedback.rating) {
+      return res.status(400).json({ success: false, message: 'Feedback already submitted.' });
+    }
+    const rating = parseInt(req.body.rating, 10);
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'Rating must be between 1 and 5.' });
+    }
+    complaint.citizenFeedback = {
+      rating,
+      comment: String(req.body.comment || '').trim(),
+      at: new Date(),
+    };
+    await recordAudit(req, complaint, 'Feedback', req.user, `Citizen feedback: ${rating}/5`);
+    pushTimeline(complaint, 'Feedback', 'Citizen feedback', `${rating}/5 ${complaint.citizenFeedback.comment ? '— ' + complaint.citizenFeedback.comment : ''}`, req.user);
+
+    await complaint.save();
+
+    const io = getIO(req);
+    const recipients = await findAssignmentRecipients(complaint);
+    await dispatchGovernanceNotification(io, complaint, recipients, {
+      event: 'Citizen feedback',
+      title: `Feedback on ${complaint.trackingId}: ${rating}/5`,
+      message: `${req.user.fullName} rated their experience ${rating}/5.`,
+      type: 'governance_status',
+      actorId: req.user._id,
+    });
+    await complaint.save();
+    emitUpdate(io, complaint);
+    res.json({ success: true, message: 'Feedback submitted', data: withDisplay(complaint) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -1848,7 +1962,7 @@ const runGovernanceEscalationPass = async (io) => {
     await dispatchGovernanceNotification(io, complaint, subcityAdmins, {
       event: 'Overdue',
       title: `Complaint ${complaint.trackingId} overdue`,
-      message: 'This governance complaint has passed its response deadline or has an overdue woreda request.',
+      message: 'This public complaint has passed its response deadline or has an overdue woreda request.',
       type: 'governance_status',
     });
 
@@ -1904,6 +2018,8 @@ module.exports = {
   escalateComplaint,
   reopenComplaint,
   addEvidence,
+  sendCitizenReply,
+  submitFeedback,
   downloadAcknowledgment,
   getAuditTrail,
   getStats,

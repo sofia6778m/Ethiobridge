@@ -8,7 +8,6 @@ import DepartmentReportDetail from './DepartmentReportDetail';
 import CitizenProfile from '../citizen/CitizenProfile';
 import CitizenMessages from '../citizen/CitizenMessages';
 import DepartmentSettings from './DepartmentSettings';
-import SharedComplaints from '../shared/SharedComplaints';
 import WorkflowComplaintList from '../workflow/WorkflowComplaintList';
 import WorkflowComplaintDetail from '../workflow/WorkflowComplaintDetail';
 import WorkflowDashboard from '../workflow/WorkflowDashboard';
@@ -71,7 +70,6 @@ export default function DepartmentDashboard() {
   const navItems = [
     { path: base,                          icon: '📊', label: t('dashboard.overview') },
     { path: `${base}/reports`,             icon: '📋', label: 'Reports' },
-    { path: `${base}/complaints`,          icon: '📝', label: 'Complaints' },
     { path: `${base}/municipal-complaints`, icon: '🏛️', label: 'Municipal Complaints' },
     { path: `${base}/workflow-complaints`, icon: '⚙️', label: 'Workflow Complaints' },
     { path: `${base}/workflow-analytics`,  icon: '📈', label: 'Analytics' },
@@ -87,7 +85,6 @@ export default function DepartmentDashboard() {
         <Route index element={<DepartmentOverview />} />
         <Route path="reports" element={<DepartmentReports />} />
         <Route path="reports/:id" element={<DepartmentReportDetail />} />
-        <Route path="complaints" element={<SharedComplaints />} />
         <Route path="municipal-complaints" element={<MunicipalComplaintList basePath={`${base}/municipal-complaints`} />} />
         <Route path="municipal-complaints/:id" element={<MunicipalComplaintDetail />} />
         <Route path="workflow-complaints" element={<WorkflowComplaintList basePath={base} />} />

@@ -50,7 +50,7 @@ export default function PublicGovernanceComplaint() {
           <div className="absolute bottom-0 left-0 w-48 h-48 bg-white rounded-full translate-y-1/2 -translate-x-1/4" />
         </div>
         <div className="relative z-10">
-          <h1 className="text-2xl sm:text-3xl font-bold mb-2">Service Governance Complaint</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-2">Service Public Complaint</h1>
           <p className="text-emerald-100 text-sm sm:text-base max-w-xl">
             Report misconduct, corruption, service delays, or poor service by government offices. Your complaint is investigated by the Subcity Governance Office.
           </p>

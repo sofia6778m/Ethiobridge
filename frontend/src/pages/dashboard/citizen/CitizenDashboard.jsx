@@ -1,22 +1,17 @@
-import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useAuth } from '../../../context/AuthContext';
-import { toast } from 'react-toastify';
 import DashboardLayout from '../../../components/layout/DashboardLayout';
 import CitizenOverview from './CitizenOverview';
 import ReportSelection from './ReportSelection';
 import CreateReport from './CreateReport';
-import MyReports from './MyReports';
 import CitizenMessages from './CitizenMessages';
 import CitizenProfile from './CitizenProfile';
-import NotificationBell from '../../../components/common/NotificationBell';
 import MyDonations from './MyDonations';
 import SavedCampaigns from './SavedCampaigns';
-import CitizenMunicipalComplaints from './CitizenMunicipalComplaints';
-import CitizenMunicipalComplaintDetail from './CitizenMunicipalComplaintDetail';
-import MunicipalComplaintForm from './MunicipalComplaintForm';
 import MyComplaints from './MyComplaints';
-import CitizenGovernanceComplaintDetail from './CitizenGovernanceComplaintDetail';
+import PublicComplaints from './PublicComplaints';
+import CitizenComplaintDetail from './CitizenComplaintDetail';
+import CitizenGovernanceComplaintForm from './CitizenGovernanceComplaintForm';
 import CitizenAlerts from './CitizenAlerts';
 
 export default function CitizenDashboard() {
@@ -25,9 +20,8 @@ export default function CitizenDashboard() {
   const navItems = [
     { path: '/dashboard/citizen',                 icon: '📊', label: t('dashboard.overview') },
     { path: '/dashboard/citizen/create-report',   icon: '📝', label: t('dashboard.createReport') },
-    { path: '/dashboard/citizen/my-reports',      icon: '📋', label: t('dashboard.myReports') },
     { path: '/dashboard/citizen/my-complaints',   icon: '🗂️', label: 'My Complaints' },
-    { path: '/dashboard/citizen/municipal-complaints', icon: '🏛️', label: 'Municipal Complaints' },
+    { path: '/dashboard/citizen/public-complaints', icon: '🏛️', label: 'Public Complaints' },
     { path: '/dashboard/citizen/my-donations',    icon: '❤️', label: 'My Donations' },
     { path: '/dashboard/citizen/saved-campaigns', icon: '🔖', label: 'Saved Campaigns' },
     { path: '/dashboard/citizen/alerts',          icon: '📢', label: 'Public Alerts' },
@@ -41,14 +35,12 @@ export default function CitizenDashboard() {
         <Route index element={<CitizenOverview />} />
         <Route path="create-report" element={<ReportSelection />} />
         <Route path="create-report/infrastructure" element={<CreateReport />} />
-        <Route path="my-reports" element={<MyReports />} />
+        <Route path="create-report/governance" element={<CitizenGovernanceComplaintForm />} />
         <Route path="my-complaints" element={<MyComplaints />} />
-        <Route path="municipal-complaints" element={<CitizenMunicipalComplaints />} />
-        <Route path="municipal-complaints/new" element={<MunicipalComplaintForm />} />
-        <Route path="municipal-complaints/:id" element={<CitizenMunicipalComplaintDetail />} />
+        <Route path="public-complaints" element={<PublicComplaints />} />
+        <Route path="complaints/:type/:id" element={<CitizenComplaintDetail />} />
         <Route path="governance-complaints" element={<Navigate to="/dashboard/citizen/my-complaints" replace />} />
-        <Route path="governance-complaints/new" element={<Navigate to="/report/governance-complaint" replace />} />
-        <Route path="governance-complaints/:id" element={<CitizenGovernanceComplaintDetail />} />
+        <Route path="governance-complaints/new" element={<CitizenGovernanceComplaintForm />} />
         <Route path="my-donations" element={<MyDonations />} />
         <Route path="saved-campaigns" element={<SavedCampaigns />} />
         <Route path="alerts" element={<CitizenAlerts />} />

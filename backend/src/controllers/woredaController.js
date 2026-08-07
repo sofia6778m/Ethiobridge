@@ -2,7 +2,6 @@ const Woreda = require('../models/Woreda');
 const User = require('../models/User');
 const InfrastructureReport = require('../models/InfrastructureReport');
 const EmergencyReport = require('../models/EmergencyReport');
-const PublicComplaint = require('../models/PublicComplaint');
 const createNotification = require('../utils/createNotification');
 const { DEPARTMENTS } = require('../utils/scopeFilter');
 const { departmentMatchFilter } = require('../utils/departmentRecipients');
@@ -41,18 +40,12 @@ const getWoredaStats = async (req, res) => {
       inProgressReports,
       resolvedReports,
       rejectedReports,
-      totalComplaints,
-      pendingComplaints,
-      resolvedComplaints,
     ] = await Promise.all([
       InfrastructureReport.countDocuments({ woredaId }),
       InfrastructureReport.countDocuments({ woredaId, status: 'Pending' }),
       InfrastructureReport.countDocuments({ woredaId, status: { $in: ['Assigned', 'In Progress'] } }),
       InfrastructureReport.countDocuments({ woredaId, status: 'Resolved' }),
       InfrastructureReport.countDocuments({ woredaId, status: 'Rejected' }),
-      PublicComplaint.countDocuments({ woredaId }),
-      PublicComplaint.countDocuments({ woredaId, status: 'Submitted' }),
-      PublicComplaint.countDocuments({ woredaId, status: 'Resolved' }),
     ]);
 
     const departmentStats = await Promise.all(
@@ -69,7 +62,6 @@ const getWoredaStats = async (req, res) => {
       stats: {
         totalReports, pendingReports, inProgressReports,
         resolvedReports, rejectedReports,
-        totalComplaints, pendingComplaints, resolvedComplaints,
         departmentStats,
       },
     });
@@ -149,6 +141,7 @@ const assignToDepartment = async (req, res) => {
     for (const u of deptUsers) {
       await createNotification({
         recipient: u._id,
+        actorId: req.user._id,
         title: 'New Report Assignment',
         message: `Report "${report.title}" has been assigned to ${department}`,
         type: 'assignment',

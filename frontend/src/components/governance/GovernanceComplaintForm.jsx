@@ -304,7 +304,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
     if (!form.woredaId) err.woreda = 'Woreda is required';
     if (!form.officeId) err.office = 'Government office is required';
     if (!form.serviceReceived.trim()) err.serviceReceived = 'Service received is required';
-    if (!form.categoryId) err.category = 'Governance issue category is required';
+    if (!form.categoryId) err.category = 'Public complaint issue category is required';
     if (!form.title.trim()) err.title = 'Complaint title is required';
     else if (form.title.trim().length < 3) err.title = 'Title must be at least 3 characters';
     if (!form.description.trim()) err.description = 'Description is required';
@@ -373,7 +373,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
         </div>
         <div className="relative z-10">
           <h2 className="text-lg font-bold flex items-center gap-2">
-            <span>⚖️</span> Submit Governance Complaint
+            <span>⚖️</span> Submit Public Complaint
           </h2>
           <p className="text-emerald-100 text-xs sm:text-sm mt-1">
             For issues with government offices and public services. Routed to the Subcity Governance Office — fields marked with * are required.
@@ -481,7 +481,7 @@ export default function GovernanceComplaintForm({ user, onSuccess, submitLabel =
         </FormSection>
 
         {/* ── Governance Issue Category ── */}
-        <FormSection icon="⚖️" title="Governance Issue Category" subtitle="Choose the category that best describes the issue">
+        <FormSection icon="⚖️" title="Public Complaint Issue Category" subtitle="Choose the category that best describes the issue">
           {!form.officeId ? (
             <p className="text-sm text-gray-500 dark:text-gray-400">Select a government office first to see its complaint categories.</p>
           ) : (

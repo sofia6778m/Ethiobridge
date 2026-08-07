@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { alertAPI } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import {
   getCategory,
   getSeverity,
+  categoryLabel,
   SEVERITY_STYLES,
   getCategoryBadge,
   SAFETY_INSTRUCTIONS,
@@ -15,6 +17,7 @@ import LoadingSpinner from '../../components/common/LoadingSpinner';
 export default function PublicAlertDetail() {
   const { t } = useTranslation();
   const { id } = useParams();
+  const { user } = useAuth();
   const [alert, setAlert] = useState(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -27,6 +30,12 @@ export default function PublicAlertDetail() {
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
   }, [id]);
+
+  // Citizens mark the alert as read so the unread badge clears.
+  useEffect(() => {
+    if (!alert || !user || (user.role !== 'citizen' && user.role !== 'CITIZEN')) return;
+    alertAPI.markRead(alert._id).catch(() => {});
+  }, [alert, user]);
 
   if (loading) return <LoadingSpinner fullPage />;
 
@@ -43,7 +52,7 @@ export default function PublicAlertDetail() {
     );
   }
 
-  const cat = getCategory(alert.category);
+  const cat = getCategory(alert.category) || { icon: '📢' };
   const sev = getSeverity(alert.severity);
   const sevStyle = SEVERITY_STYLES[alert.severity] || SEVERITY_STYLES.information;
   const safety = alert.safetyInstructions?.length
@@ -72,9 +81,11 @@ export default function PublicAlertDetail() {
               <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${sevStyle.badge}`}>
                 {sev.icon} {sev.label}
               </span>
-              <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${getCategoryBadge(alert.category)}`}>
-                {cat.icon} {cat.label}
-              </span>
+              {alert.category && (
+                <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${getCategoryBadge(alert.category)}`}>
+                  {cat.icon} {categoryLabel(alert.category, alert.customCategory)}
+                </span>
+              )}
             </div>
 
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 mb-3">
@@ -115,6 +126,42 @@ export default function PublicAlertDetail() {
                     </li>
                   ))}
                 </ol>
+              </div>
+            )}
+
+            {/* Attachments */}
+            {alert.attachments?.length > 0 && (
+              <div className="mb-6">
+                <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3 flex items-center gap-2">
+                  <span className="text-xl">📎</span> {t('alert.attachments') || 'Attachments'}
+                </h3>
+                <div className="space-y-2">
+                  {alert.attachments.map((a, i) => (
+                    <a key={i} href={a.url} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center justify-between bg-white/60 dark:bg-gray-800/40 rounded-xl px-4 py-3 text-sm text-primary-600 dark:text-primary-400 hover:underline">
+                      <span className="truncate">📄 {a.fileName || a.publicId || `Attachment ${i + 1}`}</span>
+                      <span className="text-xs text-gray-400 shrink-0 ml-3">open ↗</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Source authority / emergency contact */}
+            {(alert.sourceAuthority || alert.emergencyContact) && (
+              <div className="mb-6 grid sm:grid-cols-2 gap-3 text-sm">
+                {alert.sourceAuthority && (
+                  <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-4">
+                    <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1">Source authority</p>
+                    <p className="text-gray-700 dark:text-gray-300 font-medium">{alert.sourceAuthority}</p>
+                  </div>
+                )}
+                {alert.emergencyContact && (
+                  <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-4">
+                    <p className="text-xs text-gray-400 dark:text-gray-500 uppercase tracking-wide mb-1">Emergency contact</p>
+                    <p className="text-gray-700 dark:text-gray-300 font-medium">{alert.emergencyContact}</p>
+                  </div>
+                )}
               </div>
             )}
 

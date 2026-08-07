@@ -1,4 +1,5 @@
 const Notification = require('../models/Notification');
+const { markAsRead: serviceMarkAsRead, markAllAsRead: serviceMarkAllAsRead } = require('../services/notificationService');
 
 // @desc  Get my notifications
 // @route GET /api/notifications
@@ -25,8 +26,9 @@ const getNotifications = async (req, res) => {
 // @access Private
 const markAsRead = async (req, res) => {
   try {
-    await Notification.findByIdAndUpdate(req.params.id, { isRead: true, readAt: new Date() });
-    res.json({ success: true, message: 'Marked as read' });
+    // Ownership-scoped: a user can only mark their own notification read.
+    const notification = await serviceMarkAsRead(req.user._id, req.params.id);
+    res.json({ success: true, message: 'Marked as read', data: notification });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -37,8 +39,8 @@ const markAsRead = async (req, res) => {
 // @access Private
 const markAllRead = async (req, res) => {
   try {
-    await Notification.updateMany({ recipient: req.user._id, isRead: false }, { isRead: true, readAt: new Date() });
-    res.json({ success: true, message: 'All notifications marked as read' });
+    const result = await serviceMarkAllAsRead(req.user._id);
+    res.json({ success: true, message: 'All notifications marked as read', modifiedCount: result.modifiedCount });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -49,7 +51,7 @@ const markAllRead = async (req, res) => {
 // @access Private
 const deleteNotification = async (req, res) => {
   try {
-    await Notification.findByIdAndDelete(req.params.id);
+    await Notification.findOneAndDelete({ _id: req.params.id, recipient: req.user._id });
     res.json({ success: true, message: 'Notification deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

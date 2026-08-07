@@ -56,9 +56,8 @@ const infrastructureReportSchema = new mongoose.Schema(
     city: { type: String },
     // No enum restriction — any subcity created in the Subcity collection is valid.
     subcity: { type: String },
-    // Live ObjectId references used for precise role scoping (mirrors the
-    // PublicComplaint schema). Populated at submission time from the selected
-    // woreda/subcity/department master data.
+    // Live ObjectId references used for precise role scoping. Populated at
+    // submission time from the selected woreda/subcity/department master data.
     subcityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Subcity', default: null },
     departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
     woredaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Woreda' },

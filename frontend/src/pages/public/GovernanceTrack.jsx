@@ -52,7 +52,7 @@ export default function GovernanceTrack() {
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
       <div className="mb-8 text-center">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">Track Governance Complaint</h1>
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">Track Public Complaint</h1>
         <p className="text-gray-500 dark:text-gray-400">
           Enter the phone number you used to submit <span className="font-mono font-medium text-gray-700 dark:text-gray-200">{trackingId}</span> to see its status and timeline.
         </p>
@@ -76,7 +76,7 @@ export default function GovernanceTrack() {
             {loading ? 'Checking…' : 'Check Status'}
           </button>
           <div className="text-center">
-            <Link to="/report/governance-complaint" className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">Submit a governance complaint</Link>
+            <Link to="/report/governance-complaint" className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">Submit a public complaint</Link>
           </div>
         </form>
       )}

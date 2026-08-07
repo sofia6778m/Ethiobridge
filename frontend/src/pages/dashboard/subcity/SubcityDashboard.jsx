@@ -18,6 +18,8 @@ import SharedNotifications from '../shared/SharedNotifications';
 import SharedSettings from '../shared/SharedSettings';
 import CitizenMessages from '../citizen/CitizenMessages';
 import CitizenProfile from '../citizen/CitizenProfile';
+import SubcityAlerts from './SubcityAlerts';
+import PublicAlertForm from '../alerts/PublicAlertForm';
 
 export default function SubcityDashboard() {
   const { t } = useTranslation();
@@ -41,6 +43,7 @@ export default function SubcityDashboard() {
     { path: `${base}/governance/analytics`,  icon: '📈', label: 'Governance Analytics',   indent: true },
 
     { path: `${base}/analytics`,    icon: '📈', label: t('dashboard.analyticsTitle') },
+    { path: `${base}/alerts`,       icon: '📢', label: 'Public Alerts' },
     { path: `${base}/notifications`, icon: '🔔', label: t('dashboard.notifications') },
     { path: `${base}/messages`,     icon: '💬', label: t('dashboard.messages') },
     { path: `${base}/profile`,      icon: '👤', label: t('dashboard.profile') },
@@ -72,6 +75,8 @@ export default function SubcityDashboard() {
         <Route path="governance/analytics"  element={<GovernanceAnalytics />} />
 
         <Route path="analytics"    element={<SubcityAnalytics />} />
+        <Route path="alerts"       element={<SubcityAlerts />} />
+        <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/subcity/alerts" />} />
         <Route path="notifications" element={<SharedNotifications />} />
         <Route path="messages"     element={<CitizenMessages />} />
         <Route path="profile"      element={<CitizenProfile />} />

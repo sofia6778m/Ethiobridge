@@ -6,9 +6,8 @@
  * whether the submitter is logged in:
  *
  *   POST /api/reports/infrastructure   → InfrastructureReport (report_type='infrastructure')
- *   POST /api/reports/public-complaint → PublicComplaint     (report_type='public_complaint')
  *
- * Both accept anonymous submissions (optional auth). A logged-in citizen is
+ * Accepts anonymous submissions (optional auth). A logged-in citizen is
  * linked to the report via citizen_id / submittedBy, but authentication status
  * never changes the report_type or the destination collection.
  */
@@ -193,6 +192,7 @@ const createInfrastructure = async (req, res) => {
       for (const u of deptUsers) {
         await createNotification({
           recipient: u._id,
+          actorId: req.user._id,
           title: 'New Infrastructure Report for Your Department',
           message: `New ${deptName} report: "${title}"`,
           type: 'new_report',
@@ -209,6 +209,7 @@ const createInfrastructure = async (req, res) => {
       for (const u of woredaUsers) {
         await createNotification({
           recipient: u._id,
+          actorId: req.user._id,
           title: 'New Infrastructure Report in Your Woreda',
           message: `New ${deptName} report: "${title}"`,
           type: 'new_report',
@@ -224,6 +225,7 @@ const createInfrastructure = async (req, res) => {
     for (const admin of admins) {
       await createNotification({
         recipient: admin._id,
+        actorId: req.user._id,
         title: 'New Infrastructure Report',
         message: `New report "${title}" (${reportCategory}) submitted from ${region}.`,
         type: 'new_report',

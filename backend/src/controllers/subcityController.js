@@ -1,6 +1,5 @@
 const InfrastructureReport = require('../models/InfrastructureReport');
 const EmergencyReport = require('../models/EmergencyReport');
-const PublicComplaint = require('../models/PublicComplaint');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 

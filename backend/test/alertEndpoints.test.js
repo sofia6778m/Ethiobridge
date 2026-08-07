@@ -97,11 +97,14 @@ beforeEach(async () => {
 
 // ── Model ────────────────────────────────────────────────────────────────────
 describe('PublicAlert model', () => {
-  it('rejects an unknown category', async () => {
-    await assert.rejects(
-      PublicAlert.create({ title: 'x', category: 'nonsense', severity: 'warning', description: 'd' }),
-      /category/
-    );
+  it('accepts free-text categories', async () => {
+    const alert = await PublicAlert.create({ title: 'x', category: 'Road Closure Alert', severity: 'warning', description: 'd' });
+    assert.equal(alert.category, 'Road Closure Alert');
+  });
+
+  it('normalizes an empty category to null', async () => {
+    const alert = await PublicAlert.create({ title: 'x', category: '', severity: 'warning', description: 'd' });
+    assert.equal(alert.category, null);
   });
 
   it('rejects an unknown severity', async () => {
@@ -158,6 +161,22 @@ describe('notifyCitizens', () => {
 
     const stats = await notifyCitizens(alert, null);
     assert.equal(stats.notifiedCitizens, 0);
+  });
+
+  it('delivers an alert with a free-text category despite category prefs', async () => {
+    await mkUser({ alertSubscriptions: { enabled: true, categories: ['flood'], channels: { inApp: true, email: false, sms: false, push: false } } });
+    const alert = await mkAlert({ category: 'Bridge Repair Notice', severity: 'warning' });
+
+    const stats = await notifyCitizens(alert, null);
+    assert.equal(stats.notifiedCitizens, 1);
+  });
+
+  it('delivers an alert with no category despite category prefs', async () => {
+    await mkUser({ alertSubscriptions: { enabled: true, categories: ['flood'], channels: { inApp: true, email: false, sms: false, push: false } } });
+    const alert = await mkAlert({ category: '', severity: 'warning' });
+
+    const stats = await notifyCitizens(alert, null);
+    assert.equal(stats.notifiedCitizens, 1);
   });
 
   it('always delivers emergency alerts even when disabled', async () => {

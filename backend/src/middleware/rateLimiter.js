@@ -38,6 +38,17 @@ const complaintSubmitLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Public tracking limiter ───────────────────────────────────────────────────
+// The unauthenticated /api/public-track endpoint is a phone+id lookup, so it is
+// rate-limited to deter enumeration / scraping without blocking genuine use.
+const trackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { success: false, message: 'Too many tracking requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Admin reactivation endpoint limiter ───────────────────────────────────────
 // Tight per-IP budget so the ADMIN_REACTIVATION_KEY cannot be brute-forced even
 // though the key itself is a long random secret.
@@ -160,6 +171,7 @@ module.exports = {
   registerLimiter,
   uploadLimiter,
   complaintSubmitLimiter,
+  trackLimiter,
   reactivateLimiter,
   loginAttempts,
   getLockoutRecord,

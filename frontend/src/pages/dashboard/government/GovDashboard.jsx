@@ -9,7 +9,7 @@ import GovAnalytics from './GovAnalytics';
 import GovMessages from './GovMessages';
 import GovDepartments from './GovDepartments';
 import GovAlerts from './GovAlerts';
-import CreateAlertForm from './CreateAlertForm';
+import PublicAlertForm from '../alerts/PublicAlertForm';
 import CitizenProfile from '../citizen/CitizenProfile';
 import NotificationBell from '../../../components/common/NotificationBell';
 import GovFundraising from './GovFundraising';
@@ -43,7 +43,7 @@ export default function GovernmentDashboard() {
         <Route path="fundraising" element={<GovFundraising />} />
         <Route path="donations" element={<GovDonations />} />
         <Route path="alerts" element={<GovAlerts />} />
-        <Route path="alerts/create" element={<CreateAlertForm />} />
+        <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/government/alerts" />} />
         <Route path="analytics" element={<GovAnalytics />} />
         <Route path="messages" element={<GovMessages />} />
         <Route path="notifications" element={<NotificationBell />} />

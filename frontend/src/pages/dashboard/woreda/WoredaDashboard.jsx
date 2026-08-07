@@ -14,6 +14,8 @@ import SharedNotifications from '../shared/SharedNotifications';
 import SharedSettings from '../shared/SharedSettings';
 import CitizenMessages from '../citizen/CitizenMessages';
 import CitizenProfile from '../citizen/CitizenProfile';
+import WoredaAlerts from './WoredaAlerts';
+import PublicAlertForm from '../alerts/PublicAlertForm';
 
 export default function WoredaDashboard() {
   const { t } = useTranslation();
@@ -28,6 +30,7 @@ export default function WoredaDashboard() {
     { path: `${base}/municipal-complaints`, icon: '📝', label: 'Municipal Complaints' },
     { path: `${base}/governance-complaints`, icon: '⚖️', label: 'Governance Complaints' },
     { path: `${base}/analytics`, icon: '📈', label: t('dashboard.analyticsTitle') },
+    { path: `${base}/alerts`, icon: '📢', label: 'Public Alerts' },
     { path: `${base}/notifications`, icon: '🔔', label: t('dashboard.notifications') },
     { path: `${base}/messages`, icon: '💬', label: t('dashboard.messages') },
     { path: `${base}/profile`, icon: '👤', label: t('dashboard.profile') },
@@ -45,6 +48,8 @@ export default function WoredaDashboard() {
         <Route path="governance-complaints" element={<GovernanceComplaintList basePath={`${base}/governance-complaints`} />} />
         <Route path="governance-complaints/:id" element={<GovernanceComplaintDetail basePath={`${base}/governance-complaints`} />} />
         <Route path="analytics" element={<WoredaAnalytics />} />
+        <Route path="alerts" element={<WoredaAlerts />} />
+        <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/woreda/alerts" />} />
         <Route path="notifications" element={<SharedNotifications />} />
         <Route path="messages" element={<CitizenMessages />} />
         <Route path="profile" element={<CitizenProfile />} />

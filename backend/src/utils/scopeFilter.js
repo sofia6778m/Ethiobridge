@@ -41,7 +41,8 @@ const isSubcityAdminRole = (role) =>
 const subcityNameFor = (user) =>
   user.subcity || (user.role && SUBCITY_ROLE_MAP[user.role]) || '';
 
-// Build a Mongo query filter for PublicComplaint based on the logged-in user's role.
+// Build a Mongo query filter for complaint documents based on the logged-in
+// user's role.
 //
 // Subcity names in the DB can be any casing (e.g. 'bole', 'Bole', 'BOLE').
 // We use a case-insensitive regex for subcity comparisons so that subcity_*

@@ -367,6 +367,8 @@ describe('officer <> citizen communication', () => {
     assert.equal(fresh.officerResponses[0].message, 'We have located your file and will process it this week.');
     const notif = await Notification.findOne({ recipient: citizen._id });
     assert.ok(notif, 'citizen should receive an in-app notification of the response');
+    const actorNotif = await Notification.findOne({ recipient: officer._id });
+    assert.equal(actorNotif, null, 'the acting officer must never be notified of their own action');
     assert.equal(json.data.displayStatus, 'New');
   });
 

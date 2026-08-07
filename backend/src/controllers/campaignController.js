@@ -7,7 +7,7 @@ const Subcity = require('../models/Subcity');
 const Woreda = require('../models/Woreda');
 const InfrastructureReport = require('../models/InfrastructureReport');
 const EmergencyReport = require('../models/EmergencyReport');
-const createNotification = require('../utils/createNotification');
+const { notifyUsers } = require('../services/notificationService');
 const { logAction } = require('../middleware/auditLog');
 const {
   CAMPAIGN_CATEGORIES,
@@ -17,11 +17,18 @@ const {
 
 const getIo = (req) => req.app?.get('io') || null;
 
-const notify = async (req, users, { title, message, type, relatedId }) => {
+const notify = async (req, users, { title, message, type, relatedId, actorId }) => {
   const io = getIo(req);
-  for (const uid of users) {
-    await createNotification({ recipient: uid, title, message, type, relatedReport: relatedId, relatedReportType: 'campaign', io });
-  }
+  await notifyUsers({
+    userIds: users,
+    actorId,
+    title,
+    message,
+    type,
+    relatedReport: relatedId,
+    relatedReportType: 'campaign',
+    io,
+  });
 };
 
 // ── Local government office scope ─────────────────────────────────────────────
@@ -218,6 +225,7 @@ exports.createCampaign = async (req, res) => {
         message: `"${campaign.title}" has been created and needs approval.`,
         type: 'campaign_approval',
         relatedId: campaign._id,
+        actorId: req.user._id,
       });
     }
 
@@ -272,6 +280,7 @@ exports.approveCampaign = async (req, res) => {
       message: `Your campaign "${campaign.title}" has been approved and is now active.`,
       type: 'campaign_approved',
       relatedId: campaign._id,
+      actorId: req.user._id,
     });
 
     res.json({ success: true, data: campaign });
@@ -728,6 +737,7 @@ exports.completeCampaign = async (req, res) => {
       message: `"${campaign.title}" has been marked as completed. Add your impact metrics and proof-of-work so donors can see the outcome.`,
       type: 'campaign_approved',
       relatedId: campaign._id,
+      actorId: req.user._id,
     });
 
     res.json({ success: true, data: campaign });
@@ -832,6 +842,7 @@ exports.donate = async (req, res) => {
       message: `${isAnonymous ? 'Anonymous' : (donorName || 'Someone')} donated ${amount} ETB to "${campaign.title}"`,
       type: 'donation_received',
       relatedId: campaign._id,
+      actorId: req.user?._id,
     });
 
     res.status(201).json({
@@ -1174,6 +1185,7 @@ exports.createCampaignFromReport = async (req, res) => {
       message: `"${campaign.title}" was created from a ${reportType} report and needs approval.`,
       type: 'campaign_approval',
       relatedId: campaign._id,
+      actorId: req.user._id,
     });
 
     res.status(201).json({ success: true, data: campaign });

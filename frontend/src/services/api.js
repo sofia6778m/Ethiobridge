@@ -193,13 +193,9 @@ export const adminAPI = {
 // The single source of truth for SUBMISSION forms. Each form posts to its own
 // endpoint so the backend always stores the report under the correct collection
 // with the correct report_type — for logged-in and anonymous citizens alike:
-//   POST /api/reports/infrastructure   → InfrastructureReport (IR-… reportId)
-//   POST /api/reports/public-complaint → PublicComplaint     (trackingNumber)
+//   POST /api/reports/infrastructure → InfrastructureReport (IR-… reportId)
 export const reportAPI = {
   createInfrastructure: (data) => API.post('/reports/infrastructure', data, {
-    headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
-  }),
-  createPublicComplaint: (data) => API.post('/reports/public-complaint', data, {
     headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
   }),
 };
@@ -211,9 +207,20 @@ export const publicAPI = {
   getMapMarkers: () => API.get('/public/map-markers'),
   getVolunteers: (params) => API.get('/public/volunteers', { params }),
   submitContact: (data) => API.post('/public/contact', data),
-  getSubcityWoredas: (subcity) => API.get('/public-complaints/subcity-woredas', { params: { subcity } }),
+  getSubcityWoredas: (subcity) => API.get('/public/subcity-woredas', { params: { subcity } }),
   getDepartments: (params) => API.get('/public/departments', { params }),
   getSubcities: () => API.get('/public/subcities'),
+  // Server clock — used by forms that must validate against the real server
+  // time (Africa/Addis_Ababa) instead of a possibly-skewed browser clock.
+  getServerTime: () => API.get('/time'),
+};
+
+// ---- Public tracking (no login) ----
+// POST /api/public-track — look up a report/complaint by tracking id + the phone
+// number it was registered with. Returns a redacted status/timeline or a generic
+// 404 (identical for unknown id and wrong phone). No auth required.
+export const publicTrackAPI = {
+  track: (data) => API.post('/public-track', data),
 };
 
 // ---- Users (role-scoped lists for assignment dropdowns) ----
@@ -224,34 +231,6 @@ export const userAPI = {
   getTechnicians: (params) => API.get('/users/technicians', { params }),
 };
 
-// ---- Public Complaints ----
-export const complaintAPI = {  create: (data) => API.post('/public-complaints', data, {
-    headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
-  }),
-  getAll: (params) => API.get('/public-complaints', { params }),
-  getOne: (id) => API.get(`/public-complaints/${id}`),
-  track: (trackingNumber, params) => API.get(`/public-complaints/track/${trackingNumber}`, { params }),
-  updateStatus: (id, data) => API.patch(`/public-complaints/${id}/status`, data),
-  getStats: () => API.get('/public-complaints/stats'),
-  getAssignableUsers: (params) => API.get('/public-complaints/assignable-users', { params }),
-  assignOfficer: (id, data) => API.put(`/public-complaints/${id}/assign-officer`, data),
-  assignTechnician: (id, data) => API.put(`/public-complaints/${id}/assign-technician`, data),
-  acceptOfficer: (id) => API.put(`/public-complaints/${id}/accept-officer`, {}),
-  updateTechnicianWorkState: (id, data) => API.put(`/public-complaints/${id}/technician-work-state`, data),
-  verifyWork: (id, data) => API.put(`/public-complaints/${id}/verify`, data),
-  closeComplaint: (id, data) => API.put(`/public-complaints/${id}/close`, data),
-  escalate: (id, data) => API.put(`/public-complaints/${id}/escalate`, data),
-  addInternalNote: (id, data) => API.post(`/public-complaints/${id}/internal-notes`, data),
-  // Citizen complaint workflow — department officer actions
-  acceptComplaint: (id) => API.post(`/public-complaints/${id}/accept`),
-  rejectComplaint: (id, data) => API.post(`/public-complaints/${id}/reject`, data),
-  requestMoreInfo: (id, data) => API.post(`/public-complaints/${id}/request-info`, data),
-  markWaitingParts: (id, data) => API.post(`/public-complaints/${id}/waiting-parts`, data),
-  forwardToSubcity: (id, data) => API.post(`/public-complaints/${id}/forward`, data),
-  resolveBySubcity: (id, data) => API.post(`/public-complaints/${id}/resolve-by-subcity`, data),
-  getAudit: (id) => API.get(`/public-complaints/${id}/audit`),
-};
-
 // ---- Public Alerts & Broadcasts ----
 export const alertAPI = {
   // Public
@@ -259,13 +238,23 @@ export const alertAPI = {
   getOne: (id) => API.get(`/alerts/${id}`),
   // Citizen — location-matched alerts + subscription preferences
   getMyAlerts: (params) => API.get('/alerts/my', { params }),
+  getUnreadCount: () => API.get('/alerts/my/unread-count'),
+  markRead: (id) => API.post(`/alerts/${id}/read`),
   getSubscriptions: () => API.get('/alerts/subscriptions/me'),
   updateSubscriptions: (data) => API.put('/alerts/subscriptions/me', data),
   // Management (role-scoped)
   getAll: (params) => API.get('/alerts/manage', { params }),
   getManaged: (id) => API.get(`/alerts/manage/${id}`),
-  create: (data) => API.post('/alerts', data),
-  update: (id, data) => API.put(`/alerts/${id}`, data),
+  create: (data) =>
+    API.post('/alerts', data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  update: (id, data) =>
+    API.put(`/alerts/${id}`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  publish: (id) => API.post(`/alerts/${id}/publish`),
+  archive: (id) => API.post(`/alerts/${id}/archive`),
   updateStatus: (id, data) => API.patch(`/alerts/${id}/status`, data),
   delete: (id) => API.delete(`/alerts/${id}`),
   // Analytics
@@ -273,7 +262,6 @@ export const alertAPI = {
   getAnalytics: () => API.get('/alerts/analytics'),
   getAuditLogs: (params) => API.get('/alerts/audit', { params }),
   exportAlerts: (format, params) => API.get('/alerts/export', { params: { ...params, format }, responseType: 'blob' }),
-  getComplaintClusters: (params) => API.get('/alerts/complaint-clusters', { params }),
 };
 
 // ---- Workflow (Administrative Levels) ----
@@ -354,9 +342,6 @@ export const deptAPI = {
   markComplete: (id, data) => API.put(`/department/reports/${id}/complete`, data, {
     headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
   }),
-  // Public complaints routed to this department
-  getComplaints: (params) => API.get('/department/complaints', { params }),
-  updateComplaintStatus: (id, data) => API.patch(`/department/complaints/${id}/status`, data),
 };
 
 // ---- Workflow Complaints ----
@@ -432,6 +417,12 @@ export const municipalComplaintAPI = {
   reopen: (id) => API.post(`/municipal-complaints/${id}/reopen`),
   close: (id) => API.post(`/municipal-complaints/${id}/close`),
   feedback: (id, data) => API.post(`/municipal-complaints/${id}/feedback`, data),
+  addEvidence: (id, data) =>
+    API.post(`/municipal-complaints/${id}/evidence`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  resolutionLetter: (id) =>
+    API.get(`/municipal-complaints/${id}/resolution-letter`, { responseType: 'blob' }),
 
   // Dashboard widgets + exports
   getStats: () => API.get('/municipal-complaints/stats'),
@@ -467,8 +458,13 @@ export const governanceComplaintAPI = {
     API.post(`/governance-complaints/${id}/evidence`, data, {
       headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
     }),
+  citizenReply: (id, data) =>
+    API.post(`/governance-complaints/${id}/citizen-reply`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
   reopen: (id, data) => API.post(`/governance-complaints/${id}/reopen`, data),
   confirmResolution: (id) => API.post(`/governance-complaints/${id}/confirm-resolution`),
+  feedback: (id, data) => API.post(`/governance-complaints/${id}/feedback`, data),
   acknowledgment: (id) =>
     API.get(`/governance-complaints/${id}/acknowledgment`, { responseType: 'blob' }),
 

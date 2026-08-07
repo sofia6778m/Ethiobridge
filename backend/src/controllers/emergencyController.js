@@ -1,6 +1,7 @@
 const EmergencyReport = require('../models/EmergencyReport');
 const Assignment = require('../models/Assignment');
 const createNotification = require('../utils/createNotification');
+const { notifyUsers } = require('../services/notificationService');
 const User = require('../models/User');
 const { resolveDepartment } = require('../config/departmentRouting');
 
@@ -49,20 +50,26 @@ const findResponsibleUser = async (report) => {
 const notifyEmergencyStakeholders = async (req, { report, title, message, type, excludeUser }) => {
   const io = getIo(req);
   const userIds = new Set();
+  const excludeKey = excludeUser?.toString();
 
-  if (report.submittedBy && report.submittedBy.toString() !== excludeUser?.toString()) {
+  if (report.submittedBy && report.submittedBy.toString() !== excludeKey) {
     userIds.add(report.submittedBy.toString());
   }
 
   const admins = await User.find({ role: 'admin' }).select('_id');
-  for (const a of admins) userIds.add(a._id.toString());
+  for (const a of admins) {
+    if (a._id.toString() !== excludeKey) userIds.add(a._id.toString());
+  }
 
   const govUsers = await User.find({ role: 'government', isApproved: true }).select('_id');
-  for (const g of govUsers) userIds.add(g._id.toString());
+  for (const g of govUsers) {
+    if (g._id.toString() !== excludeKey) userIds.add(g._id.toString());
+  }
 
   for (const uid of userIds) {
     await createNotification({
       recipient: uid,
+      actorId: excludeUser,
       title,
       message,
       type,
@@ -112,57 +119,44 @@ const createReport = async (req, res) => {
     }
 
     const admins = await User.find({ role: 'admin' });
-    for (const admin of admins) {
-      await createNotification({
-        recipient: admin._id,
-        title: 'New Emergency Report',
-        message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
-        type: 'new_report',
-        relatedReport: report._id,
-        relatedReportType: 'emergency',
-        io,
-      });
-    }
+    await notifyUsers({
+      userIds: admins.map((a) => a._id),
+      actorId: req.user._id,
+      title: 'New Emergency Report',
+      message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
+      type: 'new_report',
+      relatedReport: report._id,
+      relatedReportType: 'emergency',
+      io,
+    });
 
     const targetGovUsers = await User.find({
       role: 'government',
       isApproved: true,
       organizationName: targetOrg,
     });
-    for (const gov of targetGovUsers) {
-      await createNotification({
-        recipient: gov._id,
-        title: 'New Emergency in Your Department',
-        message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
-        type: 'new_report',
-        relatedReport: report._id,
-        relatedReportType: 'emergency',
-        io,
-      });
-    }
+    await notifyUsers({
+      userIds: targetGovUsers.map((g) => g._id),
+      actorId: req.user._id,
+      title: 'New Emergency in Your Department',
+      message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
+      type: 'new_report',
+      relatedReport: report._id,
+      relatedReportType: 'emergency',
+      io,
+    });
 
     const otherGovUsers = await User.find({
       role: 'government',
       isApproved: true,
       organizationName: { $ne: targetOrg },
     });
-    for (const gov of otherGovUsers) {
-      await createNotification({
-        recipient: gov._id,
-        title: 'New Emergency Report',
-        message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
-        type: 'new_report',
-        relatedReport: report._id,
-        relatedReportType: 'emergency',
-        io,
-      });
-    }
-
-    await createNotification({
-      recipient: report.submittedBy,
-      title: 'Emergency Report Submitted',
-      message: `Your emergency report "${title}" has been submitted and routed to ${targetOrg}.`,
-      type: 'report_status',
+    await notifyUsers({
+      userIds: otherGovUsers.map((g) => g._id),
+      actorId: req.user._id,
+      title: 'New Emergency Report',
+      message: `Urgent: "${title}" (${emergencyType}) reported in ${region}. Routed to ${targetOrg}.`,
+      type: 'new_report',
       relatedReport: report._id,
       relatedReportType: 'emergency',
       io,
@@ -295,6 +289,7 @@ const verifyReport = async (req, res) => {
 
       await createNotification({
         recipient: report.submittedBy,
+        actorId: req.user._id,
         title: 'Emergency Report Rejected',
         message: `Your emergency report "${report.title}" has been rejected. Reason: ${note || 'No reason'}`,
         type: 'verification',
@@ -308,6 +303,7 @@ const verifyReport = async (req, res) => {
         if (admin._id.toString() !== req.user._id.toString()) {
           await createNotification({
             recipient: admin._id,
+            actorId: req.user._id,
             title: 'Emergency Report Rejected',
             message: `Emergency "${report.title}" (${report.reportId}) has been rejected. Reason: ${note || 'No reason'}`,
             type: 'report_status',
@@ -364,18 +360,22 @@ const verifyReport = async (req, res) => {
         notes: `Auto-assigned based on emergency type routing (${report.emergencyType} -> ${orgName})`,
       });
 
-      await createNotification({
-        recipient: responsibleUser._id,
-        title: 'Emergency Report Assignment',
-        message: `Emergency "${report.title}" (${report.reportId}) has been automatically assigned to you. Department: ${orgName}.`,
-        type: 'assignment',
-        relatedReport: report._id,
-        relatedReportType: 'emergency',
-        io,
-      });
+      if (responsibleUser._id.toString() !== req.user._id.toString()) {
+        await createNotification({
+          recipient: responsibleUser._id,
+          actorId: req.user._id,
+          title: 'Emergency Report Assignment',
+          message: `Emergency "${report.title}" (${report.reportId}) has been automatically assigned to you. Department: ${orgName}.`,
+          type: 'assignment',
+          relatedReport: report._id,
+          relatedReportType: 'emergency',
+          io,
+        });
+      }
 
       await createNotification({
         recipient: report.submittedBy,
+        actorId: req.user._id,
         title: 'Emergency Verified & Assigned',
         message: `Your emergency "${report.title}" has been verified and assigned to ${responsibleUser.fullName} (${orgName}).`,
         type: 'report_status',
@@ -389,6 +389,7 @@ const verifyReport = async (req, res) => {
         if (admin._id.toString() !== req.user._id.toString() && admin._id.toString() !== responsibleUser._id.toString()) {
           await createNotification({
             recipient: admin._id,
+            actorId: req.user._id,
             title: 'Emergency Auto-Assigned',
             message: `Emergency "${report.title}" (${report.reportId}) verified and auto-assigned to ${responsibleUser.fullName} (${orgName}).`,
             type: 'report_status',
@@ -459,6 +460,7 @@ const acceptRequest = async (req, res) => {
 
     await createNotification({
       recipient: report.submittedBy,
+      actorId: req.user._id,
       title: 'Help is on the way',
       message: `${req.user.organizationName || req.user.fullName} has accepted your emergency request "${report.title}".`,
       type: 'report_status',
@@ -472,6 +474,7 @@ const acceptRequest = async (req, res) => {
       if (admin._id.toString() !== req.user._id.toString()) {
         await createNotification({
           recipient: admin._id,
+          actorId: req.user._id,
           title: 'Emergency Request Accepted',
           message: `${req.user.organizationName || req.user.fullName} accepted emergency "${report.title}" (${report.reportId}).`,
           type: 'report_status',
@@ -487,6 +490,7 @@ const acceptRequest = async (req, res) => {
       if (gov._id.toString() !== req.user._id.toString()) {
         await createNotification({
           recipient: gov._id,
+          actorId: req.user._id,
           title: 'Emergency Request Accepted',
           message: `${req.user.organizationName || req.user.fullName} accepted emergency "${report.title}" (${report.reportId}).`,
           type: 'report_status',

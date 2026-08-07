@@ -126,6 +126,18 @@ const auditEntrySchema = new mongoose.Schema(
   { timestamps: { createdAt: 'at', updatedAt: false } }
 );
 
+// Message sent by the citizen reporter back to the assigned office — the
+// reporter's side of the conversation feed on the Municipal Complaints page.
+const citizenReplySchema = new mongoose.Schema(
+  {
+    message: { type: String, required: true, trim: true },
+    files: [{ type: String }],
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    userName: { type: String, default: '' },
+  },
+  { timestamps: { createdAt: 'at', updatedAt: false } }
+);
+
 // ── Main schema ───────────────────────────────────────────────────────────────
 
 const governanceComplaintSchema = new mongoose.Schema(
@@ -205,6 +217,13 @@ const governanceComplaintSchema = new mongoose.Schema(
     // Citizen confirmation of the resolution
     confirmedByCitizen: { type: Boolean, default: false },
     confirmedAt: { type: Date },
+    // Reporter → office conversation feed + post-resolution service rating.
+    citizenReplies: [citizenReplySchema],
+    citizenFeedback: {
+      rating: { type: Number, min: 1, max: 5 },
+      comment: { type: String, default: '', trim: true },
+      at: { type: Date },
+    },
     // Logs
     timeline: [timelineEntrySchema],
     auditTrail: [auditEntrySchema],

@@ -94,6 +94,62 @@ const generateComplaintPDF = (complaints, res) => {
   doc.end();
 };
 
+// ── Resolution letter PDF (single complaint) ──────────────────────────────────
+// Official one-page resolution letter a citizen can download from the Municipal
+// Complaints page once their complaint has been resolved.
+const generateResolutionLetterPDF = (c, res) => {
+  const doc = new PDFDocument({ margin: 60, size: 'A4' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename=resolution-letter-${c.trackingId || Date.now()}.pdf`);
+  doc.pipe(res);
+
+  doc.fontSize(20).font('Helvetica-Bold').fillColor('#000').text('RESOLUTION LETTER', { align: 'center' });
+  doc.moveDown(0.2);
+  doc.fontSize(9).font('Helvetica').fillColor('#666').text(
+    `Addis Ababa City Administration · EthioBridge Complaint Management System`,
+    { align: 'center' }
+  );
+  doc.moveDown(1);
+
+  doc.fontSize(12).font('Helvetica').fillColor('#333').text('To Whom It May Concern,', { lineGap: 4 });
+  doc.moveDown(0.5);
+  doc.fontSize(10).font('Helvetica').fillColor('#444').text(
+    `This is to certify that the following complaint has been officially resolved by the responsible department.`,
+    { lineGap: 4 }
+  );
+  doc.moveDown(0.8);
+
+  drawSection(doc, 'Complaint Details', [
+    ['Tracking ID', c.trackingId],
+    ['Title', c.title],
+    ['Issue Type', c.issueType],
+    ['Department', c.category || c.department || c.assignedToDepartment],
+    ['Subcity', c.subcity],
+    ['Woreda', c.woredaName],
+    ['Location', c.locationText],
+    ['Submitted On', c.createdAt ? new Date(c.createdAt).toLocaleDateString() : '—'],
+  ]);
+
+  drawSection(doc, 'Resolution', [
+    ['Status', c.status],
+    ['Resolved On', c.resolvedAt ? new Date(c.resolvedAt).toLocaleString() : '—'],
+    ['Resolved By', c.resolvedByName || '—'],
+  ]);
+
+  doc.moveDown(0.5);
+  doc.fontSize(10).font('Helvetica-Bold').fillColor('#333').text('Resolution Summary');
+  doc.moveDown(0.3);
+  doc.fontSize(10).font('Helvetica').fillColor('#555').text(c.resolutionNote || 'No resolution summary was provided.', { lineGap: 4 });
+
+  doc.moveDown(1.5);
+  doc.fontSize(10).font('Helvetica').fillColor('#666').text(
+    'This letter is generated electronically by the EthioBridge system and serves as an official record of resolution.',
+    { align: 'center', lineGap: 4 }
+  );
+
+  doc.end();
+};
+
 // ── Excel (SpreadsheetML) ─────────────────────────────────────────────────────
 
 const generateComplaintExcel = (complaints) => {
@@ -168,4 +224,4 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-module.exports = { generateComplaintPDF, generateComplaintExcel };
+module.exports = { generateComplaintPDF, generateComplaintExcel, generateResolutionLetterPDF };

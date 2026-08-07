@@ -10,7 +10,7 @@ import API from '../services/api';
 //   { subcities: [...] }                 /api/public/subcities, /api/admin/subcities
 //   { data: [...] }                      /api/subcities, /api/woredas?subcityId=
 //   { data: { subcities: [...] } }       legacy nested shape
-//   { data: { woredas: [...] } }         /api/public-complaints/subcity-woredas
+//   { data: { woredas: [...] } }         /api/public/subcity-woredas
 export const extractList = (res, key) => {
   const body = res?.data && typeof res.data === 'object' ? res.data : res;
   if (!body || typeof body !== 'object') return [];

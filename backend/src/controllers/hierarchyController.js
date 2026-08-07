@@ -1252,6 +1252,7 @@ const assignOfficerToComplaint = async (req, res) => {
     const createNotification = require('../utils/createNotification');
     await createNotification({
       recipient: officer._id,
+      actorId: req.user._id,
       title: `Complaint ${complaint.trackingId} assigned to you`,
       message: `"${complaint.title}" (${complaint.department}, ${woreda.name}). Please review and act.`,
       type: 'complaint_assigned',
@@ -1300,6 +1301,7 @@ const assignTechnicianToComplaint = async (req, res) => {
     const createNotification = require('../utils/createNotification');
     await createNotification({
       recipient: technician._id,
+      actorId: req.user._id,
       title: `Work order assigned — ${complaint.trackingId}`,
       message: `Work order for "${complaint.title}" (${complaint.department}, ${woreda.name}). ${complaint.workOrderNotes || ''}`,
       type: 'complaint_assigned',
@@ -1578,6 +1580,7 @@ const officerAssignTechnician = async (req, res) => {
     const createNotification = require('../utils/createNotification');
     await createNotification({
       recipient: technician._id,
+      actorId: req.user._id,
       title: `Work order assigned — ${complaint.trackingId}`,
       message: `Work order for "${complaint.title}" (${complaint.department}). ${complaint.workOrderNotes || ''}`,
       type: 'complaint_assigned',
@@ -1716,6 +1719,7 @@ const technicianCompleteWork = async (req, res) => {
     if (complaint.assignedTo) {
       await createNotification({
         recipient: complaint.assignedTo,
+        actorId: req.user._id,
         title: `Work completed — ${complaint.trackingId}`,
         message: `Technician work on "${complaint.title}" is complete. Please verify the resolution.`,
         type: 'complaint_status',

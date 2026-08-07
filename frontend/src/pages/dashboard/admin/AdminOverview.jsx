@@ -78,7 +78,6 @@ export default function AdminOverview() {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <StatCard icon="⏳" label={t('adminStats.pendingReports')}    value={stats.pendingReports}   color="bg-amber-100"  iconColor="text-amber-600" />
               <StatCard icon="✅" label={t('adminStats.resolvedReports')}   value={stats.resolvedReports}  color="bg-green-100"  iconColor="text-green-600" />
-              <StatCard icon="📢" label={t('adminStats.publicComplaints')} value={stats.publicComplaints} color="bg-rose-100"   iconColor="text-rose-600" />
             </div>
           </div>
         </>

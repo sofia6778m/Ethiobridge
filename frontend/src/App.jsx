@@ -19,11 +19,11 @@ import PrivacyPolicy from './pages/public/PrivacyPolicy';
 import Terms from './pages/public/Terms';
 import ReportDetail from './pages/public/ReportDetail';
 import TrackReport from './pages/public/TrackReport';
-import ComplaintTrack from './pages/public/ComplaintTrack';
 import PublicReportSelection from './pages/public/PublicReportSelection';
 import PublicInfrastructureReport from './pages/public/PublicInfrastructureReport';
 import PublicGovernanceComplaint from './pages/public/PublicGovernanceComplaint';
 import GovernanceTrack from './pages/public/GovernanceTrack';
+import PublicTrack from './pages/public/PublicTrack';
 import WorkflowComplaintSubmit from './pages/public/WorkflowComplaintSubmit';
 import Fundraising from './pages/public/Fundraising';
 import FundraisingDetail from './pages/public/FundraisingDetail';
@@ -113,11 +113,11 @@ const AppRoutes = () => {
         <Route path="/privacy-policy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/track-report" element={<TrackReport />} />
-        <Route path="/track-complaint" element={<ComplaintTrack />} />
         <Route path="/report" element={<PublicReportSelection />} />
         <Route path="/report/infrastructure" element={<PublicInfrastructureReport />} />
         <Route path="/report/governance-complaint" element={<PublicGovernanceComplaint />} />
         <Route path="/track/governance/:trackingId" element={<GovernanceTrack />} />
+        <Route path="/track" element={<PublicTrack />} />
         <Route path="/report/workflow-complaint" element={<WorkflowComplaintSubmit />} />
         <Route path="/fundraising" element={<Fundraising />} />
         <Route path="/fundraising/:id" element={<FundraisingDetail />} />

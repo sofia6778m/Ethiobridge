@@ -15,9 +15,9 @@ const REPORT_TYPES = [
   {
     to: '/report/governance-complaint',
     icon: '⚖️',
-    title: 'Governance Complaint',
+    title: 'Public Complaint',
     desc: 'Report corruption, service delays, staff misconduct, poor government service, lack of transparency, office-related complaints, and other governance issues.',
-    btnText: 'Create Governance Complaint',
+    btnText: 'Create Public Complaint',
     accent: 'from-emerald-600 via-emerald-700 to-teal-700',
     chip: 'bg-emerald-100 dark:bg-emerald-900/40',
     ring: 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-900/10 hover:border-emerald-400 hover:shadow-emerald-200/60 dark:hover:border-emerald-600',

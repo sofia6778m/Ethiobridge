@@ -33,6 +33,12 @@ const errorHandler = (err, req, res, next) => {
     message = 'Token expired';
   }
 
+  // Multer / file-upload errors (oversized file, too many files, unexpected field)
+  if (err.name === 'MulterError' || (err.code && String(err.code).startsWith('LIMIT_'))) {
+    statusCode = 400;
+    message = err.message || 'File upload failed';
+  }
+
   res.status(statusCode).json({
     success: false,
     message,

@@ -64,7 +64,7 @@ export default function EmergencyAlertBanner() {
           🚨 {t('alert.emergencyBanner')}
         </Link>
         <span className="text-sm text-red-100 min-w-0 truncate flex-1">
-          {getCategory(primary.category).icon} {primary.title}
+          {(getCategory(primary.category) || { icon: '📢' }).icon} {primary.title}
           <span className="hidden sm:inline text-red-200"> — {locationString(primary)}</span>
         </span>
         {emergencies.length > 1 && (

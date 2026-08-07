@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../../context/AuthContext';
-import { subcityAPI, woredaAPI, complaintAPI } from '../../../services/api';
+import { subcityAPI, woredaAPI } from '../../../services/api';
 
 const SUB_CITY_LABELS = {
   subcity_bole: 'Bole',
@@ -13,22 +13,15 @@ export default function SharedOverview() {
   const role = user?.role;
   const isSubcity = role?.startsWith('subcity_');
   const isWoreda = role === 'woreda';
-  const isWoredaAdmin = role === 'woreda_admin';
-  const isDepartmentOfficer = role === 'department_officer';
 
   const [stats, setStats] = useState(null);
-  const [complaintStats, setComplaintStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [r1, r2] = await Promise.all([
-          isSubcity ? subcityAPI.getStats() : isWoreda ? woredaAPI.getStats() : Promise.resolve(null),
-          complaintAPI.getStats(),
-        ]);
-        if (r1) setStats(r1.data.stats);
-        if (r2) setComplaintStats(r2.data.data);
+        const res = isSubcity ? await subcityAPI.getStats() : isWoreda ? await woredaAPI.getStats() : null;
+        if (res) setStats(res.data.stats);
       } catch (err) {
         console.error('Failed to fetch dashboard stats:', err);
       } finally {
@@ -42,20 +35,7 @@ export default function SharedOverview() {
     ? (SUB_CITY_LABELS[role] || '') + ' Subcity'
     : isWoreda
       ? user?.woredaName || 'My Woreda'
-      : isWoredaAdmin
-        ? [user?.subcity, user?.woredaName].filter(Boolean).join(' · ') || 'My Woreda'
-        : isDepartmentOfficer
-          ? [user?.subcity, user?.woredaName, user?.department].filter(Boolean).join(' · ') || 'My Department'
-          : '';
-
-  const complaintTotal = complaintStats?.total || 0;
-  const complaintResolved = complaintStats?.byStatus?.Resolved || 0;
-  const complaintPending = (complaintStats?.byStatus?.Submitted || 0) + (complaintStats?.byStatus?.['Under Review'] || 0);
-  const complaintInProgress = complaintStats?.byStatus?.['In Progress'] || 0;
-  const complaintForwarded = complaintStats?.byStatus?.['Forwarded to Subcity'] || 0;
-  const complaintWaitingParts = complaintStats?.byStatus?.['Waiting for Parts'] || 0;
-  const complaintAwaitingInfo = complaintStats?.byStatus?.['More Info Requested'] || 0;
-  const complaintOverdue = complaintStats?.summary?.overdue || 0;
+      : '';
 
   const statCards = isSubcity
     ? [
@@ -71,18 +51,7 @@ export default function SharedOverview() {
           { icon: '🔄', label: 'In Progress', value: stats?.inProgressReports || 0, color: 'text-blue-600 dark:text-blue-400' },
           { icon: '✅', label: 'Resolved', value: stats?.resolvedReports || 0, color: 'text-green-600 dark:text-green-400' },
         ]
-      : isWoredaAdmin || isDepartmentOfficer
-        ? [
-            { icon: '📋', label: 'Total Complaints', value: complaintTotal, color: 'text-gray-800 dark:text-gray-200' },
-            { icon: '⏳', label: 'Pending', value: complaintStats?.summary?.pending || complaintPending, color: 'text-yellow-600 dark:text-yellow-400' },
-            { icon: '🔄', label: 'In Progress', value: complaintStats?.summary?.inProgress || complaintInProgress, color: 'text-blue-600 dark:text-blue-400' },
-            { icon: '➡️', label: 'Forwarded to Subcity', value: complaintForwarded, color: 'text-orange-600 dark:text-orange-400' },
-          ]
-        : [];
-
-  const departmentEntries = isWoredaAdmin
-    ? Object.entries(complaintStats?.byDepartment || {}).sort((a, b) => b[1] - a[1])
-    : [];
+      : [];
 
   return (
     <div className="space-y-6">
@@ -123,38 +92,6 @@ export default function SharedOverview() {
               </div>
             </div>
           )}
-
-          <div className="card p-6">
-            <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3">Complaints Overview</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <MiniStat label="Total Complaints" value={complaintTotal} color="text-gray-800 dark:text-gray-200" />
-              <MiniStat label="Pending / Under Review" value={complaintPending} color="text-yellow-600 dark:text-yellow-400" />
-              <MiniStat label="Resolved" value={complaintResolved} color="text-green-600 dark:text-green-400" />
-            </div>
-          </div>
-
-          {isDepartmentOfficer && (
-            <div className="card p-6">
-              <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3">Action Needed</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                <MiniStat label="Waiting for Parts" value={complaintWaitingParts} color="text-orange-600 dark:text-orange-400" />
-                <MiniStat label="Awaiting Citizen Info" value={complaintAwaitingInfo} color="text-yellow-600 dark:text-yellow-400" />
-                <MiniStat label="Forwarded to Subcity" value={complaintForwarded} color="text-blue-600 dark:text-blue-400" />
-                <MiniStat label="Overdue (SLA)" value={complaintOverdue} color="text-red-600 dark:text-red-400" />
-              </div>
-            </div>
-          )}
-
-          {isWoredaAdmin && departmentEntries.length > 0 && (
-            <div className="card p-6">
-              <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-3">Complaints by Department</h3>
-              <div className="space-y-2">
-                {departmentEntries.map(([dept, count]) => (
-                  <Row key={dept} label={dept} value={count} color="text-gray-800 dark:text-gray-200" />
-                ))}
-              </div>
-            </div>
-          )}
         </>
       )}
     </div>
@@ -177,15 +114,6 @@ function Row({ label, value, color }) {
     <div className="flex justify-between text-sm">
       <span className="text-gray-500 dark:text-gray-400">{label}</span>
       <span className={`font-semibold ${color}`}>{value}</span>
-    </div>
-  );
-}
-
-function MiniStat({ label, value, color }) {
-  return (
-    <div className="text-center">
-      <p className={`text-2xl font-bold ${color}`}>{value}</p>
-      <p className="text-xs text-gray-500 mt-1">{label}</p>
     </div>
   );
 }

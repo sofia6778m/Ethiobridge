@@ -38,7 +38,6 @@ export default function Home() {
     { icon:'📋', label:t('home.totalReports'),       value: stats.totalReports,       color:'bg-blue-100 dark:bg-blue-900/30',   iconColor:'text-blue-600 dark:text-blue-400' },
     { icon:'⚡', label:t('home.activeReports'),      value: stats.activeReports,      color:'bg-orange-100 dark:bg-orange-900/30', iconColor:'text-orange-600 dark:text-orange-400' },
     { icon:'✅', label:t('home.resolvedReports'),    value: stats.resolvedReports,    color:'bg-green-100 dark:bg-green-900/20',  iconColor:'text-green-600 dark:text-green-400' },
-    { icon:'📢', label:'Public Complaints',          value: stats.publicComplaints ?? 0, color:'bg-amber-100 dark:bg-amber-900/30', iconColor:'text-amber-600 dark:text-amber-400' },
     { icon:'👥', label:t('home.registeredCitizens'), value: stats.registeredCitizens, color:'bg-purple-100 dark:bg-purple-900/30', iconColor:'text-purple-600 dark:text-purple-400' },
     { icon:'🏛️', label:t('home.govOrgs'),            value: stats.govOrgs,            color:'bg-yellow-100 dark:bg-yellow-900/30', iconColor:'text-yellow-600 dark:text-yellow-400' },
     { icon:'🤝', label:t('home.ngoOrgs'),            value: stats.ngoOrgs,            color:'bg-pink-100 dark:bg-pink-900/30',   iconColor:'text-pink-600 dark:text-pink-400' },
@@ -80,7 +79,7 @@ export default function Home() {
               Create Report
             </Link>
             <Link
-              to="/track-complaint"
+              to="/track"
               className="bg-white/10 backdrop-blur-sm border border-white/30 hover:bg-white/20 text-white font-semibold py-3 px-8 rounded-xl transition-colors"
             >
               Check Status
@@ -106,7 +105,7 @@ export default function Home() {
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[
               { icon:'🏗️', title:'Infrastructure Report', desc:'Report damaged roads, bridges, water supply, electricity, drainage, schools, hospitals, and other public infrastructure.', btnText:'Create Infrastructure Report', to:'/report/infrastructure', color:'bg-blue-600', light:'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' },
-              { icon:'⚖️', title:'Governance Complaint', desc:'Report corruption, service delays, staff misconduct, poor government service, lack of transparency, office-related complaints, and other governance issues.', btnText:'Create Governance Complaint', to:'/report/governance-complaint', color:'bg-emerald-600', light:'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' },
+              { icon:'⚖️', title:'Public Complaint', desc:'Report corruption, service delays, staff misconduct, poor government service, lack of transparency, office-related complaints, and other governance issues.', btnText:'Create Public Complaint', to:'/report/governance-complaint', color:'bg-emerald-600', light:'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' },
               { icon:'📢', title:'Public Alerts & Broadcasts', desc:'Receive real-time weather updates and public service advisories directly from government authorities.', btnText:'View Active Alerts', to:'/alerts', color:'bg-red-600', light:'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400', badge: true },
             ].map((c, i) => (
               <div key={i} className="card hover:shadow-lg transition-shadow group">
