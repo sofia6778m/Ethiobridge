@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { alertAPI } from '../../services/api';
-import { ALERT_CATEGORIES, ALERT_SEVERITIES } from '../../utils/alertMeta';
+import { useSocket } from '../../context/SocketContext';
+import { ALERT_SEVERITIES } from '../../utils/alertMeta';
 import AlertCard from '../../components/common/AlertCard';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import EmptyState from '../../components/common/EmptyState';
@@ -15,10 +16,17 @@ const SUB_CITY_WOREDAS = {
   LEMMI_KURA: ['Woreda 05', 'Woreda 06'],
 };
 
+// "BOLE" / "YEKA" / "LEMMI_KURA" URL keys vs stored names like "Lemmi Kura".
+const normalizePlace = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const isLive = (s) => s === 'published' || s === 'active';
+
 export default function PublicAlerts() {
   const { t } = useTranslation();
+  const { on } = useSocket() || {};
   const [searchParams, setSearchParams] = useSearchParams();
   const [alerts, setAlerts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(parseInt(searchParams.get('page') || '1', 10));
   const [pages, setPages] = useState(1);
@@ -31,6 +39,97 @@ export default function PublicAlerts() {
   const q = searchParams.get('q') || '';
 
   const woredasFor = (sub) => SUB_CITY_WOREDAS[sub.toUpperCase()] || [];
+
+  // Client-side mirror of the backend public filters, used to decide whether a
+  // real-time alert belongs on this page (live status, unexpired, matches the
+  // active category/severity/location/search filters).
+  const matchesFilters = useCallback((a) => {
+    if (!a || !isLive(a.status)) return false;
+    if (a.expiresAt && new Date(a.expiresAt) <= new Date()) return false;
+    if (category && a.category !== category) return false;
+    if (severity && a.severity !== severity) return false;
+    if (subcity) {
+      const targets = [a.subcityName, ...(a.subcityNames || [])].map(normalizePlace);
+      if (a.scope !== 'all' && !targets.includes(normalizePlace(subcity))) return false;
+    }
+    if (woreda) {
+      const targets = [a.woredaName, ...(a.woredaNames || [])].map(normalizePlace);
+      if (a.scope !== 'all' && !targets.includes(normalizePlace(woreda))) return false;
+    }
+    if (q && q.trim()) {
+      const hay = `${a.title || ''} ${a.description || ''}`.toLowerCase();
+      if (!hay.includes(q.trim().toLowerCase())) return false;
+    }
+    return true;
+  }, [category, severity, subcity, woreda, q]);
+
+  // Merge a category (from a live alert) into the dynamic dropdown, keeping the
+  // list sorted and deduplicated. Empty categories are never added.
+  const mergeCategory = useCallback((value) => {
+    if (!value || typeof value !== 'string') return;
+    const v = value.trim();
+    if (!v) return;
+    setCategories((prev) => {
+      if (prev.includes(v)) return prev;
+      return [...prev, v].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    });
+  }, []);
+
+  // Real-time synchronization: created, edited, deleted and expired alerts
+  // appear/disappear here instantly without a manual refresh.
+  useEffect(() => {
+    if (!on) return;
+    const cleanups = [
+      on('alert:new', (incoming) => {
+        if (!incoming?._id) return;
+        if (isLive(incoming.status)) mergeCategory(incoming.category);
+        if (!matchesFilters(incoming)) return;
+        setAlerts((prev) => {
+          if (prev.some((a) => a._id === incoming._id)) return prev;
+          return [incoming, ...prev];
+        });
+        setTotal((prev) => prev + 1);
+      }),
+      on('alert:updated', (incoming) => {
+        if (!incoming?._id) return;
+        if (isLive(incoming.status)) mergeCategory(incoming.category);
+        if (matchesFilters(incoming)) {
+          setAlerts((prev) => {
+            const exists = prev.some((a) => a._id === incoming._id);
+            if (!exists) {
+              setTotal((n) => n + 1);
+              return [incoming, ...prev];
+            }
+            return prev.map((a) => (a._id === incoming._id ? { ...a, ...incoming } : a));
+          });
+        } else {
+          setAlerts((prev) => {
+            if (prev.some((a) => a._id === incoming._id)) setTotal((n) => Math.max(0, n - 1));
+            return prev.filter((a) => a._id !== incoming._id);
+          });
+        }
+      }),
+      on('alert:statusUpdate', (u) => {
+        if (!u?._id) return;
+        setAlerts((prev) => {
+          if (!isLive(u.status)) {
+            if (prev.some((a) => a._id === u._id)) setTotal((n) => Math.max(0, n - 1));
+            return prev.filter((a) => a._id !== u._id);
+          }
+          return prev.map((a) => (a._id === u._id ? { ...a, status: u.status } : a));
+        });
+      }),
+      on('alert:deleted', (u) => {
+        const id = u?._id;
+        if (!id) return;
+        setAlerts((prev) => {
+          if (prev.some((a) => a._id === id)) setTotal((n) => Math.max(0, n - 1));
+          return prev.filter((a) => a._id !== id);
+        });
+      }),
+    ];
+    return () => cleanups.forEach((off) => off && off());
+  }, [on, matchesFilters, mergeCategory]);
 
   const applyFilter = (key, value) => {
     const next = new URLSearchParams(searchParams);
@@ -68,6 +167,15 @@ export default function PublicAlerts() {
     return () => clearTimeout(timer);
   }, [searchParams, category, severity, subcity, woreda, q]);
 
+  useEffect(() => {
+    alertAPI.getCategories({ scope: 'live' })
+      .then((res) => {
+        const cats = Array.isArray(res.data?.data?.categories) ? res.data.data.categories : [];
+        setCategories(cats.filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+      })
+      .catch(() => { /* keep the previous list */ });
+  }, []);
+
   const changePage = (p) => {
     const next = new URLSearchParams(searchParams);
     next.set('page', String(p));
@@ -103,8 +211,8 @@ export default function PublicAlerts() {
             <select value={category} onChange={(e) => applyFilter('category', e.target.value)}
               className="input-field w-auto text-sm">
               <option value="">{t('alert.allCategories')}</option>
-              {ALERT_CATEGORIES.map((c) => (
-                <option key={c.value} value={c.value}>{c.icon} {c.label}</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
               ))}
             </select>
             <select value={severity} onChange={(e) => applyFilter('severity', e.target.value)}

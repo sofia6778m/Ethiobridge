@@ -29,6 +29,7 @@ export default function GovernanceCategories() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [nameError, setNameError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [search, setSearch] = useState('');
 
@@ -161,6 +162,7 @@ export default function GovernanceCategories() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await governanceManagementAPI.deleteCategory(id);
       toast.success('Category deleted');
@@ -168,6 +170,9 @@ export default function GovernanceCategories() {
       fetchCategories(officeId);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -387,11 +392,11 @@ export default function GovernanceCategories() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Complaint Category"
         message={`Delete "${deleteConfirm?.name}"? Categories used by complaints cannot be deleted — deactivate them instead.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

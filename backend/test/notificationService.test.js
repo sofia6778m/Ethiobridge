@@ -42,6 +42,8 @@ const {
   markAsRead,
   markAllAsRead,
   getUnreadCount,
+  softDelete,
+  softDeleteMany,
   isActor,
 } = require('../src/services/notificationService');
 
@@ -223,6 +225,61 @@ describe('markAsRead / markAllAsRead / getUnreadCount', () => {
     assert.equal(result.modifiedCount, 2);
     assert.equal(await getUnreadCount(owner), 0);
     assert.equal(await getUnreadCount(other), 1);
+  });
+
+  it('excludes deleted notifications from unread count and read-all', async () => {
+    const owner = mkId();
+    const n = await Notification.create({ recipient: owner, title: 'A', message: 'M', type: 'system' });
+    await softDelete(owner, n._id);
+    assert.equal(await getUnreadCount(owner), 0);
+    const res = await markAllAsRead(owner);
+    assert.equal(res.modifiedCount, 0);
+  });
+});
+
+// ── softDelete / softDeleteMany (user-specific hide) ──────────────────────────
+describe('softDelete / softDeleteMany — user-specific hide', () => {
+  it('soft-deletes a notification for its owner only (source kept intact)', async () => {
+    const owner = mkId();
+    const other = mkId();
+    const n1 = await Notification.create({ recipient: owner, title: 'A', message: 'M', type: 'system' });
+    const n2 = await Notification.create({ recipient: other, title: 'B', message: 'M', type: 'system' });
+
+    const deleted = await softDelete(owner, n1._id);
+    assert.ok(deleted);
+    assert.equal(deleted.isDeleted, true);
+    // Hidden, not removed: the document (and any source link) stays in the DB.
+    assert.equal((await Notification.findById(n1._id)).isDeleted, true);
+    // Other users' notifications are never touched.
+    assert.equal((await Notification.findById(n2._id)).isDeleted, false);
+  });
+
+  it('only the owner can soft-delete a notification', async () => {
+    const owner = mkId();
+    const stranger = mkId();
+    const n = await Notification.create({ recipient: owner, title: 'A', message: 'M', type: 'system' });
+    assert.equal(await softDelete(stranger, n._id), null);
+    assert.equal((await Notification.findById(n._id)).isDeleted, false);
+  });
+
+  it('soft-deletes several notifications for the owner in one call', async () => {
+    const owner = mkId();
+    const [a, b, c] = await Notification.create([
+      { recipient: owner, title: 'A', message: 'M', type: 'system' },
+      { recipient: owner, title: 'B', message: 'M', type: 'system' },
+      { recipient: owner, title: 'C', message: 'M', type: 'system' },
+    ]);
+    const result = await softDeleteMany(owner, [a._id, c._id]);
+    assert.equal(result.modifiedCount, 2);
+    assert.equal((await Notification.findById(b._id)).isDeleted, false);
+    assert.equal(await Notification.countDocuments({ recipient: owner, isDeleted: false }), 1);
+  });
+
+  it('does not re-delete an already deleted notification', async () => {
+    const owner = mkId();
+    const n = await Notification.create({ recipient: owner, title: 'A', message: 'M', type: 'system' });
+    await softDelete(owner, n._id);
+    assert.equal(await softDelete(owner, n._id), null);
   });
 });
 

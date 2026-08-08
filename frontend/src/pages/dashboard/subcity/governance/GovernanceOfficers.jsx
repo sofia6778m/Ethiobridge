@@ -755,11 +755,11 @@ export default function GovernanceOfficers() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Governance Officer"
         message={`Delete the account for "${deleteConfirm?.fullName}"? Officers assigned to complaints cannot be deleted — deactivate them instead.`}
         confirmLabel="Delete"
-        danger
+        loading={saving}
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
       />

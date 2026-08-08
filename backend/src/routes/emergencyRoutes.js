@@ -22,8 +22,8 @@ router.put('/:id/accept', protect, authorize('ngo', 'volunteer'), requireApprove
 // Admin + Government
 router.get('/government/reports', protect, authorize('government'), getGovernmentReports);
 router.get('/admin/all', protect, authorize('admin', 'government', 'ngo'), getAllReports);
-router.put('/:id/verify', protect, authorize('admin'), verifyReport);
-router.put('/:id/status', protect, authorize('admin', 'government', 'ngo'), updateStatus);
-router.delete('/:id', protect, authorize('admin'), deleteReport);
+router.put('/:id/verify', protect, authorize('admin', 'ADMIN'), verifyReport);
+router.put('/:id/status', protect, authorize('admin', 'ADMIN', 'government', 'ngo'), updateStatus);
+router.delete('/:id', protect, authorize('admin', 'ADMIN'), deleteReport);
 
 module.exports = router;

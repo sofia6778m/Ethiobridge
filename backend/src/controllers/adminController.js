@@ -836,8 +836,33 @@ const updateDepartment = async (req, res) => {
 // @access Private (admin)
 const deleteDepartment = async (req, res) => {
   try {
-    const department = await Department.findByIdAndDelete(req.params.id);
+    const department = await Department.findById(req.params.id);
     if (!department) return res.status(404).json({ success: false, message: 'Department not found' });
+
+    // Foreign-key guard: never orphan staff accounts or reports that reference
+    // this department. Deactivate it instead and reassign the staff.
+    const [staffCount, reportCount] = await Promise.all([
+      User.countDocuments({ departmentId: department._id }),
+      InfrastructureReport.countDocuments({ departmentId: department._id }),
+    ]);
+    if (staffCount > 0 || reportCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete — ${staffCount} staff account(s) and ${reportCount} report(s) reference this department. Deactivate it or reassign them first.`,
+        deps: { staff: staffCount, reports: reportCount },
+      });
+    }
+
+    await department.deleteOne();
+
+    await logAction({
+      user: req.user,
+      action: 'department_deleted',
+      resource: 'Department',
+      resourceId: department._id,
+      details: { name: department.name, by: req.user?.email },
+      req,
+    });
 
     res.json({ success: true, message: 'Department deleted successfully' });
   } catch (error) {
@@ -1037,6 +1062,16 @@ const deleteUser = async (req, res) => {
 
     await User.findByIdAndDelete(req.params.id);
     console.log(`[ADMIN] Deleted user: ${target.email} (role: ${target.role}) by ${req.user?.email}`);
+
+    await logAction({
+      user: req.user,
+      action: 'user_deleted',
+      resource: 'User',
+      resourceId: target._id,
+      details: { target: target.email, role: target.role, by: req.user?.email },
+      req,
+    });
+
     res.json({ success: true, message: 'User deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -1333,6 +1368,14 @@ const deleteWoreda = async (req, res) => {
     // ── Safe delete: no dependencies ─────────────────────────────────────────
     if (total === 0) {
       await Woreda.findByIdAndDelete(woreda._id);
+      await logAction({
+        user: req.user,
+        action: 'woreda_deleted',
+        resource: 'Woreda',
+        resourceId: woreda._id,
+        details: { name: woreda.name, subcity: woreda.subcity, mode: 'safe', by: req.user?.email },
+        req,
+      });
       return res.json({ success: true, message: 'Woreda deleted successfully' });
     }
 
@@ -1360,6 +1403,15 @@ const deleteWoreda = async (req, res) => {
       ]);
 
       await Woreda.findByIdAndDelete(woreda._id);
+
+      await logAction({
+        user: req.user,
+        action: 'woreda_deleted',
+        resource: 'Woreda',
+        resourceId: woreda._id,
+        details: { name: woreda.name, subcity: woreda.subcity, mode: 'force', cleared: { users: userCount, reports: infraCount + emergencyCount, complaints: workflowComplaintCount }, by: req.user?.email },
+        req,
+      });
 
       return res.json({
         success: true,
@@ -1505,12 +1557,40 @@ const updateSubcity = async (req, res) => {
 const deleteSubcity = async (req, res) => {
   try {
     const Subcity = require('../models/Subcity');
-    const subcity = await Subcity.findByIdAndDelete(req.params.id);
+    const Woreda = require('../models/Woreda');
+    const subcity = await Subcity.findById(req.params.id);
     if (!subcity) return res.status(404).json({ success: false, message: 'Subcity not found.' });
+
+    // Foreign-key guard: never orphan woredas or scoped accounts. Departments
+    // belong to the subcity and are removed with it (the controller cleans them
+    // up below); woredas and user accounts must be moved/deleted first.
+    const [woredaCount, userCount] = await Promise.all([
+      Woreda.countDocuments({ subcityId: subcity._id }),
+      User.countDocuments({ subcityId: subcity._id, isActive: true }),
+    ]);
+    if (woredaCount > 0 || userCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete — ${woredaCount} woreda(s) and ${userCount} active account(s) belong to this subcity. Move or remove them first.`,
+        deps: { woredas: woredaCount, users: userCount },
+      });
+    }
+
     // Departments belong to the subcity, so removing it cleans up its
     // department master data too. Complaint/report records reference departments
     // by name (plain strings), so nothing is orphaned.
     await Department.deleteMany({ subcityId: subcity._id });
+    await subcity.deleteOne();
+
+    await logAction({
+      user: req.user,
+      action: 'subcity_deleted',
+      resource: 'Subcity',
+      resourceId: subcity._id,
+      details: { name: subcity.name, by: req.user?.email },
+      req,
+    });
+
     res.json({ success: true, message: 'Subcity deleted successfully' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -2154,8 +2234,19 @@ const deleteIssueType = async (req, res) => {
     if (linked > 0)
       return res.status(400).json({ success: false, message: `Cannot delete — ${linked} complaint(s) reference this issue type.` });
 
-    const issueType = await IssueType.findByIdAndDelete(req.params.id);
+    const issueType = await IssueType.findById(req.params.id);
     if (!issueType) return res.status(404).json({ success: false, message: 'Issue type not found.' });
+
+    await issueType.deleteOne();
+
+    await logAction({
+      user: req.user,
+      action: 'issue_type_deleted',
+      resource: 'IssueType',
+      resourceId: issueType._id,
+      details: { name: issueType.name, department: issueType.department, subcity: issueType.subcity, by: req.user?.email },
+      req,
+    });
 
     res.json({ success: true, message: 'Issue type deleted successfully' });
   } catch (err) {

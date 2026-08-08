@@ -151,13 +151,14 @@ describe('parallel-array compound index regression', () => {
 
 // ── createAlert targeting ────────────────────────────────────────────────────
 describe('createAlert targeting', () => {
-  let bole, yeka, w1, w2;
+  let bole, yeka, w1, w2, yekaW1;
 
   beforeEach(async () => {
     bole = await Subcity.create({ name: 'Bole' });
     yeka = await Subcity.create({ name: 'Yeka' });
     w1 = await Woreda.create({ name: 'Woreda 01', subcity: 'Bole', subcityId: bole._id });
     w2 = await Woreda.create({ name: 'Woreda 02', subcity: 'Bole', subcityId: bole._id });
+    yekaW1 = await Woreda.create({ name: 'Woreda 03', subcity: 'Yeka', subcityId: yeka._id });
   });
 
   it('System Admin — whole Addis Ababa (city-wide)', async () => {
@@ -253,5 +254,55 @@ describe('createAlert targeting', () => {
     const alert = res.jsonPayload.data.alert;
     assert.deepEqual(alert.subcityIds.map(String), [String(bole._id)]);
     assert.deepEqual(alert.woredaIds.map(String), [String(w1._id)]);
+  });
+
+  it('System Admin — rejects a woreda that does not belong to the selected subcity', async () => {
+    // Woreda 03 lives in Yeka, but only Bole is targeted → must be rejected.
+    const body = {
+      ...baseBody(),
+      scope: 'woreda',
+      subcityIds: [String(bole._id)],
+      woredaIds: [String(yekaW1._id)],
+    };
+    const res = mockRes();
+    await createAlert(mockReq(mkUser('admin'), body), res);
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.jsonPayload.message, /not in a targeted subcity/i);
+    assert.equal(res.jsonPayload.field, 'targeting');
+  });
+
+  it('System Admin — allows woredas from multiple selected subcities (Bole + Yeka)', async () => {
+    const body = {
+      ...baseBody(),
+      scope: 'woreda',
+      subcityIds: [String(bole._id), String(yeka._id)],
+      woredaIds: [String(w1._id), String(yekaW1._id)],
+    };
+    const res = mockRes();
+    await createAlert(mockReq(mkUser('admin'), body), res);
+
+    assert.equal(res.statusCode, 201);
+    const alert = res.jsonPayload.data.alert;
+    assert.deepEqual(alert.subcityIds.map(String).sort(), [String(bole._id), String(yeka._id)].sort());
+    assert.deepEqual(alert.woredaIds.map(String).sort(), [String(w1._id), String(yekaW1._id)].sort());
+  });
+
+  it('Subcity Admin — cannot target a woreda from another subcity', async () => {
+    const body = { ...baseBody(), woredaIds: [String(yekaW1._id)] };
+    const res = mockRes();
+    await createAlert(mockReq(mkUser('subcity_bole', { subcity: 'Bole', subcityId: bole._id }), body), res);
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.jsonPayload.message, /not in a targeted subcity/i);
+  });
+
+  it('Subcity Admin — rejects a woreda id that does not exist', async () => {
+    const body = { ...baseBody(), woredaIds: [new mongoose.Types.ObjectId().toString()] };
+    const res = mockRes();
+    await createAlert(mockReq(mkUser('subcity_bole', { subcity: 'Bole', subcityId: bole._id }), body), res);
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.jsonPayload.message, /no longer exist/i);
   });
 });

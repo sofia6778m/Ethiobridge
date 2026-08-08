@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { motion } from 'framer-motion';
-import { FaHeart } from 'react-icons/fa';
-import { publicAPI, newsAPI } from '../../services/api';
+import { publicAPI, newsAPI, campaignAPI } from '../../services/api';
+import { useSocket } from '../../context/SocketContext';
 import StatusBadge from '../../components/common/StatusBadge';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import AlertBanner from '../../components/common/AlertBanner';
+import CampaignCard from '../../components/campaigns/CampaignCard';
 
 const REGIONS = ['Addis Ababa','Oromia','Amhara','Tigray','Somali','Afar','Sidama','Central Ethiopia','South Ethiopia','Southwest Ethiopia','Gambella','Benishangul-Gumuz','Harari','Dire Dawa'];
 
@@ -14,17 +14,20 @@ export default function Home() {
   const { t } = useTranslation();
   const [stats, setStats]           = useState(null);
   const [latestNews, setLatestNews] = useState([]);
+  const [featured, setFeatured]     = useState([]);
   const [loading, setLoading]       = useState(true);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [s, n] = await Promise.all([
+        const [s, n, c] = await Promise.all([
           publicAPI.getStats(),
           newsAPI.getPublic({ limit: 4 }),
+          campaignAPI.getFeatured({ limit: 3 }).catch(() => ({ data: { data: { campaigns: [] } } })),
         ]);
         setStats(s.data.stats);
         setLatestNews(n.data.news || []);
+        setFeatured(c.data?.data?.campaigns || []);
       } catch (e) {
         console.error(e);
       } finally {
@@ -33,6 +36,26 @@ export default function Home() {
     };
     load();
   }, []);
+
+  // Live refresh: reload featured campaigns when anything changes so raised
+  // amounts and newly-approved campaigns appear without a manual refresh.
+  const { on } = useSocket() || {};
+  const loadFeatured = async () => {
+    try {
+      const c = await campaignAPI.getFeatured({ limit: 3 }).catch(() => ({ data: { data: { campaigns: [] } } }));
+      setFeatured(c.data?.data?.campaigns || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  const loadFeaturedRef = useRef(loadFeatured);
+  loadFeaturedRef.current = loadFeatured;
+  useEffect(() => {
+    if (!on) return;
+    const events = ['campaign:new', 'campaign:updated', 'campaign:statusUpdate', 'campaign:deleted'];
+    const cleanups = events.map((e) => on(e, () => loadFeaturedRef.current()));
+    return () => cleanups.forEach((off) => off && off());
+  }, [on]);
 
   const statItems = stats ? [
     { icon:'📋', label:t('home.totalReports'),       value: stats.totalReports,       color:'bg-blue-100 dark:bg-blue-900/30',   iconColor:'text-blue-600 dark:text-blue-400' },
@@ -128,125 +151,23 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Fundraising Card - Glassmorphism Hero Card */}
-      <section className="relative py-20 overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-red-600 via-red-500 to-primary-700" />
-        <div className="absolute inset-0 opacity-20" style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 5L35 20H50L38 30L42 45L30 36L18 45L22 30L10 20H25Z' fill='white' fill-opacity='0.15'/%3E%3C/svg%3E')" }} />
-        <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="backdrop-blur-xl bg-white/10 border border-white/20 rounded-3xl shadow-2xl overflow-hidden"
-          >
-            <div className="grid lg:grid-cols-2 gap-0">
-              {/* Left Content */}
-              <div className="p-8 sm:p-10 lg:p-12 flex flex-col justify-center">
-                <div className="inline-flex items-center gap-2 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs font-medium text-white/90 border border-white/20 mb-5 w-fit">
-                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  Active Fundraising Campaigns
-                </div>
-
-                <h3 className="text-3xl sm:text-4xl font-bold text-white leading-tight mb-3">
-                  ❤️ Emergency & Infrastructure Fundraising
-                </h3>
-                <p className="text-base sm:text-lg text-white/80 mb-2 font-medium">
-                  የአደጋና የመሠረተ ልማት የገንዘብ ማሰባሰቢያ
-                </p>
-                <p className="text-sm text-white/70 mb-6 max-w-lg">
-                  Support emergency response and infrastructure development across Ethiopia. Your donation builds roads, schools, hospitals, and provides critical aid.
-                </p>
-
-                {/* Progress Ring - SVG */}
-                <div className="flex items-center gap-6 mb-6">
-                  <div className="relative w-24 h-24 shrink-0">
-                    <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
-                      <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="8" />
-                      <motion.circle
-                        cx="50" cy="50" r="42" fill="none" stroke="white" strokeWidth="8" strokeLinecap="round"
-                        strokeDasharray={`${2 * Math.PI * 42}`}
-                        initial={{ strokeDashoffset: 2 * Math.PI * 42 }}
-                        whileInView={{ strokeDashoffset: 2 * Math.PI * 42 * 0.35 }}
-                        viewport={{ once: true }}
-                        transition={{ duration: 1.5, ease: 'easeOut' }}
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="text-center">
-                        <p className="text-white font-bold text-lg">65%</p>
-                        <p className="text-white/60 text-[10px]">Funded</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-                    {[
-                      { label: 'Active Campaigns', value: '12', color: 'text-green-300' },
-                      { label: 'Total Raised', value: '₿ 2.7M', color: 'text-yellow-300' },
-                      { label: 'Total Donors', value: '1,847', color: 'text-blue-300' },
-                      { label: 'Success Rate', value: '94%', color: 'text-emerald-300' },
-                    ].map((s, i) => (
-                      <motion.div
-                        key={i}
-                        initial={{ opacity: 0, x: -10 }}
-                        whileInView={{ opacity: 1, x: 0 }}
-                        viewport={{ once: true }}
-                        transition={{ delay: 0.3 + i * 0.1 }}
-                      >
-                        <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
-                        <p className="text-xs text-white/60">{s.label}</p>
-                      </motion.div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-3">
-                  <Link
-                    to="/fundraising"
-                    className="inline-flex items-center gap-2 bg-white text-red-600 hover:bg-red-50 font-bold py-3 px-7 rounded-xl transition-all shadow-lg hover:shadow-xl active:scale-95"
-                  >
-                    <FaHeart /> Donate Now
-                  </Link>
-                  <Link
-                    to="/fundraising"
-                    className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/30 hover:bg-white/20 text-white font-semibold py-3 px-7 rounded-xl transition-all"
-                  >
-                    View Campaigns
-                  </Link>
-                </div>
+      {/* Featured Campaigns */}
+      {featured.length > 0 && (
+        <section className="py-16 bg-gray-50 dark:bg-gray-800">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h2 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">{t('home.featuredCampaigns')}</h2>
+                <p className="text-gray-500 dark:text-gray-400">{t('home.featuredCampaignsDesc')}</p>
               </div>
-
-              {/* Right Image */}
-              <div className="relative min-h-[300px] lg:min-h-full overflow-hidden">
-                <img
-                  src="https://images.unsplash.com/photo-1532629345422-7515f3d16bb6?w=800&q=80"
-                  alt="Fundraising"
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-                <div className="absolute inset-0 bg-gradient-to-r from-red-600/60 via-transparent to-transparent lg:bg-gradient-to-l" />
-                <div className="absolute bottom-6 left-6 right-6 backdrop-blur-md bg-white/10 border border-white/20 rounded-2xl p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex -space-x-2">
-                      {[1,2,3,4].map((_, i) => (
-                        <div key={i} className="w-8 h-8 rounded-full border-2 border-white bg-primary-500 flex items-center justify-center text-white text-xs font-bold">
-                          {String.fromCharCode(65 + i)}
-                        </div>
-                      ))}
-                      <div className="w-8 h-8 rounded-full border-2 border-white bg-white/20 flex items-center justify-center text-white text-xs font-bold">
-                        +42
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-white text-sm font-semibold">Recent Donors</p>
-                      <p className="text-white/60 text-xs">Join them in making a difference</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <Link to="/campaigns" className="text-primary-600 hover:underline text-sm font-medium whitespace-nowrap">{t('home.viewAllCampaigns')} →</Link>
             </div>
-          </motion.div>
-        </div>
-      </section>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {featured.map((c) => <CampaignCard key={c._id} campaign={c} />)}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Statistics */}
       {loading ? <LoadingSpinner /> : stats && (

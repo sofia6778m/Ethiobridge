@@ -1,1195 +1,1428 @@
+const mongoose = require('mongoose');
 const Campaign = require('../models/Campaign');
+const CampaignUpdate = require('../models/CampaignUpdate');
+const CampaignProof = require('../models/CampaignProof');
+const SavedCampaign = require('../models/SavedCampaign');
 const Donation = require('../models/Donation');
-const Payment = require('../models/Payment');
-const Receipt = require('../models/Receipt');
 const User = require('../models/User');
-const Subcity = require('../models/Subcity');
-const Woreda = require('../models/Woreda');
-const InfrastructureReport = require('../models/InfrastructureReport');
-const EmergencyReport = require('../models/EmergencyReport');
-const { notifyUsers } = require('../services/notificationService');
+const { notifyUser, notifyUsers } = require('../services/notificationService');
 const { logAction } = require('../middleware/auditLog');
+const { SUBCITY_ROLE_MAP } = require('../utils/scopeFilter');
 const {
+  CAMPAIGN_LEVELS,
   CAMPAIGN_CATEGORIES,
-  categoryLabel,
-  campaignTypeForCategory,
-} = require('../utils/campaignCategory');
+  CAMPAIGN_STATUSES,
+} = require('../models/Campaign');
+const { buildCampaignCSV, buildCampaignPDF, fileStamp } = require('../utils/campaignExport');
 
 const getIo = (req) => req.app?.get('io') || null;
 
-const notify = async (req, users, { title, message, type, relatedId, actorId }) => {
-  const io = getIo(req);
-  await notifyUsers({
-    userIds: users,
-    actorId,
-    title,
-    message,
-    type,
-    relatedReport: relatedId,
-    relatedReportType: 'campaign',
-    io,
-  });
-};
+// ── Roles & scope helpers ────────────────────────────────────────────────────
 
-// ── Local government office scope ─────────────────────────────────────────────
-// Subcity Admins (subcity_* / SUBCITY_HEAD) and Woreda Admins (woreda /
-// WOREDA_HEAD) manage campaigns for their own office only.
-const OFFICE_ROLES = [
-  'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura',
-  'woreda', 'SUBCITY_HEAD', 'WOREDA_HEAD',
-];
+const GLOBAL_ROLES = ['admin', 'ADMIN', 'government'];
+const SUB_CITY_ADMIN_ROLES = ['subcity_admin', 'SUBCITY_ADMIN', 'SUBCITY_HEAD', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura'];
+const WOREDA_ADMIN_ROLES = ['woreda_admin', 'WOREDA_ADMIN', 'woreda', 'WOREDA_HEAD'];
 
-const isOfficeRole = (role) => OFFICE_ROLES.includes(role);
-const isAdminRole = (role) => ['admin', 'ADMIN'].includes(role);
-const canCreateCampaigns = (role) =>
-  isAdminRole(role) || isOfficeRole(role) || role === 'government' || role === 'ngo';
+const esc = (s) => (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const SUB_CITY_LABELS = {
-  subcity_bole: 'Bole',
-  subcity_yeka: 'Yeka',
-  subcity_lemmi_kura: 'Lemmi Kura',
-};
+const isGlobal = (user) => Boolean(user && GLOBAL_ROLES.includes(user.role));
 
-// Resolve the subcity/woreda scope a campaign should belong to from the
-// creating user's own scope. Falls back to the master Subcity / Woreda records
-// when the string fields are missing on the user document.
-const resolveOfficeScope = async (user) => {
-  const scope = { subcity: '', subcityId: null, woreda: '', woredaId: null };
-  if (!user) return scope;
+const isSubcityAdmin = (user) =>
+  Boolean(
+    user &&
+    (SUB_CITY_ADMIN_ROLES.includes(user.role) || (typeof user.role === 'string' && user.role.startsWith('subcity_')))
+  );
 
-  const isSubcityRole = user.role.startsWith('subcity_') || user.role === 'SUBCITY_HEAD';
-  const isWoredaRole = user.role === 'woreda' || user.role === 'WOREDA_HEAD';
+const isWoredaAdmin = (user) => Boolean(user && WOREDA_ADMIN_ROLES.includes(user.role));
 
-  if (isSubcityRole) {
-    scope.subcity = user.subcity || SUB_CITY_LABELS[user.role] || '';
+// Management-list scope. System admin / government see everything; subcity
+// admins see campaigns in their subcity; woreda admins see campaigns in their
+// woreda. Falls back to the denormalized name strings when the ObjectId refs
+// are missing so legacy accounts still get a correct scope.
+function buildCampaignScope(user) {
+  if (!user || isGlobal(user)) return {};
+
+  if (isSubcityAdmin(user)) {
+    const scope = {};
     if (user.subcityId) scope.subcityId = user.subcityId;
-    else if (scope.subcity) {
-      const sub = await Subcity.findOne({ nameLower: scope.subcity.toLowerCase() }).select('_id').lean();
-      if (sub) scope.subcityId = sub._id;
-    }
+    const name = user.subcity || SUBCITY_ROLE_MAP[user.role] || '';
+    if (name) scope['location.subcity'] = { $regex: `^${esc(name)}$`, $options: 'i' };
+    return scope;
   }
 
-  if (isWoredaRole) {
-    scope.woreda = user.woredaName || '';
-    if (user.woredaId) scope.woredaId = user.woredaId;
-    else if (scope.woreda) {
-      const wr = await Woreda.findOne({ name: scope.woreda, status: 'Active' }).select('_id').lean();
-      if (wr) scope.woredaId = wr._id;
-    }
-    scope.subcity = user.subcity || '';
-    if (!scope.subcity && scope.woredaId) {
-      const wr = await Woreda.findById(scope.woredaId).select('subcity').lean();
-      if (wr) scope.subcity = wr.subcity || '';
-    }
-    if (!scope.subcityId && scope.subcity) {
-      const sub = await Subcity.findOne({ nameLower: scope.subcity.toLowerCase() }).select('_id').lean();
-      if (sub) scope.subcityId = sub._id;
-    }
+  if (isWoredaAdmin(user)) {
+    if (user.woredaId) return { woredaId: user.woredaId };
+    const woredaName = user.woredaName || '';
+    if (woredaName) return { 'location.woreda': { $regex: `^${esc(woredaName)}$`, $options: 'i' } };
+    return {};
   }
 
-  return scope;
-};
+  return {};
+}
 
-// Build a Mongo $or scope filter for office roles so a Subcity Admin sees all
-// campaigns of their subcity and a Woreda Admin sees all campaigns of their
-// woreda — regardless of which office staff member created them.
-const buildCampaignScopeQuery = async (user) => {
-  if (!user) return null;
-  const isSubcityRole = user.role.startsWith('subcity_') || user.role === 'SUBCITY_HEAD';
-  const isWoredaRole = user.role === 'woreda' || user.role === 'WOREDA_HEAD';
-  if (!isSubcityRole && !isWoredaRole) return null;
-
-  const subcity = user.subcity || SUB_CITY_LABELS[user.role] || '';
-  const woreda = user.woredaName || user.woreda || '';
-
-  const clauses = [];
-  if (isSubcityRole && subcity) clauses.push({ subcity: { $regex: `^${subcity}$`, $options: 'i' } });
-  if (isWoredaRole) {
-    if (woreda) clauses.push({ woreda: { $regex: `^${woreda}$`, $options: 'i' } });
-    else if (subcity) clauses.push({ subcity: { $regex: `^${subcity}$`, $options: 'i' } });
-  }
-  if (clauses.length === 0) return null;
-  return { $or: clauses };
-};
-
-// Whether a campaign document falls inside a user's office scope.
-const isCampaignInOfficeScope = async (user, campaign) => {
+// Whether a manager may edit / post updates / upload proofs for a campaign.
+function canManageCampaign(user, campaign) {
   if (!user || !campaign) return false;
-  if (isAdminRole(user.role)) return true;
-  if (!isOfficeRole(user.role)) return false;
+  if (isGlobal(user)) return true;
+  if (campaign.createdBy && String(campaign.createdBy) === String(user._id)) return true;
 
-  const isSubcityRole = user.role.startsWith('subcity_') || user.role === 'SUBCITY_HEAD';
-  const isWoredaRole = user.role === 'woreda' || user.role === 'WOREDA_HEAD';
-
-  const subcity = user.subcity || SUB_CITY_LABELS[user.role] || '';
-  const woreda = user.woredaName || user.woreda || '';
-
-  if (isSubcityRole && subcity && (campaign.subcity || '').toLowerCase() === subcity.toLowerCase()) return true;
-  if (isWoredaRole) {
-    if (woreda && (campaign.woreda || '').toLowerCase() === woreda.toLowerCase()) return true;
-    if (!woreda && subcity && (campaign.subcity || '').toLowerCase() === subcity.toLowerCase()) return true;
+  if (isSubcityAdmin(user)) {
+    if (user.subcityId && campaign.subcityId) return String(user.subcityId) === String(campaign.subcityId);
+    const subName = (user.subcity || SUBCITY_ROLE_MAP[user.role] || '').toLowerCase();
+    const camSub = (campaign.location?.subcity || '').toLowerCase();
+    return Boolean(subName && camSub && subName === camSub);
   }
+
+  if (isWoredaAdmin(user)) {
+    if (user.woredaId && campaign.woredaId) return String(user.woredaId) === String(campaign.woredaId);
+    const worName = (user.woredaName || '').toLowerCase();
+    const camWor = (campaign.location?.woreda || '').toLowerCase();
+    return Boolean(worName && camWor && worName === camWor);
+  }
+
   return false;
-};
+}
 
-// ─── Campaign CRUD ───
+// Who may approve a pending campaign:
+//   - subcity campaigns → System Admin only.
+//   - woreda campaigns  → System Admin OR the Subcity Admin of that subcity.
+function canApprove(user, campaign) {
+  if (!user || !campaign) return false;
+  if (isGlobal(user)) return true;
+  if (campaign.campaignLevel === 'subcity') return false;
+  if (!isSubcityAdmin(user)) return false;
+  if (user.subcityId && campaign.subcityId) return String(user.subcityId) === String(campaign.subcityId);
+  const subName = (user.subcity || SUBCITY_ROLE_MAP[user.role] || '').toLowerCase();
+  const camSub = (campaign.location?.subcity || '').toLowerCase();
+  return Boolean(subName && camSub && subName === camSub);
+}
 
-exports.createCampaign = async (req, res) => {
+// Approvers for a campaign: subcity campaigns → system admins; woreda
+// campaigns → subcity admins of the campaign's subcity.
+async function findApprovers(campaign) {
+  if (campaign.campaignLevel === 'subcity') {
+    return User.find({ role: { $in: ['admin', 'ADMIN'] }, isActive: true })
+      .select('_id fullName')
+      .lean();
+  }
+
+  const scope = {
+    isActive: true,
+    $or: [{ role: 'subcity_admin' }, { role: 'SUBCITY_ADMIN' }, { role: { $regex: '^subcity_' } }],
+  };
+  if (campaign.subcityId) scope.subcityId = campaign.subcityId;
+  else if (campaign.location?.subcity) {
+    scope.subcity = { $regex: `^${esc(campaign.location.subcity)}$`, $options: 'i' };
+  }
+  return User.find(scope).select('_id fullName').lean();
+}
+
+async function notifyApprovers(req, campaign, event) {
   try {
-    const {
-      title, description, campaignType, category, priority, goalAmount, endDate, startDate,
-      location, image, tags, relatedReport, relatedReportModel, isFeatured,
-      estimatedBeneficiaries, impactMetrics, expenseSummary, status, department,
-      urgencyLevel, destinationAccount,
-    } = req.body;
-
-    if (!canCreateCampaigns(req.user.role)) {
-      return res.status(403).json({ success: false, message: 'Your role is not allowed to create campaigns' });
-    }
-    if (req.user.role === 'ngo' && campaignType !== 'emergency' && category !== 'emergency_medical') {
-      return res.status(403).json({ success: false, message: 'NGOs can only create emergency campaigns' });
-    }
-    if (req.user.role === 'government' && campaignType === 'emergency') {
-      return res.status(403).json({ success: false, message: 'Government cannot create emergency campaigns' });
-    }
-
-    // Community category drives the legacy campaignType when none is provided.
-    let resolvedType = campaignType;
-    if (category && campaignTypeForCategory(category)) {
-      resolvedType = resolvedType || campaignTypeForCategory(category);
-    }
-    if (!resolvedType) resolvedType = 'general';
-
-    let reportData = null;
-    if (relatedReport && relatedReportModel === 'InfrastructureReport') {
-      reportData = await InfrastructureReport.findById(relatedReport);
-      if (!reportData) return res.status(404).json({ success: false, message: 'Infrastructure report not found' });
-      if (!title) title = `Infrastructure Fundraising: ${reportData.title}`;
-      if (!description) description = reportData.description;
-      if (!location) location = { region: reportData.region, city: reportData.city, specificLocation: reportData.specificLocation };
-      if (!image && reportData.photos?.[0]) image = reportData.photos[0];
-    }
-    if (relatedReport && relatedReportModel === 'EmergencyReport') {
-      reportData = await EmergencyReport.findById(relatedReport);
-      if (!reportData) return res.status(404).json({ success: false, message: 'Emergency report not found' });
-      if (!title) title = `Emergency Fundraising: ${reportData.title}`;
-      if (!description) description = reportData.description;
-      if (!location) location = { region: reportData.region, city: reportData.city, specificLocation: reportData.specificLocation };
-      if (!image && reportData.photos?.[0]) image = reportData.photos[0];
-    }
-
-    // Admins create campaigns directly as active (no approval step needed).
-    const isAdmin = isAdminRole(req.user.role);
-    const allowedStatus = ['active', 'completed', 'closed'].includes(status) ? status : undefined;
-
-    // Office roles (subcity / woreda admins) always create campaigns for their
-    // OWN office — the scope is resolved server-side and cannot be overridden.
-    const officeScope = isOfficeRole(req.user.role) ? await resolveOfficeScope(req.user) : null;
-
-    const campaign = await Campaign.create({
-      title, description,
-      campaignType: resolvedType,
-      category: category || 'other',
-      priority: ['high', 'medium', 'low'].includes(priority) ? priority : 'medium',
-      goalAmount, endDate,
-      startDate: startDate || undefined,
-      location: location || {},
-      image,
-      tags: tags || [],
-      isFeatured: Boolean(isFeatured),
-      estimatedBeneficiaries: Number(estimatedBeneficiaries) || 0,
-      impactMetrics: impactMetrics || undefined,
-      expenseSummary: expenseSummary || [],
-      subcity: officeScope?.subcity || req.body.subcity || '',
-      subcityId: officeScope?.subcityId || undefined,
-      woreda: officeScope?.woreda || req.body.woreda || '',
-      woredaId: officeScope?.woredaId || undefined,
-      department: String(department || '').trim(),
-      urgencyLevel: ['low', 'normal', 'high', 'critical'].includes(urgencyLevel) ? urgencyLevel : 'normal',
-      destinationAccount: destinationAccount || undefined,
-      createdBy: req.user._id,
-      relatedReport: relatedReport || undefined,
-      relatedReportModel: relatedReportModel || undefined,
-      status: isAdmin ? (allowedStatus || 'active') : 'pending',
-      approver: isAdmin ? req.user._id : undefined,
-      approvedAt: isAdmin ? new Date() : undefined,
-      officialVerified: isAdmin,
+    const approvers = await findApprovers(campaign);
+    if (!approvers.length) return;
+    const io = getIo(req);
+    const by = req.user?.fullName || 'a staff member';
+    await notifyUsers({
+      userIds: approvers.map((a) => a._id),
+      actorId: req.user?._id,
+      title: `Campaign awaiting approval — ${campaign.title}`,
+      message:
+        event === 'submitted'
+          ? `${campaign.title} (${campaign.campaignLevel}) was submitted for approval by ${by}.`
+          : `${by} updated ${campaign.title} — please review it.`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
     });
-
-    await logAction({ user: req.user, action: 'campaign_created', resource: 'donation_campaigns', resourceId: campaign._id, details: { title: campaign.title, subcity: campaign.subcity, woreda: campaign.woreda }, req });
-
-    if (campaign.status === 'pending') {
-      const admins = await User.find({ role: 'admin' }).select('_id');
-      await notify(req, admins.map(a => a._id.toString()), {
-        title: 'New Campaign Awaiting Approval',
-        message: `"${campaign.title}" has been created and needs approval.`,
-        type: 'campaign_approval',
-        relatedId: campaign._id,
-        actorId: req.user._id,
-      });
-    }
-
-    res.status(201).json({ success: true, data: campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+  } catch (err) {
+    console.error('[Campaign] Approver notify failed:', err.message);
   }
-};
+}
 
-exports.updateCampaign = async (req, res) => {
+async function notifyDonors(req, campaign, note, type) {
   try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    if (campaign.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
-    const updated = await Campaign.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-    res.json({ success: true, data: updated });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.deleteCampaign = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    if (campaign.createdBy.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
-    }
-    await campaign.deleteOne();
-    res.json({ success: true, message: 'Campaign deleted' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.approveCampaign = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    campaign.status = 'active';
-    campaign.approver = req.user._id;
-    campaign.approvedAt = new Date();
-    campaign.officialVerified = true;
-    await campaign.save();
-
-    await logAction({ user: req.user, action: 'campaign_approved', resource: 'donation_campaigns', resourceId: campaign._id, details: { title: campaign.title }, req });
-
-    await notify(req, [campaign.createdBy.toString()], {
-      title: 'Campaign Approved',
-      message: `Your campaign "${campaign.title}" has been approved and is now active.`,
-      type: 'campaign_approved',
-      relatedId: campaign._id,
-      actorId: req.user._id,
+    const donorIds = await Donation.find({ campaign: campaign._id, donor: { $ne: null } }).distinct('donor');
+    if (!donorIds.length) return;
+    const io = getIo(req);
+    await notifyUsers({
+      userIds: donorIds,
+      actorId: req.user?._id,
+      title: `Update on "${campaign.title}"`,
+      message: note || `${req.user?.fullName || 'The organizer'} posted an update to ${campaign.title}.`,
+      type: type || 'campaign_update',
+      campaignId: campaign._id,
+      io,
     });
+  } catch (err) {
+    console.error('[Campaign] Donor notify failed:', err.message);
+  }
+}
 
-    res.json({ success: true, data: campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+// ── Public reads ─────────────────────────────────────────────────────────────
+
+const getCampaignCategories = (req, res) => {
+  res.json({ success: true, data: { categories: CAMPAIGN_CATEGORIES } });
+};
+
+const getFeaturedCampaigns = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 5;
+    const campaigns = await Campaign.find({ status: 'active' })
+      .select('-fraudScore -fraudFlags')
+      .sort({ isFeatured: -1, createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json({ success: true, data: { campaigns } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch featured campaigns:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch campaigns' });
   }
 };
 
-exports.getCampaigns = async (req, res) => {
+const getPublicCampaigns = async (req, res) => {
   try {
-    const { status, campaignType, category, priority, page = 1, limit = 12, search, subcity, woreda } = req.query;
-    const query = {};
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 12, 50);
+    const skip = (page - 1) * limit;
 
-    if (status) query.status = status;
-    else if (!req.user || req.user.role === 'citizen' || !req.user) query.status = 'active';
-    if (campaignType) query.campaignType = campaignType;
-    if (category) query.category = category;
-    if (priority) query.priority = priority;
-    if (subcity) query.subcity = { $regex: `^${subcity}$`, $options: 'i' };
-    if (woreda) query.woreda = { $regex: `^${woreda}$`, $options: 'i' };
-    if (search) query.title = { $regex: search, $options: 'i' };
+    // Only ACTIVE campaigns are ever shown to the public. Draft, pending,
+    // rejected, cancelled, suspended and completed campaigns stay hidden.
+    const query = { status: 'active' };
+    if (req.query.level) query.campaignLevel = req.query.level;
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.subcity) query['location.subcity'] = { $regex: `^${esc(req.query.subcity)}$`, $options: 'i' };
+    if (req.query.woreda) query['location.woreda'] = { $regex: `^${esc(req.query.woreda)}$`, $options: 'i' };
+    if (req.query.q) {
+      const rx = { $regex: esc(req.query.q), $options: 'i' };
+      query.$or = [{ title: rx }, { description: rx }, { 'location.subcity': rx }, { 'location.woreda': rx }];
+    }
 
-    if (req.user && (req.user.role === 'government' || req.user.role === 'ngo' || isOfficeRole(req.user.role))) {
-      if (!status && !campaignType && !category && !priority) {
-        // Office roles see ALL campaigns of their office scope, not only the
-        // ones they personally created.
-        if (isOfficeRole(req.user.role)) {
-          const officeQuery = await buildCampaignScopeQuery(req.user);
-          if (officeQuery) query.$or = officeQuery.$or;
-          else query.createdBy = req.user._id;
-        } else {
-          query.createdBy = req.user._id;
+    const sort = req.query.sort === 'goal' ? { raisedAmount: -1 } : { createdAt: -1 };
+    const [campaigns, total] = await Promise.all([
+      Campaign.find(query)
+        .select('-fraudScore -fraudFlags')
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Campaign.countDocuments(query),
+    ]);
+
+    res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch public campaigns:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch campaigns' });
+  }
+};
+
+const getCampaignById = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id)
+      .select('-fraudScore -fraudFlags')
+      .populate('createdBy', 'fullName profileImage organizationName')
+      .lean();
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    // Only ACTIVE campaigns are visible to the public. Draft, pending, rejected,
+    // cancelled, suspended and completed campaigns must never leak on the
+    // public site, even via a direct URL.
+    if (campaign.status !== 'active') {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    const [updates, proofs] = await Promise.all([
+      CampaignUpdate.find({ campaign: campaign._id }).sort({ createdAt: -1 }).limit(20).lean(),
+      CampaignProof.find({ campaign: campaign._id, status: 'verified' }).sort({ createdAt: -1 }).limit(10).lean(),
+    ]);
+
+    res.json({ success: true, data: { campaign, updates, proofs } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch campaign:', err.message);
+    if (err.name === 'CastError') return res.status(400).json({ success: false, message: 'Invalid campaign id' });
+    res.status(500).json({ success: false, message: 'Failed to fetch campaign' });
+  }
+};
+
+// ── Manager reads ────────────────────────────────────────────────────────────
+
+const getManageCampaigns = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const query = buildCampaignScope(req.user);
+    if (req.query.status && CAMPAIGN_STATUSES.includes(req.query.status)) query.status = req.query.status;
+    if (req.query.level && CAMPAIGN_LEVELS.includes(req.query.level)) query.campaignLevel = req.query.level;
+    if (req.query.category) query.category = req.query.category;
+    if (req.query.q) {
+      const rx = { $regex: esc(req.query.q), $options: 'i' };
+      query.$or = [{ title: rx }, { description: rx }, { 'location.subcity': rx }, { 'location.woreda': rx }];
+    }
+
+    const [campaigns, total] = await Promise.all([
+      Campaign.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Campaign.countDocuments(query),
+    ]);
+
+    res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch manage campaigns:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch campaigns' });
+  }
+};
+
+// Pending campaigns the current user is authorized to approve.
+const getApprovals = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const query = { status: 'pending' };
+    if (!isGlobal(req.user)) {
+      // Subcity admins only review pending woreda campaigns in their subcity.
+      if (isSubcityAdmin(req.user)) {
+        query.campaignLevel = 'woreda';
+        if (req.user.subcityId) query.subcityId = req.user.subcityId;
+        else if (req.user.subcity) query['location.subcity'] = { $regex: `^${esc(req.user.subcity)}$`, $options: 'i' };
+      } else {
+        return res.json({ success: true, data: { campaigns: [], total: 0, page: 1, pages: 0 } });
+      }
+    }
+
+    const [campaigns, total] = await Promise.all([
+      Campaign.find(query).sort({ createdAt: 1 }).skip(skip).limit(limit).lean(),
+      Campaign.countDocuments(query),
+    ]);
+
+    res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch approvals:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch approvals' });
+  }
+};
+
+const getCampaignAnalytics = async (req, res) => {
+  try {
+    const scope = buildCampaignScope(req.user);
+
+    const [statusCounts, levelCounts, categoryCounts, total, activeAgg] = await Promise.all([
+      Campaign.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+      Campaign.aggregate([{ $match: scope }, { $group: { _id: '$campaignLevel', count: { $sum: 1 } } }]),
+      Campaign.aggregate([{ $match: scope }, { $group: { _id: '$category', count: { $sum: 1 } } }]),
+      Campaign.countDocuments(scope),
+      Campaign.aggregate([
+        { $match: { ...scope, status: 'active' } },
+        { $group: { _id: null, raised: { $sum: '$raisedAmount' }, goal: { $sum: '$goalAmount' }, count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const byStatus = {};
+    statusCounts.forEach((s) => { byStatus[s._id] = s.count; });
+    const byLevel = {};
+    levelCounts.forEach((l) => { byLevel[l._id] = l.count; });
+    const byCategory = {};
+    categoryCounts.forEach((c) => { byCategory[c._id] = c.count; });
+
+    const active = activeAgg[0] || { raised: 0, goal: 0, count: 0 };
+    const pending = byStatus.pending || 0;
+    const activeCount = byStatus.active || 0;
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        active: activeCount,
+        pending,
+        byStatus,
+        byLevel,
+        byCategory,
+        totalRaised: active.raised,
+        totalGoal: active.goal,
+        averageProgress: active.goal > 0 ? Math.round((active.raised / active.goal) * 100) : 0,
+      },
+    });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch analytics:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch analytics' });
+  }
+};
+
+const exportCampaigns = async (req, res) => {
+  try {
+    const format = req.query.format === 'pdf' ? 'pdf' : 'csv';
+    const query = buildCampaignScope(req.user);
+    if (req.query.status && CAMPAIGN_STATUSES.includes(req.query.status)) query.status = req.query.status;
+
+    const campaigns = await Campaign.find(query).sort({ createdAt: -1 }).limit(500).lean();
+
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="campaigns-${fileStamp()}.csv"`);
+      return res.send(buildCampaignCSV(campaigns));
+    }
+    return buildCampaignPDF(campaigns, res);
+  } catch (err) {
+    console.error('[Campaign] Export failed:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to export campaigns' });
+  }
+};
+
+// ── Create / update ──────────────────────────────────────────────────────────
+
+const createCampaign = async (req, res) => {
+  try {
+    const { title, description, category, campaignLevel, goalAmount, endDate } = req.body;
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ success: false, message: 'Campaign title is required', field: 'title' });
+    }
+    if (!description || !String(description).trim()) {
+      return res.status(400).json({ success: false, message: 'Campaign description is required', field: 'description' });
+    }
+    const amount = Number(goalAmount);
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid goal amount is required', field: 'goalAmount' });
+    }
+
+    const level = campaignLevel === 'woreda' ? 'woreda' : 'subcity';
+    if (level === 'woreda' && !isWoredaAdmin(req.user) && !isSubcityAdmin(req.user) && !isGlobal(req.user)) {
+      return res.status(403).json({ success: false, message: 'Only woreda admins can create woreda-level campaigns' });
+    }
+    if (level === 'subcity' && !isSubcityAdmin(req.user) && !isGlobal(req.user)) {
+      return res.status(403).json({ success: false, message: 'Only subcity admins can create subcity-level campaigns' });
+    }
+
+    // Scope enforcement: an admin may only create a campaign inside their own
+    // administrative unit. The location (and ObjectId refs) are always derived
+    // from the authenticated user's own subcity / woreda — never trusted from
+    // the request body. A mismatch is rejected outright.
+    const subcityName = String(req.user.subcity || SUBCITY_ROLE_MAP[req.user.role] || '').trim();
+    const woredaName = String(req.user.woredaName || '').trim();
+
+    let location = {
+      region: String(req.body.location?.region || 'Addis Ababa'),
+      subcity: subcityName,
+      woreda: level === 'woreda' ? woredaName : '',
+    };
+    let subcityId = req.user.subcityId || null;
+    let woredaId = level === 'woreda' ? req.user.woredaId || null : null;
+
+    if (!isGlobal(req.user)) {
+      const bodySubcity = String(req.body.location?.subcity || '').trim();
+      const bodyWoreda = String(req.body.location?.woreda || '').trim();
+      if (isSubcityAdmin(req.user)) {
+        if (bodySubcity && subcityName && bodySubcity.toLowerCase() !== subcityName.toLowerCase()) {
+          return res.status(403).json({
+            success: false,
+            message: 'Subcity admins can only create campaigns within their own subcity',
+            field: 'location.subcity',
+          });
+        }
+        if (bodyWoreda && level === 'subcity') {
+          return res.status(403).json({
+            success: false,
+            message: 'A subcity-level campaign cannot be scoped to a woreda',
+            field: 'location.woreda',
+          });
+        }
+      }
+      if (isWoredaAdmin(req.user)) {
+        if (bodyWoreda && woredaName && bodyWoreda.toLowerCase() !== woredaName.toLowerCase()) {
+          return res.status(403).json({
+            success: false,
+            message: 'Woreda admins can only create campaigns within their own woreda',
+            field: 'location.woreda',
+          });
+        }
+        if (bodySubcity && subcityName && bodySubcity.toLowerCase() !== subcityName.toLowerCase()) {
+          return res.status(403).json({
+            success: false,
+            message: 'Woreda admins can only create campaigns within their own subcity',
+            field: 'location.subcity',
+          });
         }
       }
     }
 
-    const total = await Campaign.countDocuments(query);
-    const campaigns = await Campaign.find(query)
-      .populate('createdBy', 'fullName organizationName')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    res.json({ success: true, data: campaigns, total, page: parseInt(page), pages: Math.ceil(total / limit) });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getPublicCampaigns = async (req, res) => {
-  try {
-    const {
-      campaignType, category, priority, subcity, woreda, region, search,
-      page = 1, limit = 12, sort,
-    } = req.query;
-    const query = { status: 'active' };
-    if (campaignType) query.campaignType = campaignType;
-    if (category) query.category = category;
-    if (priority) query.priority = priority;
-    if (region) query['location.region'] = { $regex: `^${region}$`, $options: 'i' };
-    if (subcity) query.subcity = { $regex: `^${subcity}$`, $options: 'i' };
-    if (woreda) query.woreda = { $regex: `^${woreda}$`, $options: 'i' };
-    if (search) query.title = { $regex: search, $options: 'i' };
-
-    const sortOptions = {
-      newest: { isFeatured: -1, createdAt: -1 },
-      most_raised: { raisedAmount: -1 },
-      goal_progress: { goalAmount: -1 },
-      priority: { priority: -1, isFeatured: -1, createdAt: -1 },
-      ending_soon: { endDate: 1 },
-    };
-    const sorter = sortOptions[sort] || sortOptions.newest;
-
-    const total = await Campaign.countDocuments(query);
-    const campaigns = await Campaign.find(query)
-      .populate('createdBy', 'fullName organizationName')
-      .sort(sorter)
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    const stats = await Campaign.aggregate([
-      { $match: { status: 'active' } },
-      { $group: { _id: null, totalRaised: { $sum: '$raisedAmount' }, totalDonors: { $sum: '$donors' }, totalCampaigns: { $sum: 1 } } }
-    ]);
-
-    res.json({
-      success: true,
-      data: campaigns,
-      stats: stats[0] || { totalRaised: 0, totalDonors: 0, totalCampaigns: 0 },
-      total, page: parseInt(page), pages: Math.ceil(total / limit)
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getCampaign = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id)
-      .populate('createdBy', 'fullName organizationName email phone profileImage')
-      .populate('successStories');
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    const totalDonations = await Donation.countDocuments({ campaign: campaign._id, paymentStatus: 'completed' });
-    const topDonors = await Donation.find({ campaign: campaign._id, paymentStatus: 'completed', isAnonymous: false })
-      .populate('donor', 'fullName profileImage')
-      .sort({ amount: -1 }).limit(10);
-
-    // ── Transparency dashboard data ─────────────────────────────────────────
-    const [verified] = await Donation.aggregate([
-      { $match: { campaign: campaign._id, verificationStatus: 'verified', donationType: { $ne: 'in_kind' } } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
-    ]);
-    const [inKind] = await Donation.aggregate([
-      { $match: { campaign: campaign._id, verificationStatus: 'verified', donationType: 'in_kind' } },
-      { $group: { _id: null, total: { $sum: '$inKind.estimatedValue' }, count: { $sum: 1 } } },
-    ]);
-    const [expenses] = await Campaign.aggregate([
-      { $match: { _id: campaign._id } },
-      { $unwind: { path: '$expenseSummary', preserveNullAndEmptyArrays: true } },
-      { $group: { _id: null, totalExpenses: { $sum: '$expenseSummary.amount' } } },
-    ]);
-
-    const donorCount = await Donation.distinct('donor', { campaign: campaign._id, verificationStatus: 'verified', donor: { $ne: null } });
-    const anonymousCount = await Donation.countDocuments({ campaign: campaign._id, verificationStatus: 'verified', isAnonymous: true });
-    const volunteerCount = await require('../models/Volunteer').countDocuments({
-      campaign: campaign._id,
-      status: { $in: ['approved', 'attended'] },
-    });
-
-    const obj = campaign.toObject();
-    res.json({
-      success: true,
-      data: {
-        ...obj,
-        totalDonations,
-        topDonors,
-        transparency: {
-          targetAmount: campaign.goalAmount,
-          amountRaised: campaign.raisedAmount,
-          percentProgress: campaign.progressPercent,
-          donorCount: (donorCount?.length || 0) + anonymousCount,
-          daysRemaining: campaign.daysRemaining,
-          lastUpdateDate: campaign.lastUpdateDate,
-          verifiedFunds: verified?.total || 0,
-          verifiedDonations: verified?.count || 0,
-          inKindValue: inKind?.total || 0,
-          inKindDonations: inKind?.count || 0,
-          totalExpenses: expenses?.totalExpenses || 0,
-          beneficiaryCount: campaign.impactMetrics?.beneficiariesReached || campaign.estimatedBeneficiaries || 0,
-          volunteerCount,
-          expenseBreakdown: (campaign.expenseSummary || []).map((e) => ({
-            label: e.label, amount: e.amount, date: e.date, category: e.category,
-          })),
-          proofOfWork: (campaign.proofOfWork || []).map((m) => ({
-            kind: m.kind, url: m.url, caption: m.caption, date: m.date,
-          })),
-        },
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getMyCampaigns = async (req, res) => {
-  try {
-    const { status, page = 1, limit = 12 } = req.query;
-    const query = { createdBy: req.user._id };
-    if (status) query.status = status;
-    const total = await Campaign.countDocuments(query);
-    const campaigns = await Campaign.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    res.json({ success: true, data: campaigns, total, page: parseInt(page), pages: Math.ceil(total / limit) });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Community Campaign Platform ─────────────────────────────────────────────
-
-// Public list of the community campaign categories (with EN/AM labels).
-exports.getCampaignCategories = async (req, res) => {
-  res.json({
-    success: true,
-    data: CAMPAIGN_CATEGORIES.map((c) => ({
-      code: c.code,
-      name: c.en,
-      nameAmharic: c.am,
-      campaignType: c.campaignType,
-    })),
-  });
-};
-
-// Public transparency / donor statistics for a single campaign.
-exports.getCampaignTransparency = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const [verified] = await Donation.aggregate([
-      { $match: { campaign: campaign._id, verificationStatus: 'verified', donationType: { $ne: 'in_kind' } } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
-    ]);
-    const [inKind] = await Donation.aggregate([
-      { $match: { campaign: campaign._id, verificationStatus: 'verified', donationType: 'in_kind' } },
-      { $group: { _id: null, total: { $sum: '$inKind.estimatedValue' }, count: { $sum: 1 } } },
-    ]);
-    const byMethod = await Donation.aggregate([
-      { $match: { campaign: campaign._id, verificationStatus: 'verified', donationType: { $ne: 'in_kind' } } },
-      { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-      { $sort: { total: -1 } },
-    ]);
-    const recent = await Donation.find({
-      campaign: campaign._id,
-      verificationStatus: 'verified',
-      donationType: { $ne: 'in_kind' },
-      isAnonymous: false,
-    })
-      .populate('donor', 'fullName profileImage')
-      .sort({ verifiedAt: -1 })
-      .limit(20)
-      .lean();
-
-    const donorIds = await Donation.distinct('donor', { campaign: campaign._id, verificationStatus: 'verified', donor: { $ne: null } });
-    const anonymousCount = await Donation.countDocuments({ campaign: campaign._id, verificationStatus: 'verified', isAnonymous: true });
-
-    res.json({
-      success: true,
-      data: {
-        campaignId: campaign._id,
-        targetAmount: campaign.goalAmount,
-        amountRaised: campaign.raisedAmount,
-        percentProgress: campaign.progressPercent,
-        daysRemaining: campaign.daysRemaining,
-        lastUpdateDate: campaign.lastUpdateDate,
-        donorCount: (donorIds?.length || 0) + anonymousCount,
-        verifiedFunds: verified?.total || 0,
-        verifiedDonations: verified?.count || 0,
-        inKindValue: inKind?.total || 0,
-        inKindDonations: inKind?.count || 0,
-        byMethod: byMethod.map((m) => ({ method: m._id, total: m.total, count: m.count })),
-        recentDonors: recent.map((d) => ({
-          _id: d._id,
-          referenceNumber: d.referenceNumber,
-          amount: d.amount,
-          currency: d.currency,
-          donorName: d.donor?.fullName || d.fullName || 'Donor',
-          createdAt: d.verifiedAt || d.createdAt,
-        })),
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Add a progress update to a campaign. Supports optional proof-of-work media
-// (photos / videos / receipts) uploaded as multipart field "media" (array).
-exports.addCampaignUpdate = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const isAdmin = isAdminRole(req.user.role);
-    const isOwner = String(campaign.createdBy) === String(req.user._id);
-    const inScope = await isCampaignInOfficeScope(req.user, campaign);
-    if (!isAdmin && !isOwner && !inScope) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to update this campaign' });
-    }
-
-    const { title, description, type, receiptAmount } = req.body;
-    const updateType = type === 'milestone' ? 'milestone' : 'update';
-    const media = (req.files || []).map((f) => {
-      const kind = f.mimetype?.startsWith('video/') ? 'video'
-        : String(f.originalname || '').toLowerCase().includes('receipt') ? 'receipt'
-        : 'image';
-      return {
-        kind,
-        url: f.path || f.secure_url || '',
-        publicId: f.public_id || '',
-        caption: '',
-      };
-    });
-
-    const update = {
-      title: String(title || 'Progress Update').slice(0, 200),
-      description: String(description || '').slice(0, 4000),
-      date: new Date(),
-      type: updateType,
-      media,
-      receiptAmount: Number(receiptAmount) || 0,
-      postedBy: req.user._id,
-    };
-    campaign.updates.push(update);
-    await campaign.save();
-
-    // Refresh the public proof-of-work gallery with the latest media.
-    if (media.length > 0) {
-      const added = campaign.updates[campaign.updates.length - 1];
-      await Campaign.updateOne(
-        { _id: campaign._id },
-        {
-          $push: {
-            proofOfWork: {
-              $each: media.map((m) => ({
-                kind: m.kind, url: m.url, publicId: m.publicId,
-                caption: title ? String(title).slice(0, 200) : '', date: new Date(),
-                updateId: added._id,
-              })),
-              $position: 0,
-            },
-          },
-        }
-      );
-      // Keep the gallery to the latest 50 media items.
-      await Campaign.updateOne(
-        { _id: campaign._id },
-        { $slice: { proofOfWork: 50 } }
-      );
-    }
-
-    await logAction({ user: req.user, action: 'campaign_update_added', resource: 'donation_campaigns', resourceId: campaign._id, details: { title: update.title, mediaCount: media.length }, req });
-
-    const updated = await Campaign.findById(campaign._id);
-    res.status(201).json({ success: true, data: updated });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Remove an update (office owner or admin) — keeps the record clean.
-exports.deleteCampaignUpdate = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const isAdmin = isAdminRole(req.user.role);
-    const isOwner = String(campaign.createdBy) === String(req.user._id);
-    const inScope = await isCampaignInOfficeScope(req.user, campaign);
-    if (!isAdmin && !isOwner && !inScope) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to update this campaign' });
-    }
-
-    const updateId = req.params.updateId;
-    const before = campaign.updates.length;
-    campaign.updates = (campaign.updates || []).filter((u) => String(u._id) !== String(updateId));
-    campaign.proofOfWork = (campaign.proofOfWork || []).filter((m) => String(m.updateId) !== String(updateId));
-    await campaign.save();
-
-    res.json({ success: true, message: before > campaign.updates.length ? 'Update removed' : 'Update not found' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Add an expense line item to the campaign's expense summary.
-exports.addExpense = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const isAdmin = isAdminRole(req.user.role);
-    const isOwner = String(campaign.createdBy) === String(req.user._id);
-    const inScope = await isCampaignInOfficeScope(req.user, campaign);
-    if (!isAdmin && !isOwner && !inScope) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to update this campaign' });
-    }
-
-    const { label, amount, date, category } = req.body;
-    const parsedAmount = Number(amount);
-    if (!label || !Number.isFinite(parsedAmount)) {
-      return res.status(400).json({ success: false, message: 'Label and a valid amount are required.' });
-    }
-
-    campaign.expenseSummary.push({
-      label: String(label).slice(0, 200),
-      amount: parsedAmount,
-      date: date ? new Date(date) : new Date(),
-      category: String(category || '').slice(0, 100),
-    });
-    await campaign.save();
-
-    await logAction({ user: req.user, action: 'campaign_expense_added', resource: 'donation_campaigns', resourceId: campaign._id, details: { label, amount: parsedAmount }, req });
-    res.status(201).json({ success: true, data: campaign.expenseSummary });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Update the campaign's impact metrics (beneficiaries, houses, students, …).
-exports.updateImpactMetrics = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const isAdmin = isAdminRole(req.user.role);
-    const isOwner = String(campaign.createdBy) === String(req.user._id);
-    const inScope = await isCampaignInOfficeScope(req.user, campaign);
-    if (!isAdmin && !isOwner && !inScope) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to update this campaign' });
-    }
-
-    const { impactMetrics } = req.body;
-    if (!impactMetrics || typeof impactMetrics !== 'object') {
-      return res.status(400).json({ success: false, message: 'Impact metrics are required.' });
-    }
-
-    const numeric = {};
-    for (const key of [
-      'beneficiariesReached', 'housesRepaired', 'studentsSupported', 'mealsServed',
-      'elderlyServed', 'patientsSupported', 'youthEngaged', 'treesPlanted',
-      'sanitationSites', 'equipmentProvided', 'volunteersEngaged',
-    ]) {
-      const v = Number(impactMetrics[key]);
-      if (Number.isFinite(v)) numeric[key] = v;
-    }
-    campaign.impactMetrics = { ...(campaign.impactMetrics || {}), ...numeric };
-    if (Array.isArray(impactMetrics.custom)) {
-      campaign.impactMetrics.custom = impactMetrics.custom
-        .filter((c) => c && c.label)
-        .map((c) => ({ label: String(c.label).slice(0, 120), value: Number(c.value) || 0 }));
-    }
-    await campaign.save();
-
-    await logAction({ user: req.user, action: 'campaign_impact_updated', resource: 'donation_campaigns', resourceId: campaign._id, details: { impactMetrics: numeric }, req });
-    res.json({ success: true, data: campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Mark a campaign completed (office owner or admin).
-exports.completeCampaign = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-
-    const isAdmin = isAdminRole(req.user.role);
-    const isOwner = String(campaign.createdBy) === String(req.user._id);
-    const inScope = await isCampaignInOfficeScope(req.user, campaign);
-    if (!isAdmin && !isOwner && !inScope) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to update this campaign' });
-    }
-
-    campaign.status = 'completed';
-    await campaign.save();
-
-    await logAction({ user: req.user, action: 'campaign_completed', resource: 'donation_campaigns', resourceId: campaign._id, details: { title: campaign.title }, req });
-
-    await notify(req, [campaign.createdBy.toString()], {
-      title: 'Campaign Completed',
-      message: `"${campaign.title}" has been marked as completed. Add your impact metrics and proof-of-work so donors can see the outcome.`,
-      type: 'campaign_approved',
-      relatedId: campaign._id,
-      actorId: req.user._id,
-    });
-
-    res.json({ success: true, data: campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Public donor statistics overview for the transparency dashboard.
-exports.getPublicDonorStats = async (req, res) => {
-  try {
-    const [raised] = await Donation.aggregate([
-      { $match: { verificationStatus: 'verified', donationType: { $ne: 'in_kind' } } },
-      { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
-    ]);
-    const [inKind] = await Donation.aggregate([
-      { $match: { verificationStatus: 'verified', donationType: 'in_kind' } },
-      { $group: { _id: null, total: { $sum: '$inKind.estimatedValue' }, count: { $sum: 1 } } },
-    ]);
-    const registeredDonors = await Donation.distinct('donor', { verificationStatus: 'verified', donor: { $ne: null } });
-    const anonymousCount = await Donation.countDocuments({ verificationStatus: 'verified', isAnonymous: true });
-    const bySubcity = await Donation.aggregate([
-      { $match: { verificationStatus: 'verified', subcity: { $ne: '' } } },
-      { $group: { _id: '$subcity', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-      { $sort: { total: -1 } },
-    ]);
-    const byWoreda = await Donation.aggregate([
-      { $match: { verificationStatus: 'verified', woreda: { $ne: '' } } },
-      { $group: { _id: '$woreda', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-      { $sort: { total: -1 } },
-    ]);
-
-    res.json({
-      success: true,
-      data: {
-        totalVerifiedFunds: raised?.total || 0,
-        totalVerifiedDonations: raised?.count || 0,
-        totalInKindValue: inKind?.total || 0,
-        totalInKindDonations: inKind?.count || 0,
-        totalDonors: (registeredDonors?.length || 0) + anonymousCount,
-        bySubcity: bySubcity.map((m) => ({ name: m._id, total: m.total, count: m.count })),
-        byWoreda: byWoreda.map((m) => ({ name: m._id, total: m.total, count: m.count })),
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Donation ───
-
-exports.donate = async (req, res) => {
-  try {
-    const { campaignId, amount, isAnonymous, message, paymentMethod, donorName, donorEmail } = req.body;
-    const campaign = await Campaign.findById(campaignId);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    if (campaign.status !== 'active') return res.status(400).json({ success: false, message: 'Campaign is not active' });
-    if (new Date() > new Date(campaign.endDate)) return res.status(400).json({ success: false, message: 'Campaign has ended' });
-
-    const donation = await Donation.create({
-      campaign: campaignId,
-      donor: req.user?._id || undefined,
-      amount, isAnonymous: isAnonymous || false,
-      message: message || '',
-      paymentMethod,
-      paymentStatus: 'completed',
-      donorName: donorName || (req.user?.fullName || 'Anonymous'),
-      donorEmail: donorEmail || (req.user?.email || ''),
-    });
-
-    await Payment.create({
-      donation: donation._id,
-      campaign: campaignId,
-      amount,
-      paymentMethod,
-      status: 'completed',
-      transactionId: `TXN-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
-      processedAt: new Date(),
-    });
-
-    const receipt = await Receipt.create({
-      receiptNumber: donation.receiptNumber,
-      donation: donation._id,
-      campaign: campaignId,
-      donor: req.user?._id || undefined,
-      donorName: isAnonymous ? 'Anonymous' : (donorName || req.user?.fullName || 'Anonymous'),
-      donorEmail: donorEmail || (req.user?.email || ''),
-      amount,
-      paymentMethod,
-      campaignTitle: campaign.title,
-      transactionId: donation.transactionId,
-      isAnonymous: isAnonymous || false,
-      message: message || '',
-    });
-
-    campaign.raisedAmount = (campaign.raisedAmount || 0) + amount;
-    campaign.donors = (campaign.donors || 0) + 1;
-    await campaign.save();
-
-    await notify(req, [campaign.createdBy.toString()], {
-      title: 'New Donation Received',
-      message: `${isAnonymous ? 'Anonymous' : (donorName || 'Someone')} donated ${amount} ETB to "${campaign.title}"`,
-      type: 'donation_received',
-      relatedId: campaign._id,
-      actorId: req.user?._id,
-    });
-
-    res.status(201).json({
-      success: true,
-      data: { donation, receipt },
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getDonationHistory = async (req, res) => {
-  try {
-    const { page = 1, limit = 20 } = req.query;
-    const query = {};
-    if (req.user.role === 'citizen') query.donor = req.user._id;
-    if (req.user.role === 'government' || req.user.role === 'ngo') {
-      const campaigns = await Campaign.find({ createdBy: req.user._id }).select('_id');
-      query.campaign = { $in: campaigns.map(c => c._id) };
-    }
-    const total = await Donation.countDocuments(query);
-    const donations = await Donation.find(query)
-      .populate('campaign', 'title campaignType')
-      .populate('donor', 'fullName email')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    res.json({ success: true, data: donations, total, page: parseInt(page), pages: Math.ceil(total / limit) });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Receipt ───
-
-exports.getReceipt = async (req, res) => {
-  try {
-    const receipt = await Receipt.findOne({ receiptNumber: req.params.receiptNumber })
-      .populate('campaign', 'title campaignType');
-    if (!receipt) return res.status(404).json({ success: false, message: 'Receipt not found' });
-    res.json({ success: true, data: receipt });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getMyReceipts = async (req, res) => {
-  try {
-    const receipts = await Receipt.find({ donor: req.user._id })
-      .populate('campaign', 'title campaignType')
-      .sort({ createdAt: -1 });
-    res.json({ success: true, data: receipts });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Statistics ───
-
-exports.getCampaignStats = async (req, res) => {
-  try {
-    const match = {};
-    if (req.user.role === 'government' || req.user.role === 'ngo' || isOfficeRole(req.user.role)) {
-      const campaigns = await Campaign.find({ createdBy: req.user._id }).select('_id');
-      match._id = { $in: campaigns.map(c => c._id) };
-    }
-    const pipeline = [
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          totalCampaigns: { $sum: 1 },
-          activeCampaigns: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
-          completedCampaigns: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
-          totalRaised: { $sum: '$raisedAmount' },
-          totalDonors: { $sum: '$donors' },
-          totalGoal: { $sum: '$goalAmount' },
-        },
-      },
-    ];
-    const stats = await Campaign.aggregate(pipeline);
-    res.json({ success: true, data: stats[0] || { totalCampaigns: 0, activeCampaigns: 0, completedCampaigns: 0, totalRaised: 0, totalDonors: 0, totalGoal: 0 } });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getFinancialReports = async (req, res) => {
-  try {
-    const match = {};
-    if (req.user.role === 'government' || req.user.role === 'ngo') {
-      const campaigns = await Campaign.find({ createdBy: req.user._id }).select('_id');
-      match.campaign = { $in: campaigns.map(c => c._id) };
-    }
-    const donations = await Donation.find({ ...match, paymentStatus: 'completed' })
-      .populate('campaign', 'title campaignType')
-      .populate('donor', 'fullName email')
-      .sort({ createdAt: -1 }).limit(100);
-    const totalAmount = donations.reduce((sum, d) => sum + d.amount, 0);
-    res.json({ success: true, data: { donations, totalAmount, count: donations.length } });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getFinancialAnalytics = async (req, res) => {
-  try {
-    const monthly = await Donation.aggregate([
-      { $match: { paymentStatus: 'completed' } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
-          total: { $sum: '$amount' },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-      { $limit: 12 },
-    ]);
-    const byMethod = await Donation.aggregate([
-      { $match: { paymentStatus: 'completed' } },
-      { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-    ]);
-    const byCampaignType = await Donation.aggregate([
-      { $match: { paymentStatus: 'completed' } },
-      {
-        $lookup: { from: 'campaigns', localField: 'campaign', foreignField: '_id', as: 'campaign' }
-      },
-      { $unwind: '$campaign' },
-      { $group: { _id: '$campaign.campaignType', total: { $sum: '$amount' }, count: { $sum: 1 } } },
-    ]);
-    res.json({ success: true, data: { monthly, byMethod, byCampaignType } });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.detectFraud = async (req, res) => {
-  try {
-    const suspicious = await Donation.find({
-      paymentStatus: 'completed',
-      createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-    }).populate('campaign', 'title');
-    const flagged = suspicious.filter(d => {
-      const hourDonations = suspicious.filter(s =>
-        s.donor?.toString() === d.donor?.toString() &&
-        Math.abs(new Date(s.createdAt) - new Date(d.createdAt)) < 3600000
-      );
-      return hourDonations.length > 5 || d.amount > 100000;
-    });
-    res.json({ success: true, data: { flagged, total: suspicious.length } });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Save Campaign ───
-
-exports.saveCampaign = async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id);
-    const idx = (user.savedCampaigns || []).indexOf(req.params.id);
-    if (idx > -1) {
-      user.savedCampaigns.splice(idx, 1);
-      await user.save();
-      return res.json({ success: true, saved: false });
-    }
-    if (!user.savedCampaigns) user.savedCampaigns = [];
-    user.savedCampaigns.push(req.params.id);
-    await user.save();
-    res.json({ success: true, saved: true });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getSavedCampaigns = async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id).populate({
-      path: 'savedCampaigns',
-      match: { status: 'active' },
-    });
-    res.json({ success: true, data: user.savedCampaigns || [] });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getSuccessStories = async (req, res) => {
-  try {
-    const campaigns = await Campaign.find({
-      status: 'completed',
-      'successStories.0': { $exists: true }
-    }).select('title successStories image campaignType').sort({ updatedAt: -1 }).limit(10);
-    const stories = campaigns.flatMap(c =>
-      (c.successStories || []).map(s => ({ ...s.toObject(), campaignTitle: c.title, campaignImage: c.image, campaignType: c.campaignType }))
-    );
-    res.json({ success: true, data: stories });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getTopDonors = async (req, res) => {
-  try {
-    const topDonors = await Donation.aggregate([
-      { $match: { paymentStatus: 'completed', isAnonymous: false } },
-      {
-        $group: {
-          _id: '$donor',
-          totalDonated: { $sum: '$amount' },
-          donationCount: { $sum: 1 },
-          lastDonation: { $max: '$createdAt' },
-        },
-      },
-      { $sort: { totalDonated: -1 } },
-      { $limit: 20 },
-      {
-        $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'donor' }
-      },
-      { $unwind: { path: '$donor', preserveNullAndEmptyArrays: true } },
-    ]);
-    res.json({ success: true, data: topDonors });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.getDistributionReports = async (req, res) => {
-  try {
-    const campaigns = await Campaign.find({ createdBy: req.user._id }).sort({ createdAt: -1 });
-    const report = await Promise.all(campaigns.map(async (c) => {
-      const donations = await Donation.find({ campaign: c._id, paymentStatus: 'completed' });
-      return {
-        campaign: { _id: c._id, title: c.title, campaignType: c.campaignType, raisedAmount: c.raisedAmount, goalAmount: c.goalAmount, donors: c.donors, status: c.status },
-        totalDonations: donations.length,
-        totalAmount: donations.reduce((s, d) => s + d.amount, 0),
-        donorsList: donations.filter(d => !d.isAnonymous).slice(0, 10),
-      };
-    }));
-    res.json({ success: true, data: report });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.rejectCampaign = async (req, res) => {
-  try {
-    const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    campaign.status = 'closed';
-    await campaign.save();
-    await logAction({ user: req.user, action: 'campaign_rejected', resource: 'donation_campaigns', resourceId: campaign._id, details: { title: campaign.title }, req });
-    res.json({ success: true, message: 'Campaign rejected and closed' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ─── Report-to-Campaign Integration ───
-
-exports.getAvailableReports = async (req, res) => {
-  try {
-    let reports = [];
-    if (req.user.role === 'government') {
-      reports = await InfrastructureReport.find({
-        status: { $in: ['Approved', 'In Progress', 'Completed'] },
-        $or: [{ submittedBy: req.user._id }, { assignedTo: req.user._id }],
-      }).sort({ createdAt: -1 }).limit(20);
-      reports = reports.map(r => ({
-        _id: r._id,
-        title: r.title,
-        description: r.description,
-        type: 'Infrastructure',
-        location: { region: r.region, city: r.city, specificLocation: r.specificLocation },
-        image: r.photos?.[0] || '',
-        estimatedCost: r.estimatedCost || 0,
-      }));
-    }
-    if (req.user.role === 'ngo') {
-      reports = await EmergencyReport.find({
-        status: { $in: ['Active', 'In Progress', 'Resolved'] },
-        $or: [{ submittedBy: req.user._id }, { assignedTo: req.user._id }],
-      }).sort({ createdAt: -1 }).limit(20);
-      reports = reports.map(r => ({
-        _id: r._id,
-        title: r.title,
-        description: r.description,
-        type: 'Emergency',
-        location: { region: r.region, city: r.city, specificLocation: r.specificLocation },
-        image: r.photos?.[0] || '',
-        victims: r.numberOfPeopleAffected || 0,
-      }));
-    }
-    res.json({ success: true, data: reports });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-exports.createCampaignFromReport = async (req, res) => {
-  try {
-    const { reportId, reportType, goalAmount, endDate } = req.body;
-    if (!reportId || !reportType || !goalAmount || !endDate) {
-      return res.status(400).json({ success: false, message: 'Missing required fields: reportId, reportType, goalAmount, endDate' });
-    }
-
-    let reportData = null;
-    let campaignType = 'general';
-    if (reportType === 'Infrastructure') {
-      reportData = await InfrastructureReport.findById(reportId);
-      if (!reportData) return res.status(404).json({ success: false, message: 'Infrastructure report not found' });
-      if (req.user.role !== 'government') return res.status(403).json({ success: false, message: 'Only government can create infrastructure campaigns' });
-      campaignType = 'infrastructure';
-    }
-    if (reportType === 'Emergency') {
-      reportData = await EmergencyReport.findById(reportId);
-      if (!reportData) return res.status(404).json({ success: false, message: 'Emergency report not found' });
-      if (req.user.role !== 'ngo') return res.status(403).json({ success: false, message: 'Only NGOs can create emergency campaigns' });
-      campaignType = 'emergency';
+    // Subcity admins creating a woreda-level campaign must scope it to one of
+    // the woredas inside their subcity (fallback: their own woreda name).
+    if (!isGlobal(req.user) && isSubcityAdmin(req.user) && !isWoredaAdmin(req.user) && level === 'woreda') {
+      const bodyWoreda = String(req.body.location?.woreda || '').trim();
+      if (!bodyWoreda) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please specify the woreda for this woreda-level campaign',
+          field: 'location.woreda',
+        });
+      }
+      location.woreda = bodyWoreda;
     }
 
     const campaign = await Campaign.create({
-      title: `Fundraising: ${reportData.title}`,
-      description: reportData.description,
-      campaignType,
-      goalAmount,
-      endDate,
-      location: { region: reportData.region || '', city: reportData.city || '', specificLocation: reportData.specificLocation || '' },
-      image: reportData.photos?.[0] || '',
+      title: String(title).trim(),
+      description: String(description).trim(),
+      category: category && CAMPAIGN_CATEGORIES.includes(category) ? category : 'other',
+      campaignLevel: level,
+      location,
+      subcityId,
+      woredaId,
+      goalAmount: amount,
+      endDate: endDate ? new Date(endDate) : null,
+      image: req.file ? req.file.path : String(req.body.image || ''),
+      status: 'draft',
       createdBy: req.user._id,
-      relatedReport: reportData._id,
-      relatedReportModel: reportType === 'Infrastructure' ? 'InfrastructureReport' : 'EmergencyReport',
-      estimatedBeneficiaries: reportType === 'Emergency' ? reportData.numberOfPeopleAffected : undefined,
+      createdByName: req.user.fullName || '',
+      createdByRole: req.user.role || '',
+      auditHistory: [{ action: 'created', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date() }],
     });
 
-    const admins = await User.find({ role: 'admin' }).select('_id');
-    await notify(req, admins.map(a => a._id.toString()), {
-      title: 'New Campaign from Report',
-      message: `"${campaign.title}" was created from a ${reportType} report and needs approval.`,
-      type: 'campaign_approval',
-      relatedId: campaign._id,
-      actorId: req.user._id,
+    const io = getIo(req);
+    io?.to(campaign._id.toString()).emit('campaign:new', { campaign });
+    await logAction({
+      user: req.user,
+      action: 'campaign_create',
+      resource: 'campaign',
+      resourceId: campaign._id,
+      details: { title: campaign.title, level: campaign.campaignLevel },
+      req,
     });
 
-    res.status(201).json({ success: true, data: campaign });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(201).json({ success: true, message: 'Campaign created', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to create campaign:', err.message);
+    if (err.name === 'ValidationError') {
+      const first = Object.values(err.errors || {})[0];
+      return res.status(400).json({ success: false, message: first?.message || 'The campaign data is invalid', field: first?.path });
+    }
+    res.status(500).json({ success: false, message: 'Failed to create campaign' });
   }
+};
+
+const updateCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot modify this campaign' });
+    }
+    if (campaign.status === 'completed' || campaign.status === 'cancelled') {
+      return res.status(400).json({ success: false, message: 'Completed or cancelled campaigns cannot be edited' });
+    }
+
+    const { title, description, category, goalAmount, endDate } = req.body;
+    if (title !== undefined && String(title).trim()) campaign.title = String(title).trim();
+    if (description !== undefined && String(description).trim()) campaign.description = String(description).trim();
+    if (category !== undefined && CAMPAIGN_CATEGORIES.includes(category)) campaign.category = category;
+
+    // Goal/end date are locked once a campaign is pending or live to preserve
+    // the approval record's integrity.
+    const mutable = ['draft', 'rejected', 'suspended'].includes(campaign.status);
+    if (mutable && goalAmount !== undefined) {
+      const amount = Number(goalAmount);
+      if (amount && amount > 0) campaign.goalAmount = amount;
+    }
+    if (mutable && endDate !== undefined) campaign.endDate = endDate ? new Date(endDate) : null;
+    if (req.file) campaign.image = req.file.path;
+    if (req.body.image !== undefined && !req.file) campaign.image = String(req.body.image);
+
+    campaign.auditHistory.push({ action: 'updated', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date() });
+    await campaign.save();
+
+    const io = getIo(req);
+    io?.to(campaign._id.toString()).emit('campaign:updated', { campaign });
+
+    // Notify the campaign owner when a different authorized admin edited it.
+    if (campaign.createdBy && String(campaign.createdBy) !== String(req.user._id)) {
+      await notifyUser({
+        userId: campaign.createdBy,
+        actorId: req.user._id,
+        title: 'Campaign updated',
+        message: `Your campaign "${campaign.title}" was updated by ${req.user.fullName || 'an admin'}.`,
+        type: 'campaign_status',
+        campaignId: campaign._id,
+        io,
+      });
+    }
+
+    await logAction({ user: req.user, action: 'campaign_update', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign updated', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to update campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to update campaign' });
+  }
+};
+
+// ── Workflow transitions ─────────────────────────────────────────────────────
+
+const submitCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot modify this campaign' });
+    }
+    if (!['draft', 'rejected', 'suspended'].includes(campaign.status)) {
+      return res.status(400).json({ success: false, message: 'Only draft, rejected or suspended campaigns can be submitted for approval' });
+    }
+
+    campaign.status = 'pending';
+    campaign.rejectReason = '';
+    campaign.auditHistory.push({ action: 'submitted', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: 'Submitted for approval' });
+
+    const { score, flags } = await runFraudChecks(campaign);
+    const added = mergeFraudFlags(campaign, flags);
+    campaign.fraudScore = score;
+    if (added.length) campaign.fraudFlags.push(...added);
+
+    await campaign.save();
+
+    await notifyApprovers(req, campaign, 'submitted');
+    const io = getIo(req);
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_submit', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign submitted for approval', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to submit campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to submit campaign' });
+  }
+};
+
+const approveCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Only pending campaigns can be approved' });
+    }
+    if (!canApprove(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to approve this campaign' });
+    }
+
+    campaign.status = 'active';
+    campaign.auditHistory.push({ action: 'approved', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: 'Approved and published' });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign approved',
+      message: `Your campaign "${campaign.title}" has been approved and is now live.`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_approve', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign approved', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to approve campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to approve campaign' });
+  }
+};
+
+const rejectCampaign = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ success: false, message: 'A rejection reason is required', field: 'reason' });
+
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Only pending campaigns can be rejected' });
+    }
+    if (!canApprove(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to reject this campaign' });
+    }
+
+    campaign.status = 'rejected';
+    campaign.rejectReason = reason;
+    campaign.auditHistory.push({ action: 'rejected', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: reason });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign rejected',
+      message: `Your campaign "${campaign.title}" was rejected: ${reason}`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_reject', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, reason }, req });
+
+    res.json({ success: true, message: 'Campaign rejected', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to reject campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to reject campaign' });
+  }
+};
+
+// The completing authority verifies the campaign reached its objective.
+const completeCampaign = async (req, res) => {
+  try {
+    const note = String(req.body.note || '').trim();
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'Only active campaigns can be completed' });
+    }
+    if (!canManageCampaign(req.user, campaign) && !canApprove(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to complete this campaign' });
+    }
+
+    campaign.status = 'completed';
+    campaign.completion = {
+      verifiedBy: req.user._id,
+      verifiedByName: req.user.fullName || '',
+      verifiedAt: new Date(),
+      note,
+    };
+    campaign.auditHistory.push({ action: 'completed', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyDonors(req, campaign, `"${campaign.title}" has been completed. Thank you for your support!`, 'campaign_status');
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_complete', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign completed', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to complete campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to complete campaign' });
+  }
+};
+
+const suspendCampaign = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ success: false, message: 'A suspension reason is required', field: 'reason' });
+
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'Only active campaigns can be suspended' });
+    }
+
+    campaign.status = 'suspended';
+    campaign.suspension = {
+      reason,
+      suspendedBy: req.user.fullName || '',
+      suspendedAt: new Date(),
+      restoredAt: null,
+    };
+    campaign.auditHistory.push({ action: 'suspended', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: reason });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign suspended',
+      message: `Your campaign "${campaign.title}" was suspended: ${reason}`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_suspend', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, reason }, req });
+
+    res.json({ success: true, message: 'Campaign suspended', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to suspend campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to suspend campaign' });
+  }
+};
+
+const restoreCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (campaign.status !== 'suspended') {
+      return res.status(400).json({ success: false, message: 'Only suspended campaigns can be restored' });
+    }
+
+    campaign.status = 'active';
+    campaign.suspension.restoredAt = new Date();
+    campaign.auditHistory.push({ action: 'restored', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date() });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign restored',
+      message: `Your campaign "${campaign.title}" has been restored and is live again.`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_restore', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign restored', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to restore campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to restore campaign' });
+  }
+};
+
+// ── Self-service lifecycle (subcity / woreda owners) ─────────────────────────
+
+// Hard-delete a campaign that has not started receiving verified funding. Only
+// draft / rejected / suspended / cancelled campaigns can be removed; campaigns
+// that ever received verified money stay in place for audit purposes.
+const deleteCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot delete this campaign' });
+    }
+    if (!['draft', 'rejected', 'suspended', 'cancelled'].includes(campaign.status)) {
+      return res.status(400).json({ success: false, message: 'Only draft, rejected, suspended or cancelled campaigns can be deleted' });
+    }
+    const verified = await Donation.countDocuments({ campaign: campaign._id, status: 'verified' });
+    if (verified > 0) {
+      return res.status(400).json({ success: false, message: 'This campaign has verified donations and cannot be deleted' });
+    }
+
+    await Promise.all([
+      Campaign.deleteOne({ _id: campaign._id }),
+      CampaignUpdate.deleteMany({ campaign: campaign._id }),
+      CampaignProof.deleteMany({ campaign: campaign._id }),
+      SavedCampaign.deleteMany({ campaign: campaign._id }),
+      Donation.deleteMany({ campaign: campaign._id }),
+    ]);
+
+    const io = getIo(req);
+    io?.to(campaign._id.toString()).emit('campaign:deleted', { id: campaign._id });
+    await logAction({ user: req.user, action: 'campaign_delete', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign deleted' });
+  } catch (err) {
+    console.error('[Campaign] Failed to delete campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to delete campaign' });
+  }
+};
+
+// Activate a campaign so it becomes publicly visible and accepts donations.
+const activateCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot activate this campaign' });
+    }
+    if (campaign.status === 'active') {
+      return res.json({ success: true, message: 'Campaign is already active', data: { campaign } });
+    }
+    if (!['draft', 'rejected', 'suspended', 'cancelled'].includes(campaign.status)) {
+      return res.status(400).json({ success: false, message: 'Only draft, rejected, suspended or cancelled campaigns can be activated' });
+    }
+
+    campaign.status = 'active';
+    campaign.rejectReason = '';
+    campaign.auditHistory.push({ action: 'activated', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: 'Campaign activated by owner' });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign activated',
+      message: `Your campaign "${campaign.title}" is now live and accepting donations.`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_activate', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
+
+    res.json({ success: true, message: 'Campaign activated', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to activate campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to activate campaign' });
+  }
+};
+
+// Deactivate a live campaign (suspends donations + hides it from public lists).
+const deactivateCampaign = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot deactivate this campaign' });
+    }
+    if (campaign.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'Only active campaigns can be deactivated' });
+    }
+
+    campaign.status = 'suspended';
+    campaign.suspension = {
+      reason: reason || 'Deactivated by administrator',
+      suspendedBy: req.user.fullName || '',
+      suspendedAt: new Date(),
+      restoredAt: null,
+    };
+    campaign.auditHistory.push({ action: 'deactivated', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: reason || 'Deactivated by administrator' });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: campaign.createdBy,
+      actorId: req.user._id,
+      title: 'Campaign deactivated',
+      message: `Your campaign "${campaign.title}" was deactivated${reason ? `: ${reason}` : '.'}`,
+      type: 'campaign_status',
+      campaignId: campaign._id,
+      io,
+    });
+    io?.to(campaign._id.toString()).emit('campaign:statusUpdate', { campaign });
+    await logAction({ user: req.user, action: 'campaign_deactivate', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, reason }, req });
+
+    res.json({ success: true, message: 'Campaign deactivated', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to deactivate campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to deactivate campaign' });
+  }
+};
+
+// Compact campaign + donation stats for the subcity / woreda dashboard overview.
+const getCampaignDashboardStats = async (req, res) => {
+  try {
+    const scope = buildCampaignScope(req.user);
+    const owned = await Campaign.find(scope).select('_id').lean();
+    const ids = owned.map((c) => c._id);
+
+    const [campaignAgg, donationAgg, recentDonors] = await Promise.all([
+      Campaign.aggregate([
+        { $match: scope },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            active: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+            raised: { $sum: '$raisedAmount' },
+            goal: { $sum: '$goalAmount' },
+          },
+        },
+      ]),
+      ids.length
+        ? Donation.aggregate([
+            { $match: { campaign: { $in: ids }, status: 'verified' } },
+            {
+              $group: {
+                _id: null,
+                count: { $sum: 1 },
+                amount: { $sum: { $cond: [{ $eq: ['$type', 'money'] }, '$amount', 0] } },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      ids.length
+        ? Donation.find({ campaign: { $in: ids }, status: 'verified' })
+            .populate('campaign', 'title')
+            .sort({ createdAt: -1 })
+            .limit(5)
+            .select('donorName donorPhone amount paymentMethod type createdAt campaign')
+            .lean()
+        : Promise.resolve([]),
+    ]);
+
+    const c = campaignAgg[0] || { total: 0, active: 0, raised: 0, goal: 0 };
+    const d = donationAgg[0] || { count: 0, amount: 0 };
+
+    res.json({
+      success: true,
+      data: {
+        totalCampaigns: c.total,
+        activeCampaigns: c.active,
+        totalDonations: d.count,
+        totalDonationAmount: d.amount,
+        campaignProgress: c.goal > 0 ? Math.round((c.raised / c.goal) * 100) : 0,
+        recentDonors,
+      },
+    });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch dashboard stats:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch dashboard stats' });
+  }
+};
+
+// ── Fraud screening & review ────────────────────────────────────────────────
+
+// Heuristic fraud screening. Returns { score, flags } where each flag carries a
+// weight. A cumulative score of >= 40 puts the campaign in the admin fraud queue.
+async function runFraudChecks(campaign) {
+  const flags = [];
+  const push = (weight, reason) => flags.push({ weight, reason });
+
+  const desc = String(campaign.description || '').trim();
+  if (campaign.goalAmount >= 5000000) push(30, 'Goal amount is unusually high for the area');
+  if (desc.length < 50) push(25, 'Very short campaign description');
+  if (!campaign.image) push(15, 'No campaign image provided');
+
+  const rejections = (campaign.auditHistory || []).filter((a) => a.action === 'rejected').length;
+  if (rejections >= 2) push(20, 'Campaign has been rejected repeatedly');
+
+  if (campaign.status === 'active' && campaign.raisedAmount > 0) {
+    const verifiedProofs = await CampaignProof.countDocuments({
+      campaign: campaign._id,
+      status: 'verified',
+    });
+    if (verifiedProofs === 0) push(20, 'Raised funds with no verified supporting evidence');
+  }
+
+  return { score: flags.reduce((s, f) => s + f.weight, 0), flags };
+}
+
+// Append only flags we do not already hold so re-running checks never piles up
+// duplicate entries for the same reason.
+function mergeFraudFlags(campaign, newFlags) {
+  const reasons = new Set((campaign.fraudFlags || []).map((f) => f.reason));
+  return newFlags
+    .filter((f) => !reasons.has(f.reason))
+    .map((f) => ({ reason: f.reason, weight: f.weight, source: 'auto', status: 'open' }));
+}
+
+// System admins: everything currently open or confirmed in the fraud queue.
+const getFraudReview = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const query = {
+      $or: [
+        { fraudScore: { $gte: 40 } },
+        { 'fraudFlags.status': { $in: ['open', 'confirmed'] } },
+      ],
+    };
+    if (req.query.status === 'open' || req.query.status === 'confirmed') {
+      query['fraudFlags.status'] = req.query.status;
+    }
+    if (req.query.q) {
+      const rx = { $regex: esc(req.query.q), $options: 'i' };
+      query.$and = [{ $or: [{ title: rx }, { description: rx }, { 'location.subcity': rx }] }];
+    }
+
+    const [campaigns, total] = await Promise.all([
+      Campaign.find(query).sort({ fraudScore: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Campaign.countDocuments(query),
+    ]);
+
+    res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch fraud review:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch fraud review' });
+  }
+};
+
+const checkFraud = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    const { score, flags } = await runFraudChecks(campaign);
+    const added = mergeFraudFlags(campaign, flags);
+    campaign.fraudScore = score;
+    if (added.length) campaign.fraudFlags.push(...added);
+    campaign.auditHistory.push({ action: 'fraud_check', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date() });
+    await campaign.save();
+
+    await logAction({ user: req.user, action: 'campaign_fraud_check', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, score, added: added.length }, req });
+    res.json({ success: true, message: 'Fraud checks completed', data: { fraudScore: score, added } });
+  } catch (err) {
+    console.error('[Campaign] Failed to run fraud checks:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to run fraud checks' });
+  }
+};
+
+const reviewFraudFlag = async (req, res) => {
+  try {
+    const decision = req.body.decision === 'confirmed' ? 'confirmed' : 'dismissed';
+    const note = String(req.body.note || '').trim();
+
+    const campaign = await Campaign.findOne({ 'fraudFlags._id': req.params.flagId });
+    if (!campaign) return res.status(404).json({ success: false, message: 'Flag not found' });
+
+    const flag = campaign.fraudFlags.id(req.params.flagId);
+    if (!flag) return res.status(404).json({ success: false, message: 'Flag not found' });
+
+    flag.status = decision;
+    flag.reviewedBy = req.user._id;
+    flag.reviewedAt = new Date();
+    flag.reviewNote = note;
+
+    campaign.fraudScore = campaign.fraudFlags
+      .filter((f) => f.status === 'open' || f.status === 'confirmed')
+      .reduce((s, f) => s + (f.weight || 0), 0);
+    campaign.auditHistory.push({
+      action: decision === 'confirmed' ? 'fraud_confirmed' : 'fraud_dismissed',
+      byName: req.user.fullName || '',
+      byRole: req.user.role || '',
+      at: new Date(),
+      note,
+    });
+    await campaign.save();
+
+    await logAction({ user: req.user, action: 'campaign_fraud_review', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, decision, note }, req });
+    res.json({ success: true, message: 'Fraud flag reviewed', data: { campaign } });
+  } catch (err) {
+    console.error('[Campaign] Failed to review fraud flag:', err.message);
+    if (err.name === 'CastError') return res.status(400).json({ success: false, message: 'Invalid flag id' });
+    res.status(500).json({ success: false, message: 'Failed to review fraud flag' });
+  }
+};
+
+// Citizens flag a campaign they believe is suspicious; it lands in the admin queue.
+const reportCampaign = async (req, res) => {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ success: false, message: 'A reason is required', field: 'reason' });
+
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!['active', 'pending', 'suspended', 'completed'].includes(campaign.status)) {
+      return res.status(400).json({ success: false, message: 'This campaign cannot be reported' });
+    }
+
+    const already = (campaign.fraudFlags || []).find(
+      (f) => f.source === 'citizen_report' && f.reportedBy && String(f.reportedBy) === String(req.user._id)
+    );
+    if (already) return res.json({ success: true, message: 'Campaign already reported' });
+
+    campaign.fraudFlags.push({
+      reason: `Citizen report: ${reason}`,
+      weight: 35,
+      source: 'citizen_report',
+      reportedBy: req.user._id,
+      reportNote: reason,
+      status: 'open',
+    });
+    campaign.fraudScore = (campaign.fraudScore || 0) + 35;
+    await campaign.save();
+
+    await logAction({ user: req.user, action: 'campaign_reported', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title, reason }, req });
+    res.status(201).json({ success: true, message: 'Campaign reported for review' });
+  } catch (err) {
+    console.error('[Campaign] Failed to report campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to report campaign' });
+  }
+};
+
+// ── Updates ──────────────────────────────────────────────────────────────────
+
+const addCampaignUpdate = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot post updates to this campaign' });
+    }
+
+    const message = String(req.body.message || '').trim();
+    if (!message) return res.status(400).json({ success: false, message: 'Update message is required', field: 'message' });
+
+    const update = await CampaignUpdate.create({
+      campaign: campaign._id,
+      author: req.user._id,
+      authorName: req.user.fullName || '',
+      authorRole: req.user.role || '',
+      title: String(req.body.title || '').trim(),
+      message,
+      type: ['progress', 'milestone', 'reminder', 'completion'].includes(req.body.type) ? req.body.type : 'general',
+      images: req.files ? req.files.map((f) => f.path) : [],
+    });
+
+    campaign.auditHistory.push({ action: 'update', byName: req.user.fullName || '', byRole: req.user.role || '', at: new Date(), note: 'Added campaign update' });
+    await campaign.save();
+
+    const io = getIo(req);
+    await notifyDonors(req, campaign, `${req.user.fullName || 'The organizer'} posted an update to "${campaign.title}".`, 'campaign_update');
+    io?.to(campaign._id.toString()).emit('campaign:update', { update });
+
+    res.status(201).json({ success: true, message: 'Campaign update added', data: { update } });
+  } catch (err) {
+    console.error('[Campaign] Failed to add update:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to add update' });
+  }
+};
+
+const getCampaignUpdates = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id).select('_id').lean();
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    const updates = await CampaignUpdate.find({ campaign: campaign._id }).sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ success: true, data: { updates } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch updates:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch updates' });
+  }
+};
+
+// ── Proofs ───────────────────────────────────────────────────────────────────
+
+const uploadCampaignProof = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot upload proofs to this campaign' });
+    }
+
+    const proof = await CampaignProof.create({
+      campaign: campaign._id,
+      uploader: req.user._id,
+      uploaderName: req.user.fullName || '',
+      uploaderRole: req.user.role || '',
+      title: String(req.body.title || '').trim(),
+      description: String(req.body.description || '').trim(),
+      type: ['expense', 'milestone', 'completion'].includes(req.body.type) ? req.body.type : 'general',
+      files: req.files ? req.files.map((f) => f.path) : [],
+    });
+
+    const io = getIo(req);
+    await notifyApprovers(req, campaign, 'proof');
+    io?.to(campaign._id.toString()).emit('campaign:proof', { proof });
+
+    res.status(201).json({ success: true, message: 'Proof uploaded for verification', data: { proof } });
+  } catch (err) {
+    console.error('[Campaign] Failed to upload proof:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to upload proof' });
+  }
+};
+
+const getCampaignProofs = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id).select('_id').lean();
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    const proofs = await CampaignProof.find({ campaign: campaign._id }).sort({ createdAt: -1 }).limit(100).lean();
+    res.json({ success: true, data: { proofs } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch proofs:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch proofs' });
+  }
+};
+
+// All proofs awaiting verification across the campaigns the user manages,
+// enriched with their campaign title for the dashboard queue view.
+const getProofQueue = async (req, res) => {
+  try {
+    const scope = buildCampaignScope(req.user);
+    const campaigns = await Campaign.find(scope).select('_id').lean();
+    const campaignIds = campaigns.map((c) => c._id);
+
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const query = campaignIds.length
+      ? { campaign: { $in: campaignIds }, status: 'pending' }
+      : { campaign: { $in: [] } };
+
+    const [proofs, total] = await Promise.all([
+      CampaignProof.find(query)
+        .populate('campaign', 'title image status campaignLevel location')
+        .sort({ createdAt: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      CampaignProof.countDocuments(query),
+    ]);
+
+    res.json({ success: true, data: { proofs, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch proof queue:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch proof queue' });
+  }
+};
+
+const verifyProof = async (req, res) => {
+  try {
+    const note = String(req.body.note || '').trim();
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign) && !canApprove(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to verify proofs' });
+    }
+
+    const proof = await CampaignProof.findOneAndUpdate(
+      { _id: req.params.proofId, campaign: campaign._id },
+      {
+        status: 'verified',
+        verifiedBy: req.user._id,
+        verifiedByName: req.user.fullName || '',
+        verifiedAt: new Date(),
+        verifiedNote: note,
+      },
+      { new: true }
+    );
+    if (!proof) return res.status(404).json({ success: false, message: 'Proof not found' });
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: proof.uploader,
+      actorId: req.user._id,
+      title: 'Proof verified',
+      message: `Your proof for "${campaign.title}" was verified${note ? ` (${note})` : ''}.`,
+      type: 'campaign_update',
+      campaignId: campaign._id,
+      io,
+    });
+
+    res.json({ success: true, message: 'Proof verified', data: { proof } });
+  } catch (err) {
+    console.error('[Campaign] Failed to verify proof:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to verify proof' });
+  }
+};
+
+const rejectProof = async (req, res) => {
+  try {
+    const note = String(req.body.note || '').trim();
+    const campaign = await Campaign.findById(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign) && !canApprove(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to reject proofs' });
+    }
+
+    const proof = await CampaignProof.findOneAndUpdate(
+      { _id: req.params.proofId, campaign: campaign._id },
+      {
+        status: 'rejected',
+        verifiedBy: req.user._id,
+        verifiedByName: req.user.fullName || '',
+        verifiedAt: new Date(),
+        verifiedNote: note,
+      },
+      { new: true }
+    );
+    if (!proof) return res.status(404).json({ success: false, message: 'Proof not found' });
+
+    const io = getIo(req);
+    await notifyUser({
+      userId: proof.uploader,
+      actorId: req.user._id,
+      title: 'Proof rejected',
+      message: `Your proof for "${campaign.title}" was rejected${note ? ` (${note})` : ''}.`,
+      type: 'campaign_update',
+      campaignId: campaign._id,
+      io,
+    });
+
+    res.json({ success: true, message: 'Proof rejected', data: { proof } });
+  } catch (err) {
+    console.error('[Campaign] Failed to reject proof:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to reject proof' });
+  }
+};
+
+// ── Saved campaigns (citizens) ───────────────────────────────────────────────
+
+const saveCampaign = async (req, res) => {
+  try {
+    const campaign = await Campaign.findById(req.params.id).select('_id').lean();
+    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+    const existing = await SavedCampaign.findOne({ user: req.user._id, campaign: campaign._id });
+    if (!existing) await SavedCampaign.create({ user: req.user._id, campaign: campaign._id });
+
+    res.status(201).json({ success: true, message: 'Campaign saved' });
+  } catch (err) {
+    console.error('[Campaign] Failed to save campaign:', err.message);
+    if (err.code === 11000) return res.json({ success: true, message: 'Campaign already saved' });
+    res.status(500).json({ success: false, message: 'Failed to save campaign' });
+  }
+};
+
+const unSaveCampaign = async (req, res) => {
+  try {
+    await SavedCampaign.deleteOne({ user: req.user._id, campaign: req.params.id });
+    res.json({ success: true, message: 'Campaign removed from saved' });
+  } catch (err) {
+    console.error('[Campaign] Failed to unsave campaign:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to remove saved campaign' });
+  }
+};
+
+const getSavedCampaigns = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const [saved, total] = await Promise.all([
+      SavedCampaign.find({ user: req.user._id })
+        .populate({ path: 'campaign', match: { status: { $in: ['active', 'completed', 'suspended'] } } })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      SavedCampaign.countDocuments({ user: req.user._id }),
+    ]);
+
+    const campaigns = saved
+      .filter((s) => s.campaign)
+      .map((s) => s.campaign);
+
+    res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
+  } catch (err) {
+    console.error('[Campaign] Failed to fetch saved campaigns:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch saved campaigns' });
+  }
+};
+
+module.exports = {
+  // Shared scoping helpers (used by donationController).
+  buildCampaignScope,
+  canManageCampaign,
+  canApprove,
+  isSubcityAdmin,
+  isWoredaAdmin,
+  findApprovers,
+  getCampaignCategories,
+  getFeaturedCampaigns,
+  getPublicCampaigns,
+  getCampaignById,
+  getManageCampaigns,
+  getApprovals,
+  getCampaignAnalytics,
+  getCampaignDashboardStats,
+  exportCampaigns,
+  createCampaign,
+  updateCampaign,
+  submitCampaign,
+  approveCampaign,
+  rejectCampaign,
+  completeCampaign,
+  suspendCampaign,
+  restoreCampaign,
+  deleteCampaign,
+  activateCampaign,
+  deactivateCampaign,
+  addCampaignUpdate,
+  getCampaignUpdates,
+  uploadCampaignProof,
+  getCampaignProofs,
+  getProofQueue,
+  verifyProof,
+  rejectProof,
+  saveCampaign,
+  unSaveCampaign,
+  getSavedCampaigns,
+  getFraudReview,
+  checkFraud,
+  reviewFraudFlag,
+  reportCampaign,
 };

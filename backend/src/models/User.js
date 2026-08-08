@@ -78,7 +78,6 @@ const userSchema = new mongoose.Schema(
     emailNotifications: { type: Boolean, default: true },
     smsNotifications: { type: Boolean, default: false },
     pushNotifications: { type: Boolean, default: true },
-    savedCampaigns: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' }],
     // Public Alert subscriptions. `enabled` toggles non-emergency alerts only —
     // emergency alerts are always delivered and cannot be disabled.
     alertSubscriptions: {

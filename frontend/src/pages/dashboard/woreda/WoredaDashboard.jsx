@@ -16,6 +16,11 @@ import CitizenMessages from '../citizen/CitizenMessages';
 import CitizenProfile from '../citizen/CitizenProfile';
 import WoredaAlerts from './WoredaAlerts';
 import PublicAlertForm from '../alerts/PublicAlertForm';
+import CampaignManage from '../campaigns/CampaignManage';
+import CampaignForm from '../campaigns/CampaignForm';
+import CampaignAnalytics from '../campaigns/CampaignAnalytics';
+import CampaignDonations from '../campaigns/CampaignDonations';
+import CampaignProofs from '../campaigns/CampaignProofs';
 
 export default function WoredaDashboard() {
   const { t } = useTranslation();
@@ -31,6 +36,15 @@ export default function WoredaDashboard() {
     { path: `${base}/governance-complaints`, icon: '⚖️', label: 'Governance Complaints' },
     { path: `${base}/analytics`, icon: '📈', label: t('dashboard.analyticsTitle') },
     { path: `${base}/alerts`, icon: '📢', label: 'Public Alerts' },
+
+    // ── Campaigns & Fundraising ─────────────────────────────────────────────
+    { path: `${base}/campaigns`,    icon: '🎗️', label: 'Campaigns', sectionHeader: true },
+    { path: `${base}/campaigns`,    icon: '🎗️', label: 'Manage Campaigns', indent: true },
+    { path: `${base}/campaigns/new`, icon: '➕', label: 'Create Campaign', indent: true },
+    { path: `${base}/campaigns/donations`, icon: '💰', label: 'Donations', indent: true },
+    { path: `${base}/campaigns/proofs`, icon: '🔎', label: 'Proof Verification', indent: true },
+    { path: `${base}/campaigns/analytics`, icon: '📈', label: 'Campaign Analytics', indent: true },
+
     { path: `${base}/notifications`, icon: '🔔', label: t('dashboard.notifications') },
     { path: `${base}/messages`, icon: '💬', label: t('dashboard.messages') },
     { path: `${base}/profile`, icon: '👤', label: t('dashboard.profile') },
@@ -50,6 +64,11 @@ export default function WoredaDashboard() {
         <Route path="analytics" element={<WoredaAnalytics />} />
         <Route path="alerts" element={<WoredaAlerts />} />
         <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/woreda/alerts" />} />
+        <Route path="campaigns"          element={<CampaignManage basePath={`${base}/campaigns`} createPath={`${base}/campaigns/new`} editPath={`${base}/campaigns/new`} />} />
+        <Route path="campaigns/new"      element={<CampaignForm listPath={`${base}/campaigns`} />} />
+        <Route path="campaigns/donations" element={<CampaignDonations />} />
+        <Route path="campaigns/proofs"   element={<CampaignProofs />} />
+        <Route path="campaigns/analytics" element={<CampaignAnalytics />} />
         <Route path="notifications" element={<SharedNotifications />} />
         <Route path="messages" element={<CitizenMessages />} />
         <Route path="profile" element={<CitizenProfile />} />

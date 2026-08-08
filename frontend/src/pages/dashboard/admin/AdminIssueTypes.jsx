@@ -55,6 +55,7 @@ export default function AdminIssueTypes() {
   const [form,        setForm]        = useState(EMPTY_FORM);
   const [errors,      setErrors]      = useState({});
   const [deleteConfirm, setDeleteConfirm] = useState(null); // null | { id, name }
+  const [deleting, setDeleting] = useState(false);
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
@@ -185,6 +186,7 @@ export default function AdminIssueTypes() {
   // ── Delete ─────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await adminAPI.deleteIssueType(id);
       toast.success('Issue type deleted');
@@ -192,6 +194,9 @@ export default function AdminIssueTypes() {
       fetchData();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -428,11 +433,11 @@ export default function AdminIssueTypes() {
 
       {/* ── Delete confirmation ───────────────────────────────────────────────── */}
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Issue Type"
         message={`Delete "${deleteConfirm?.name}"? This cannot be undone and will fail if any complaints reference it.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

@@ -607,6 +607,43 @@ export default function PublicAlertForm({ onSuccess, homePath: homePathProp }) {
               </div>
             )}
 
+            {/* Selected targets — chips/tags summary of the exact broadcast scope */}
+            {(() => {
+              const showChips = isGlobal
+                ? form.scope !== 'all' && (form.subcityNames.length > 0 || form.woredas.length > 0)
+                : isSubcityAdmin
+                  ? form.woredas.length > 0
+                  : isWoredaAdmin;
+              if (!showChips) return null;
+              return (
+                <div className="mt-3">
+                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    📍 Selected targets
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedSubcityNames.map((sn) => (
+                      <span key={sn}
+                        className="inline-flex items-center bg-primary-50 dark:bg-primary-900/30 border border-primary-200 dark:border-primary-800 text-primary-700 dark:text-primary-300 rounded-full px-2.5 py-1 text-xs font-medium">
+                        🏙️ {sn}{isSubcityAdmin ? ' Subcity' : ''}
+                      </span>
+                    ))}
+                    {form.woredas.map((w, i) => (
+                      <span key={`${w.id}-${i}`}
+                        className="inline-flex items-center bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-full px-2.5 py-1 text-xs font-medium">
+                        🏘️ {w.name}
+                      </span>
+                    ))}
+                    {isWoredaAdmin && lockedWoreda && (
+                      <span
+                        className="inline-flex items-center bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-full px-2.5 py-1 text-xs font-medium">
+                        🏘️ {lockedWoreda}{lockedSubcity ? ` (${lockedSubcity})` : ''}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             {errors.target && <p className="text-xs text-red-500 dark:text-red-400 mt-1.5">{errors.target}</p>}
 
             {/* Readonly map */}

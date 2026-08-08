@@ -29,6 +29,7 @@ export default function AdminSubcityManagement() {
 
   // deleteConfirm = null | { id: string, name: string }
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // ── Data fetching ────────────────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ export default function AdminSubcityManagement() {
   // ── Delete ───────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await adminAPI.deleteSubcity(id);
       toast.success('Subcity deleted successfully');
@@ -157,6 +159,9 @@ export default function AdminSubcityManagement() {
       fetchData();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -390,11 +395,11 @@ export default function AdminSubcityManagement() {
 
       {/* ── Delete confirmation ──────────────────────────────────────────────── */}
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Subcity"
         message={`Delete "${deleteConfirm?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

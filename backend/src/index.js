@@ -25,7 +25,6 @@ const publicRoutes = require('./routes/publicRoutes');
 const dropdownRoutes = require('./routes/dropdownRoutes');
 const workflowRoutes = require('./routes/workflowRoutes');
 const alertRoutes = require('./routes/alertRoutes');
-const campaignRoutes = require('./routes/campaignRoutes');
 const subcityRoutes = require('./routes/subcityRoutes');
 const woredaRoutes = require('./routes/woredaRoutes');
 const adminWoredaRoutes = require('./routes/adminWoredaRoutes');
@@ -38,8 +37,9 @@ const governanceManagementRoutes = require('./routes/governanceManagementRoutes'
 const subcityGovernanceRoutes = require('./routes/subcityGovernanceRoutes');
 const hierarchyRoutes = require('./routes/hierarchyRoutes');
 const userRoutes = require('./routes/userRoutes');
-const donationRoutes = require('./routes/donationRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const campaignRoutes = require('./routes/campaignRoutes');
+const donationRoutes = require('./routes/donationRoutes');
 
 // ── Startup admin account guard ───────────────────────────────────────────────
 // Ensures a working admin account always exists. Runs once after the DB
@@ -126,7 +126,6 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/workflow', workflowRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/public', publicRoutes);
-app.use('/api/campaigns', campaignRoutes);
 app.use('/api/subcity', subcityRoutes);
 app.use('/api/woreda', woredaRoutes);
 app.use('/api/woredas', adminWoredaRoutes);
@@ -194,11 +193,14 @@ app.put('/api/governance-users/:id', protect, authorize(...subcityGovernanceRole
 app.delete('/api/governance-users/:id', protect, authorize(...subcityGovernanceRoles), deleteOfficer);
 app.use('/api/hierarchy', hierarchyRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/donations', donationRoutes);
 // Unified public submission endpoints — each form posts to its own route so the
 // report_type (and destination collection) is always correct, for logged-in
 // and anonymous citizens alike.
 app.use('/api/reports', reportRoutes);
+
+// Campaign / fundraising / donation module
+app.use('/api/campaigns', campaignRoutes);
+app.use('/api/donations', donationRoutes);
 
 // Public complaint tracking — no authentication. Phone + tracking id lookup,
 // rate-limited to deter enumeration. Returns a redacted record only when the
@@ -303,12 +305,8 @@ async function startServer() {
   const { seedGovernanceMasterData } = require('./utils/governanceSeed');
   await seedGovernanceMasterData();
 
-  // Seed default donation payment methods (Telebirr, CBE Birr, banks, Amole)
-  const { seedPaymentMethods } = require('./utils/seedPaymentMethods');
-  await seedPaymentMethods();
-
-  // Back-fill DON-YYYY-NNNNNN references and align counters for the donation
-  // management system (idempotent — safe on every boot).
+  // Align donation reference counters so DON-YYYY-NNNNNN refs never re-issue
+  // an existing reference after a redeploy.
   const { ensureDonationCounters } = require('./utils/donationReference');
   await ensureDonationCounters();
 

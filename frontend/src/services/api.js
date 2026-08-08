@@ -126,6 +126,7 @@ export const notifAPI = {
   markRead: (id) => API.put(`/notifications/${id}/read`),
   markAllRead: () => API.put('/notifications/read-all'),
   delete: (id) => API.delete(`/notifications/${id}`),
+  deleteMany: (ids) => API.delete('/notifications', { data: { ids } }),
 };
 
 // ---- Messages ----
@@ -236,8 +237,10 @@ export const alertAPI = {
   // Public
   getActive: (params) => API.get('/alerts', { params }),
   getOne: (id) => API.get(`/alerts/${id}`),
+  getCategories: (params) => API.get('/alerts/categories', { params }),
   // Citizen — location-matched alerts + subscription preferences
   getMyAlerts: (params) => API.get('/alerts/my', { params }),
+  getMyScope: (params) => API.get('/alerts/my-scope', { params }),
   getUnreadCount: () => API.get('/alerts/my/unread-count'),
   markRead: (id) => API.post(`/alerts/${id}/read`),
   getSubscriptions: () => API.get('/alerts/subscriptions/me'),
@@ -264,6 +267,76 @@ export const alertAPI = {
   exportAlerts: (format, params) => API.get('/alerts/export', { params: { ...params, format }, responseType: 'blob' }),
 };
 
+// ---- Campaigns (fundraising) ----
+export const campaignAPI = {
+  // Public
+  getCategories: () => API.get('/campaigns/categories'),
+  getFeatured: (params) => API.get('/campaigns/featured', { params }),
+  browse: (params) => API.get('/campaigns', { params }),
+  getOne: (id) => API.get(`/campaigns/${id}`),
+  getUpdates: (id) => API.get(`/campaigns/${id}/updates`),
+  // Citizen
+  save: (id) => API.post(`/campaigns/${id}/save`),
+  unSave: (id) => API.delete(`/campaigns/${id}/save`),
+  getSaved: (params) => API.get('/campaigns/my/saved', { params }),
+  report: (id, data) => API.post(`/campaigns/${id}/report`, data),
+  // Management (role-scoped)
+  manage: (params) => API.get('/campaigns/manage', { params }),
+  getApprovals: (params) => API.get('/campaigns/approvals', { params }),
+  getAnalytics: () => API.get('/campaigns/analytics'),
+  getDashboardStats: () => API.get('/campaigns/dashboard-stats'),
+  getProofs: (id) => API.get(`/campaigns/${id}/proofs`),
+  getProofQueue: (params) => API.get('/campaigns/proofs/queue', { params }),
+  create: (data) =>
+    API.post('/campaigns', data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  update: (id, data) =>
+    API.put(`/campaigns/${id}`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  submit: (id) => API.post(`/campaigns/${id}/submit`),
+  approve: (id) => API.post(`/campaigns/${id}/approve`),
+  reject: (id, data) => API.post(`/campaigns/${id}/reject`, data),
+  activate: (id) => API.post(`/campaigns/${id}/activate`),
+  deactivate: (id, data) => API.post(`/campaigns/${id}/deactivate`, data),
+  remove: (id) => API.delete(`/campaigns/${id}`),
+  complete: (id, data) => API.post(`/campaigns/${id}/complete`, data),
+  addUpdate: (id, data) =>
+    API.post(`/campaigns/${id}/updates`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  uploadProof: (id, data) =>
+    API.post(`/campaigns/${id}/proofs`, data, {
+      headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : {},
+    }),
+  verifyProof: (id, proofId, data) => API.post(`/campaigns/${id}/proofs/${proofId}/verify`, data),
+  rejectProof: (id, proofId, data) => API.post(`/campaigns/${id}/proofs/${proofId}/reject`, data),
+  exportCampaigns: (format, params) => API.get('/campaigns/export', { params: { ...params, format }, responseType: 'blob' }),
+  // Admin (fraud)
+  getFraudReview: (params) => API.get('/campaigns/fraud-review', { params }),
+  reviewFraudFlag: (flagId, data) => API.post(`/campaigns/fraud-review/${flagId}`, data),
+  checkFraud: (id) => API.post(`/campaigns/${id}/fraud-check`),
+  suspend: (id, data) => API.post(`/campaigns/${id}/suspend`, data),
+  restore: (id) => API.post(`/campaigns/${id}/restore`),
+};
+
+// ---- Donations / pledges ----
+export const donationAPI = {
+  create: (data) => API.post('/donations', data),
+  // Public (guest) donation — no login required. Returns the receipt reference.
+  createPublic: (data) => API.post('/donations/public', data),
+  // Public receipt lookup by tracking reference — no login required.
+  trackByRef: (ref) => API.get(`/donations/track/${encodeURIComponent(ref)}`),
+  getMy: (params) => API.get('/donations/my', { params }),
+  getOne: (id) => API.get(`/donations/${id}`),
+  getCampaignDonations: (campaignId, params) => API.get(`/donations/campaign/${campaignId}`, { params }),
+  getAll: (params) => API.get('/donations/all', { params }),
+  verify: (id, data) => API.post(`/donations/${id}/verify`, data),
+  getStats: () => API.get('/donations/stats'),
+  exportDonations: (format, params) => API.get('/donations/export', { params: { ...params, format }, responseType: 'blob' }),
+};
+
 // ---- Workflow (Administrative Levels) ----
 export const workflowAPI = {
   getStats: () => API.get('/workflow/stats'),
@@ -275,41 +348,6 @@ export const workflowAPI = {
   closeCase: (id, data) => API.post(`/workflow/reports/${id}/close`, data),
   addComment: (id, data) => API.post(`/workflow/reports/${id}/comment`, data),
   getOfficersAtLevel: (level) => API.get(`/workflow/officers/${level}`),
-};
-
-// ---- Campaigns / Fundraising ----
-export const campaignAPI = {
-  getPublic: (params) => API.get('/campaigns/public', { params }),
-  getPublicCampaign: (id) => API.get(`/campaigns/public/${id}`),
-  getSuccessStories: () => API.get('/campaigns/public/success-stories'),
-  getTopDonors: () => API.get('/campaigns/public/top-donors'),
-
-  getAll: (params) => API.get('/campaigns', { params }),
-  getMy: (params) => API.get('/campaigns/my', { params }),
-  getOne: (id) => API.get(`/campaigns/public/${id}`),
-  create: (data) => API.post('/campaigns', data),
-  update: (id, data) => API.put(`/campaigns/${id}`, data),
-  delete: (id) => API.delete(`/campaigns/${id}`),
-  approve: (id) => API.put(`/campaigns/${id}/approve`),
-  reject: (id) => API.put(`/campaigns/${id}/reject`),
-  getStats: () => API.get('/campaigns/stats'),
-
-  donate: (data) => API.post('/campaigns/donate', data),
-  getDonationHistory: (params) => API.get('/campaigns/donations/history', { params }),
-  getReceipt: (receiptNumber) => API.get(`/campaigns/donations/receipt/${receiptNumber}`),
-  getMyReceipts: () => API.get('/campaigns/donations/receipts/my'),
-
-  saveCampaign: (id) => API.post(`/campaigns/${id}/save`),
-  getSavedCampaigns: () => API.get('/campaigns/saved/my'),
-
-  getFinancialReports: () => API.get('/campaigns/financial/reports'),
-  getFinancialAnalytics: () => API.get('/campaigns/financial/analytics'),
-  getDistributionReports: () => API.get('/campaigns/financial/distribution'),
-  detectFraud: () => API.get('/campaigns/admin/fraud-detection'),
-
-  // Report-to-Campaign Integration
-  getAvailableReports: () => API.get('/campaigns/available-reports'),
-  createFromReport: (data) => API.post('/campaigns/create-from-report', data),
 };
 
 // ---- Subcity Dashboard ----
@@ -633,41 +671,6 @@ export const hierarchyAPI = {
   getTechnicianWorkOrders: (params) => API.get('/hierarchy/technician/work-orders', { params }),
   startWork: (id) => API.put(`/hierarchy/technician/work-orders/${id}/start`),
   completeWork: (id, data) => API.put(`/hierarchy/technician/work-orders/${id}/complete`, data),
-};
-
-// ---- Donations (Donation Management System) ----
-export const donationAPI = {
-  // Public
-  getOverview: () => API.get('/donations/overview'),
-  getPaymentMethods: () => API.get('/donations/payment-methods'),
-  create: (data) => API.post('/donations', data),
-  track: (reference) => API.get(`/donations/track/${reference}`),
-  uploadReceipt: (reference, formData) =>
-    API.post(`/donations/${reference}/upload-receipt`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    }),
-  // Donor (authenticated)
-  getMy: (params) => API.get('/donations/my', { params }),
-  getMySummary: () => API.get('/donations/my/summary'),
-  getCertificate: (id) => API.get(`/donations/${id}/certificate`, { responseType: 'blob' }),
-  // Subcity / Woreda office dashboards
-  getOffice: (params) => API.get('/donations/office', { params }),
-  getOfficeStats: () => API.get('/donations/office/stats'),
-  exportOffice: (format, params) => API.get('/donations/office/export', { params: { ...params, format }, responseType: 'blob' }),
-  // Admin
-  getAll: (params) => API.get('/donations', { params }),
-  getOne: (id) => API.get(`/donations/${id}`),
-  getStats: () => API.get('/donations/stats'),
-  verify: (id) => API.post(`/donations/${id}/verify`),
-  reject: (id, data) => API.post(`/donations/${id}/reject`, data),
-  exportCsv: (params) => API.get('/donations/export/csv', { params, responseType: 'blob' }),
-  exportExcel: (params) => API.get('/donations/export/excel', { params, responseType: 'blob' }),
-  exportPdf: (params) => API.get('/donations/export/pdf', { params, responseType: 'blob' }),
-  // Payment method management (admin)
-  getAdminPaymentMethods: () => API.get('/donations/payment-methods/manage'),
-  createPaymentMethod: (data) => API.post('/donations/payment-methods', data),
-  updatePaymentMethod: (id, data) => API.put(`/donations/payment-methods/${id}`, data),
-  deletePaymentMethod: (id) => API.delete(`/donations/payment-methods/${id}`),
 };
 
 export default API;

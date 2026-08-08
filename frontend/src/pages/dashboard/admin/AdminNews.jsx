@@ -18,6 +18,7 @@ export default function AdminNews() {
   const [pages, setPages] = useState(1);
   const [composing, setComposing] = useState(false);
   const [delConfirm, setDelConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({ title:'', content:'', summary:'', category:'', region:'' });
   const [imageFile, setImageFile] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -60,12 +61,20 @@ export default function AdminNews() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await newsAPI.delete(id);
       toast.success(t('dashboard.articleDeleted'));
-      fetchNews();
-    } catch (err) { toast.error(t('dashboard.deleteFailed')); }
-    setDelConfirm(null);
+      setDelConfirm(null);
+      // If we just deleted the only item on a non-first page, step back so the
+      // list never renders as empty on a stale page.
+      if (news.length === 1 && page > 1) {
+        setPage(page - 1);
+      } else {
+        fetchNews();
+      }
+    } catch (err) { toast.error(t('dashboard.deleteFailed')); setDelConfirm(null); }
+    finally { setDeleting(false); }
   };
 
   return (
@@ -140,11 +149,11 @@ export default function AdminNews() {
       <Pagination page={page} pages={pages} onPageChange={setPage} />
 
       <ConfirmModal
-        isOpen={!!delConfirm}
+        open={!!delConfirm}
         title={t('dashboard.deleteArticle')}
         message={t('dashboard.deleteArticleConfirm', { name: delConfirm?.name })}
         confirmLabel={t('dashboard.delete')}
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(delConfirm.id)}
         onCancel={() => setDelConfirm(null)}
       />

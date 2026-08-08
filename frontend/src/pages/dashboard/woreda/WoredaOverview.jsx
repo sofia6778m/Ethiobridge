@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { hierarchyAPI, governanceComplaintAPI } from '../../../services/api';
+import { hierarchyAPI, governanceComplaintAPI, campaignAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
+import { formatETB } from '../../../utils/campaignMeta';
 import StatCard from '../../../components/common/StatCard';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 
@@ -10,6 +11,7 @@ export default function WoredaOverview() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [governance, setGovernance] = useState(null);
+  const [campaignStats, setCampaignStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -24,6 +26,10 @@ export default function WoredaOverview() {
         .getStats()
         .then((g) => setGovernance(g.data.data))
         .catch(() => setGovernance(null));
+      campaignAPI
+        .getDashboardStats()
+        .then((c) => setCampaignStats(c.data?.data || null))
+        .catch(() => setCampaignStats(null));
     } catch (err) {
       console.error('[WOREDA] Failed to load stats:', err.response?.data || err.message);
       setError(err.response?.data?.message || 'Failed to load dashboard stats');
@@ -72,6 +78,39 @@ export default function WoredaOverview() {
         <StatCard icon="✅" label="Resolved" value={stats.resolvedComplaints} color="bg-green-100" iconColor="text-green-600" />
         <StatCard icon="🏢" label="Gov. Requests" value={governance?.awaitingWoreda ?? '—'} color="bg-orange-100" iconColor="text-orange-600" />
       </div>
+
+      {campaignStats && (
+        <>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-2">🎗️ Fundraising</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard icon="🎗️" label="Campaigns" value={campaignStats.totalCampaigns} color="bg-amber-100" iconColor="text-amber-600" />
+              <StatCard icon="✅" label="Active" value={campaignStats.activeCampaigns} color="bg-green-100" iconColor="text-green-600" />
+              <StatCard icon="💌" label="Donations" value={campaignStats.totalDonations} color="bg-primary-100" iconColor="text-primary-600" />
+              <StatCard icon="💰" label="Raised" value={formatETB(campaignStats.totalDonationAmount)} color="bg-teal-100" iconColor="text-teal-600" />
+            </div>
+          </div>
+
+          {campaignStats.recentDonors?.length > 0 && (
+            <div className="card p-5">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">🕒 Recent Donors</h3>
+              <div className="space-y-2">
+                {campaignStats.recentDonors.map((d) => (
+                  <div key={d._id} className="flex items-center justify-between gap-3 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-800 dark:text-gray-200 truncate">
+                        {d.isAnonymous ? 'Anonymous' : d.donorName || 'Donor'}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">{d.campaign?.title}</p>
+                    </div>
+                    <span className="font-semibold text-primary-600 dark:text-primary-400 shrink-0">{formatETB(d.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
 
       <div className="grid md:grid-cols-3 gap-6">
         <button

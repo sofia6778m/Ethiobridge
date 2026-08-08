@@ -25,6 +25,7 @@ export default function SubcityUsers() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -162,6 +163,7 @@ export default function SubcityUsers() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await hierarchyAPI.deleteSubcityUser(id);
       toast.success('User deleted');
@@ -169,6 +171,9 @@ export default function SubcityUsers() {
       fetchUsers();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -383,11 +388,11 @@ export default function SubcityUsers() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete User"
         message={`Delete "${deleteConfirm?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

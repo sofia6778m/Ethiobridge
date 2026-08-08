@@ -12,8 +12,12 @@ import GovAlerts from './GovAlerts';
 import PublicAlertForm from '../alerts/PublicAlertForm';
 import CitizenProfile from '../citizen/CitizenProfile';
 import NotificationBell from '../../../components/common/NotificationBell';
-import GovFundraising from './GovFundraising';
-import GovDonations from './GovDonations';
+import CampaignManage from '../campaigns/CampaignManage';
+import CampaignForm from '../campaigns/CampaignForm';
+import CampaignAnalytics from '../campaigns/CampaignAnalytics';
+import CampaignApprovals from '../campaigns/CampaignApprovals';
+import CampaignDonations from '../campaigns/CampaignDonations';
+import CampaignProofs from '../campaigns/CampaignProofs';
 
 export default function GovernmentDashboard() {
   const { t } = useTranslation();
@@ -23,9 +27,17 @@ export default function GovernmentDashboard() {
     { path: '/dashboard/government/workflow',       icon: '📋', label: 'All-Level Workflow' },
     { path: '/dashboard/government/infrastructure', icon: '🏗️', label: t('gov.infraReports') },
     { path: '/dashboard/government/emergency',      icon: '🚨', label: t('gov.emergencyReq') },
-    { path: '/dashboard/government/fundraising',    icon: '❤️', label: 'Fundraising' },
-    { path: '/dashboard/government/donations',      icon: '💰', label: 'Donations' },
     { path: '/dashboard/government/alerts',         icon: '📢', label: 'Broadcast Alerts' },
+
+    // ── Campaigns & Fundraising ─────────────────────────────────────────────
+    { path: '/dashboard/government/campaigns',      icon: '🎗️', label: 'Campaigns', sectionHeader: true },
+    { path: '/dashboard/government/campaigns',      icon: '🎗️', label: 'Manage Campaigns', indent: true },
+    { path: '/dashboard/government/campaigns/new',  icon: '➕', label: 'Create Campaign', indent: true },
+    { path: '/dashboard/government/campaigns/approvals', icon: '✅', label: 'Approvals', indent: true },
+    { path: '/dashboard/government/campaigns/donations', icon: '💰', label: 'Donations', indent: true },
+    { path: '/dashboard/government/campaigns/proofs', icon: '🔎', label: 'Proof Verification', indent: true },
+    { path: '/dashboard/government/campaigns/analytics', icon: '📈', label: 'Campaign Analytics', indent: true },
+
     { path: '/dashboard/government/analytics',      icon: '📈', label: t('gov.analytics') },
     { path: '/dashboard/government/messages',       icon: '💬', label: t('messages.title') },
     { path: '/dashboard/government/notifications',  icon: '🔔', label: 'Notifications' },
@@ -40,10 +52,14 @@ export default function GovernmentDashboard() {
         <Route path="departments" element={<GovDepartments />} />
         <Route path="infrastructure" element={<GovInfraReports />} />
         <Route path="emergency" element={<GovEmergency />} />
-        <Route path="fundraising" element={<GovFundraising />} />
-        <Route path="donations" element={<GovDonations />} />
         <Route path="alerts" element={<GovAlerts />} />
         <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/government/alerts" />} />
+        <Route path="campaigns"          element={<CampaignManage basePath="/dashboard/government/campaigns" createPath="/dashboard/government/campaigns/new" editPath="/dashboard/government/campaigns/new" allowSuspend />} />
+        <Route path="campaigns/new"      element={<CampaignForm listPath="/dashboard/government/campaigns" />} />
+        <Route path="campaigns/approvals" element={<CampaignApprovals />} />
+        <Route path="campaigns/donations" element={<CampaignDonations />} />
+        <Route path="campaigns/proofs"   element={<CampaignProofs />} />
+        <Route path="campaigns/analytics" element={<CampaignAnalytics />} />
         <Route path="analytics" element={<GovAnalytics />} />
         <Route path="messages" element={<GovMessages />} />
         <Route path="notifications" element={<NotificationBell />} />

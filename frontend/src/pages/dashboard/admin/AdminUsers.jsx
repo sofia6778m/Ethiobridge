@@ -81,6 +81,7 @@ export default function AdminUsers() {
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState({});
   const [confirm, setConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const isCreateModal = modal === 'create';
   const isEditModal = modal?.type === 'edit';
@@ -392,14 +393,18 @@ export default function AdminUsers() {
       setConfirm(null);
       return;
     }
+    setDeleting(true);
     try {
       await adminAPI.deleteUser(id);
       toast.success('Account deleted');
+      setConfirm(null);
       fetchUsers();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to delete');
+      setConfirm(null);
+    } finally {
+      setDeleting(false);
     }
-    setConfirm(null);
   };
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -557,11 +562,11 @@ export default function AdminUsers() {
 
       {/* Delete confirm */}
       <ConfirmModal
-        isOpen={!!confirm}
+        open={!!confirm}
         title="Delete Account"
         message={`Delete ${confirm?.name}? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => deleteUser(confirm.id)}
         onCancel={() => setConfirm(null)}
       />

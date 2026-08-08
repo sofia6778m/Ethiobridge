@@ -20,26 +20,33 @@ const notificationSchema = new mongoose.Schema(
         'governance_action_taken', 'governance_resolved', 'governance_rejected',
         'governance_reopened', 'governance_escalated', 'governance_closed',
         'public_alert',
-        // Campaigns & donations
-        'campaign_approval', 'campaign_approved', 'campaign_rejected',
-        'donation_received', 'donation_verified', 'donation_rejected', 'donation_update',
+        // Campaign / fundraising module
+        'campaign_status', 'campaign_update', 'donation_receipt',
       ],
       default: 'system',
     },
     relatedReport: { type: mongoose.Schema.Types.ObjectId },
-    relatedReportType: { type: String, enum: ['infrastructure', 'emergency', 'missing_person', 'workflow_complaint', 'municipal_complaint', 'governance_complaint', 'campaign', 'donation'] },
+    relatedReportType: { type: String, enum: ['infrastructure', 'emergency', 'missing_person', 'workflow_complaint', 'municipal_complaint', 'governance_complaint'] },
     // Complaint this notification belongs to (municipal or governance).
     complaintId: { type: mongoose.Schema.Types.ObjectId },
     // Public Alert this notification belongs to — lets alert deletion also
     // remove every citizen bell notification for that alert.
     alertId: { type: mongoose.Schema.Types.ObjectId, ref: 'PublicAlert' },
+    // Campaign this notification belongs to — lets campaign deletion also
+    // remove every bell notification tied to that campaign.
+    campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign' },
     isRead: { type: Boolean, default: false },
     readAt: { type: Date },
+    // Soft-delete flag. Deleting a notification only hides it from its owner's
+    // inbox/list — the underlying alert, complaint, report, message or other
+    // source record is NEVER touched, and other users' notifications are never
+    // affected (each Notification belongs to exactly one recipient).
+    isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
 // Unread lookup per recipient is the hottest query (bell + dashboards).
-notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, isDeleted: 1, isRead: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Notification', notificationSchema);

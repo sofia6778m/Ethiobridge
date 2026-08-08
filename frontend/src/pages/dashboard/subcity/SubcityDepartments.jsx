@@ -18,6 +18,7 @@ export default function SubcityDepartments() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [nameError, setNameError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -132,6 +133,7 @@ export default function SubcityDepartments() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await hierarchyAPI.deleteSubcityDepartment(id);
       toast.success('Department deleted successfully');
@@ -139,6 +141,9 @@ export default function SubcityDepartments() {
       fetchData();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -305,11 +310,11 @@ export default function SubcityDepartments() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Department"
         message={`Delete "${deleteConfirm?.name}"? Departments with staff members cannot be deleted.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

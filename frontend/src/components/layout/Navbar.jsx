@@ -17,9 +17,8 @@ export default function Navbar() {
   const navLinks = [
     { to: '/',               label: t('nav.home') },
     { to: '/about',          label: t('nav.about') },
-    { to: '/donate',         label: `❤️ ${t('donate.navLabel')}` },
-    { to: '/fundraising',    label: '🏆 Fundraising' },
     { to: '/news',           label: t('nav.news') },
+    { to: '/campaigns',      label: t('nav.campaigns') },
     { to: '/faq',            label: t('nav.faq') },
     { to: '/contact',        label: t('nav.contact') },
   ];

@@ -54,6 +54,18 @@ export default function AlertBanner() {
       });
     });
 
+    socket.on('alert:updated', (updated) => {
+      if (!updated?._id) return;
+      setAlerts(prev => {
+        const exists = prev.some(a => a._id === updated._id);
+        if (!exists) {
+          if (!isLive(updated.status)) return prev;
+          return sortAlerts([updated, ...prev]).slice(0, 8);
+        }
+        return sortAlerts(prev.map(a => (a._id === updated._id ? { ...a, ...updated } : a))).slice(0, 8);
+      });
+    });
+
     socket.on('alert:statusUpdate', (update) => {
       if (!isLive(update.status)) {
         setAlerts(prev => prev.filter(a => a._id !== update._id));

@@ -361,11 +361,11 @@ export default function SlaRules() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete SLA Rule"
         message={`Delete the "${deleteConfirm?.categoryName || 'Default'}" rule for ${deleteConfirm?.subcityId ? scopeLabel(deleteConfirm) : 'the global scope'}? Complaints already created keep their existing deadline.`}
         confirmLabel="Delete"
-        danger
+        loading={saving}
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
       />

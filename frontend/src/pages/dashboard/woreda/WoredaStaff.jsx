@@ -22,6 +22,7 @@ export default function WoredaStaff() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchStaff = useCallback(async () => {
     setLoading(true);
@@ -135,6 +136,7 @@ export default function WoredaStaff() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await hierarchyAPI.deleteWoredaStaff(id);
       toast.success('Staff member deleted');
@@ -142,6 +144,9 @@ export default function WoredaStaff() {
       fetchStaff();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -339,11 +344,11 @@ export default function WoredaStaff() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Staff Member"
         message={`Delete "${deleteConfirm?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

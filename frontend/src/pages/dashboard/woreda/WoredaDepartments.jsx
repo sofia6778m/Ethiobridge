@@ -16,6 +16,7 @@ export default function WoredaDepartments() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [nameError, setNameError] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -111,6 +112,7 @@ export default function WoredaDepartments() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await hierarchyAPI.deleteWoredaDepartment(id);
       toast.success('Department deleted successfully');
@@ -118,6 +120,9 @@ export default function WoredaDepartments() {
       fetchData();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -263,11 +268,11 @@ export default function WoredaDepartments() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Department"
         message={`Delete "${deleteConfirm?.name}"? Departments with staff members cannot be deleted.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

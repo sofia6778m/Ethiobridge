@@ -14,8 +14,8 @@ router.get('/:id', getSingleNews);
 // Admin / Gov / NGO can create news
 router.post('/', protect, authorize('admin', 'government', 'ngo'), upload.single('featuredImage'), createNews);
 router.get('/admin/all', protect, authorize('admin', 'government', 'ngo'), getAdminAllNews);
-router.put('/:id/publish', protect, authorize('admin'), publishNews);
-router.put('/:id', protect, authorize('admin', 'government', 'ngo'), upload.single('featuredImage'), updateNews);
-router.delete('/:id', protect, authorize('admin'), deleteNews);
+router.put('/:id/publish', protect, authorize('admin', 'ADMIN'), publishNews);
+router.put('/:id', protect, authorize('admin', 'ADMIN', 'government', 'ngo'), upload.single('featuredImage'), updateNews);
+router.delete('/:id', protect, authorize('admin', 'ADMIN'), deleteNews);
 
 module.exports = router;

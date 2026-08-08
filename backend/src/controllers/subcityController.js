@@ -147,7 +147,7 @@ const updateReportStatus = async (req, res) => {
 
 const getNotifications = async (req, res) => {
   try {
-    const notifications = await Notification.find({ recipient: req.user._id })
+    const notifications = await Notification.find({ recipient: req.user._id, isDeleted: false })
       .sort({ createdAt: -1 })
       .limit(50);
     res.json({ success: true, notifications });

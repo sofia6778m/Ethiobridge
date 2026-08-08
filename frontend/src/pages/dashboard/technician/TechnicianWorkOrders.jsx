@@ -156,7 +156,7 @@ export default function TechnicianWorkOrders() {
       )}
 
       <ConfirmModal
-        isOpen={!!startConfirm}
+        open={!!startConfirm}
         title="Start Work"
         message={`Start work on "${startConfirm?.title}" (${startConfirm?.trackingId})?`}
         confirmLabel="Start"

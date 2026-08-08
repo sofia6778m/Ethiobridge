@@ -6,7 +6,19 @@ const Notification = require('../models/Notification');
 const isSelfNotification = (actorId, recipient) =>
   Boolean(actorId && recipient && String(actorId) === String(recipient));
 
-const createNotification = async ({ recipient, actorId, title, message, type, relatedReport, relatedReportType, complaintId, alertId, io }) => {
+const createNotification = async ({
+  recipient,
+  actorId,
+  title,
+  message,
+  type,
+  relatedReport,
+  relatedReportType,
+  complaintId,
+  alertId,
+  campaignId,
+  io,
+}) => {
   try {
     if (isSelfNotification(actorId, recipient)) return null;
     const notification = await Notification.create({
@@ -19,6 +31,7 @@ const createNotification = async ({ recipient, actorId, title, message, type, re
       relatedReportType,
       complaintId,
       alertId,
+      campaignId,
     });
 
     if (io) {
@@ -31,6 +44,7 @@ const createNotification = async ({ recipient, actorId, title, message, type, re
         relatedReportType: notification.relatedReportType,
         complaintId: notification.complaintId,
         alertId: notification.alertId,
+        campaignId: notification.campaignId,
         actorId: notification.actorId,
         isRead: false,
         createdAt: notification.createdAt,

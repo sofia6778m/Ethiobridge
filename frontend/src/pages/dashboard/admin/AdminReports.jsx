@@ -30,6 +30,7 @@ function InfraTab() {
   const [note,       setNote]       = useState('');
   const [saving,     setSaving]     = useState(false);
   const [delConfirm, setDelConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [assignModal, setAssignModal] = useState(null);
   const [assignForm,  setAssignForm]  = useState({ assignedTo: '', assignedDepartment: '', dueDate: '' });
   const [govUsers,    setGovUsers]    = useState([]);
@@ -68,12 +69,14 @@ function InfraTab() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await infraAPI.delete(id);
       toast.success(t('admin.deleteSuccess'));
+      setDelConfirm(null);
       fetchData();
-    } catch { toast.error(t('dashboard.deleteFailed')); }
-    setDelConfirm(null);
+    } catch { toast.error(t('dashboard.deleteFailed')); setDelConfirm(null); }
+    finally { setDeleting(false); }
   };
 
   const openAssign = async (report) => {
@@ -244,11 +247,11 @@ function InfraTab() {
       )}
 
       <ConfirmModal
-        isOpen={!!delConfirm}
+        open={!!delConfirm}
         title={t('dashboard.deleteReport')}
         message={t('dashboard.deleteReportConfirm', { name: delConfirm?.name })}
         confirmLabel={t('common.delete')}
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(delConfirm.id)}
         onCancel={() => setDelConfirm(null)}
       />

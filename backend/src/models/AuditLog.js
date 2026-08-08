@@ -34,6 +34,12 @@ const auditLogSchema = new mongoose.Schema(
         // Alert workflow actions
         'alert_create', 'alert_update', 'alert_scheduled', 'alert_publish',
         'alert_archive', 'alert_delete',
+        // Campaign / fundraising workflow actions
+        'campaign_create', 'campaign_update', 'campaign_submit', 'campaign_approve',
+        'campaign_reject', 'campaign_complete', 'campaign_suspend', 'campaign_restore',
+        'campaign_delete', 'campaign_activate', 'campaign_deactivate',
+        'campaign_fraud_check', 'campaign_fraud_review', 'campaign_reported',
+        'donation_create', 'donation_verify', 'donation_public', 'donation_track',
       ],
     },
     resource: { type: String },

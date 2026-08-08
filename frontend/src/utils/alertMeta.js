@@ -1,40 +1,9 @@
 // Shared frontend metadata for the Public Alert & Broadcast system.
 // Mirrors backend/src/utils/alertMetadata.js so the UI and API never drift.
 
-// ── Canonical categories (offered in the Unified Public Alert Form) ───────────
-export const ALERT_CATEGORIES = [
-  { value: 'flood',                       icon: '🌊',  label: 'Flood Warning',                    color: 'blue' },
-  { value: 'heavy_rainfall',              icon: '🌧️', label: 'Heavy Rainfall',                  color: 'indigo' },
-  { value: 'landslide_risk',              icon: '⛰️', label: 'Landslide Risk',                  color: 'stone' },
-  { value: 'public_health',               icon: '🏥',  label: 'Public Health Emergency',         color: 'red' },
-  { value: 'cholera_alert',               icon: '🦠',  label: 'Cholera Alert',                  color: 'cyan' },
-  { value: 'dengue_alert',                icon: '🦟',  label: 'Dengue Alert',                   color: 'lime' },
-  { value: 'fire_emergency',              icon: '🔥',  label: 'Fire Emergency',                 color: 'rose' },
-  { value: 'security_alert',              icon: '🚨',  label: 'Security Alert',                 color: 'purple' },
-  { value: 'road_closure',                icon: '🚧',  label: 'Road Closure',                   color: 'orange' },
-  { value: 'traffic_diversion',           icon: '🚗',  label: 'Traffic Diversion',              color: 'yellow' },
-  { value: 'water_interruption',          icon: '💧',  label: 'Water Interruption',             color: 'cyan' },
-  { value: 'power_outage',                icon: '⚡',  label: 'Power Outage',                   color: 'amber' },
-  { value: 'infrastructure_maintenance',  icon: '🛠️', label: 'Infrastructure Maintenance',      color: 'slate' },
-  { value: 'vaccination_campaign',        icon: '💉',  label: 'Vaccination Campaign',           color: 'green' },
-  { value: 'community_meeting',           icon: '🗣️', label: 'Community Meeting',               color: 'teal' },
-  { value: 'sanitation_campaign',         icon: '🧹',  label: 'Sanitation Campaign',            color: 'emerald' },
-  { value: 'illegal_construction',        icon: '🏗️', label: 'Illegal Construction Enforcement', color: 'slate' },
-  { value: 'land_administration',         icon: '🏛️', label: 'Land Administration Notice',      color: 'brown' },
-  { value: 'service_center_closure',      icon: '🏢',  label: 'Service Center Closure',         color: 'gray' },
-  { value: 'public_awareness_campaign',   icon: '📢',  label: 'Public Awareness Campaign',      color: 'teal' },
-  { value: 'other',                       icon: '📌',  label: 'Other',                          color: 'slate' },
-];
-
-// Legacy categories that predate the unified form. Still valid enum values so
-// older alerts keep loading, but not offered in the new form.
-export const LEGACY_CATEGORIES = [
-  { value: 'construction_advisory',   icon: '🏗️', label: 'Construction Advisory',   color: 'slate' },
-  { value: 'security_advisory',       icon: '🚨',  label: 'Security Advisory',       color: 'purple' },
-  { value: 'community_announcement',  icon: '📢',  label: 'Community Announcement',  color: 'teal' },
-];
-
-export const ALL_CATEGORIES = [...ALERT_CATEGORIES, ...LEGACY_CATEGORIES];
+// Alert categories are OPTIONAL free-text strings typed by admins — there is
+// no hardcoded taxonomy. Filter dropdowns are populated dynamically from the
+// distinct categories stored on real alerts via GET /api/alerts/categories.
 
 // ── Canonical severities (offered in the form) + legacy aliases ───────────────
 export const ALERT_SEVERITIES = [
@@ -55,16 +24,14 @@ export const LIVE_STATUSES = ['published', 'active'];
 
 export const getCategory = (value) => {
   if (!value) return null;
-  return ALL_CATEGORIES.find((c) => c.value === value) || null;
+  return { icon: '📢', label: value };
 };
 
 export const getSeverity = (value) =>
   ALERT_SEVERITIES.find((s) => s.value === value) || ALERT_SEVERITIES[4];
 
-export const categoryLabel = (value, customCategory) => {
-  if (value === 'other' && customCategory) return customCategory;
-  return getCategory(value)?.label || value || '';
-};
+export const categoryLabel = (value) => value || '';
+
 
 // ── Tailwind class maps ───────────────────────────────────────────────────────
 
@@ -163,156 +130,82 @@ export const STATUS_STYLES = {
   archived: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-500',
 };
 
-export const getCategoryBadge = (value) => {
-  if (!value) return CATEGORY_BADGE.gray;
-  return CATEGORY_BADGE[getCategory(value)?.color] || CATEGORY_BADGE.blue;
+// Deterministic badge color for a free-text category string (categories have
+// no predefined palette — the color is derived so the badge stays stable for a
+// given category without any hardcoded category list).
+const CATEGORY_BADGE_COLORS = ['blue', 'indigo', 'cyan', 'teal', 'green', 'emerald', 'amber', 'orange', 'rose', 'purple', 'slate', 'stone'];
+
+const hashCategory = (s) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % CATEGORY_BADGE_COLORS.length;
 };
 
-// Safety instructions shown on the public detail page.
-export const SAFETY_INSTRUCTIONS = {
-  flood: [
-    'Move to higher ground immediately and avoid low-lying areas.',
-    'Do not attempt to cross flooded roads or bridges on foot or by vehicle.',
-    'Turn off electrical appliances and disconnect gas supplies if flooding enters your home.',
-    'Keep emergency contact numbers handy and follow official guidance.',
-  ],
-  heavy_rainfall: [
-    'Avoid traveling unless absolutely necessary during peak rainfall.',
-    'Stay away from riverbanks, culverts, and areas prone to flash floods.',
-    'Secure loose objects on balconies and roofs.',
-    'Keep children indoors and monitor local weather updates.',
-  ],
-  landslide_risk: [
-    'Evacuate hillside areas immediately and move to flat, open ground.',
-    'Stay alert for cracks in the ground, leaning trees or moving soil.',
-    'Never cross recently landslide-affected roads or bridges.',
-    'Report ground movement signs to the local authorities right away.',
-  ],
-  public_health: [
-    'Follow hygiene measures: wash hands frequently and use sanitizer.',
-    'Avoid crowded areas and maintain physical distance when advised.',
-    'Seek medical attention if you develop symptoms.',
-    'Follow guidance from health authorities and official announcements.',
-  ],
-  cholera_alert: [
-    'Drink only boiled or treated water and use clean containers.',
-    'Wash hands with soap before eating and after using the toilet.',
-    'Seek medical care immediately if you experience severe watery diarrhoea.',
-    'Report suspected cases to the nearest health facility.',
-  ],
-  dengue_alert: [
-    'Use insect repellent and sleep under mosquito nets.',
-    'Drain standing water around your home where mosquitoes breed.',
-    'Wear long sleeves and trousers during peak mosquito hours.',
-    'Seek medical help for high fever, severe headache or joint pain.',
-  ],
-  fire_emergency: [
-    'Evacuate the area immediately using the nearest safe exit.',
-    'Call the fire department and emergency services right away.',
-    'Do not use elevators during a fire.',
-    'Stop, drop, and roll if your clothing catches fire.',
-  ],
-  security_alert: [
-    'Stay indoors and remain alert to your surroundings.',
-    'Avoid gatherings or areas mentioned in the alert.',
-    'Follow instructions from security forces.',
-    'Report suspicious activity to the nearest police station.',
-  ],
-  road_closure: [
-    'Use the designated alternative routes shown in the alert.',
-    'Reduce speed and be alert for construction workers and signage.',
-    'Do not remove barriers or drive on closed sections.',
-    'Plan extra travel time for your journey.',
-  ],
-  traffic_diversion: [
-    'Follow diversion signs and traffic police directions.',
-    'Expect delays; use public transport where possible.',
-    'Merge early and avoid sudden lane changes.',
-    'Allow extra time for emergency vehicles to pass.',
-  ],
-  water_interruption: [
-    'Store clean drinking water in advance of the interruption window.',
-    'Close taps before supply resumes to avoid wastage.',
-    'Boil or treat stored water if the interruption was unplanned.',
-    'Report leaks or contamination to the responsible utility.',
-  ],
-  power_outage: [
-    'Unplug sensitive electronic equipment to protect from surges.',
-    'Keep a charged torch and backup batteries ready.',
-    'Use generators in well-ventilated areas only — never indoors.',
-    'Report fallen or damaged power lines to the utility; keep away from them.',
-  ],
-  infrastructure_maintenance: [
-    'Keep a safe distance from active maintenance work zones.',
-    'Obey warning signs, barricades and traffic officers.',
-    'Expect temporary service disruptions and plan accordingly.',
-    'Report hazardous conditions caused by the works to the authorities.',
-  ],
-  vaccination_campaign: [
-    'Carry your ID and vaccination card to the campaign site.',
-    'Arrive early to reduce waiting time and crowding.',
-    'Report any severe reaction to the health workers on site.',
-    'Follow the vaccination schedule advised by health professionals.',
-  ],
-  community_meeting: [
-    'Verify the meeting date, time and venue with official channels.',
-    'Arrive early and follow the organizers’ instructions.',
-    'Share the announcement with neighbours who may not have internet access.',
-    'Keep personal documents safe and avoid sharing sensitive information.',
-  ],
-  sanitation_campaign: [
-    'Dispose of waste only in designated collection points.',
-    'Wear gloves and protective gear when handling waste.',
-    'Keep water sources clean and away from waste materials.',
-    'Report illegal dumping to the local authorities.',
-  ],
-  illegal_construction: [
-    'Do not enter active construction sites without authorization.',
-    'Obey warning signs and barricades.',
-    'Ensure your own building projects obtain the required permits.',
-    'Report illegal construction activity to the authorities.',
-  ],
-  land_administration: [
-    'Bring your landholding documentation when visiting the office.',
-    'Verify notice details with the land administration office.',
-    'Keep copies of all submitted documents for your records.',
-    'Report any request for unofficial payments to the authorities.',
-  ],
-  service_center_closure: [
-    'Use alternative service channels or the nearest open branch.',
-    'Complete online procedures where available.',
-    'Check the center’s reopening date before travelling.',
-    'Follow any temporary arrangements described in the alert.',
-  ],
-  public_awareness_campaign: [
-    'Follow the official campaign messages and guidance.',
-    'Share accurate information and avoid spreading rumours.',
-    'Participate in activities only at approved venues.',
-    'Contact the organizers for verified details.',
-  ],
-  other: [
-    'Follow the instructions in the alert description.',
-    'Contact the issuing authority for more information.',
-    'Share the alert with neighbours who may not have internet access.',
-  ],
-  construction_advisory: [
-    'Keep a safe distance from active construction sites.',
-    'Obey warning signs and barricades.',
-    'Wear safety equipment when working near the site.',
-    'Report unsafe conditions or debris to the authorities.',
-  ],
-  security_advisory: [
-    'Stay indoors and remain alert to your surroundings.',
-    'Avoid gatherings or areas mentioned in the advisory.',
-    'Follow instructions from security forces.',
-    'Report suspicious activity to the nearest police station.',
-  ],
-  community_announcement: [
-    'Share the announcement with neighbors who may not have internet access.',
-    'Verify event details with official channels before attending.',
-    'Keep personal documents safe and avoid sharing sensitive information.',
-  ],
+export const getCategoryBadge = (value) => {
+  if (!value) return CATEGORY_BADGE.gray;
+  return CATEGORY_BADGE[CATEGORY_BADGE_COLORS[hashCategory(String(value))]] || CATEGORY_BADGE.blue;
 };
+
+// ── Permission mirror for the management UI ─────────────────────────────────
+// Mirrors backend/src/controllers/alertController.js canModifyAlert so the
+// dashboards hide Edit/Delete/Publish/Archive on alerts the current user
+// cannot actually modify. Global roles (admin/ADMIN/government) may modify
+// anything; subcity admins only alerts that specifically target their own
+// subcity; woreda officers only their own woreda.
+const GLOBAL_ALERT_ROLES = ['admin', 'ADMIN', 'government'];
+const SUB_CITY_ADMIN_ROLES = ['subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD', 'SUBCITY_ADMIN'];
+const WOREDA_ADMIN_ROLES = ['woreda', 'woreda_admin', 'WOREDA_HEAD', 'department', 'DEPARTMENT_ADMIN'];
+const SUBCITY_ROLE_MAP = { subcity_bole: 'BOLE', subcity_yeka: 'YEKA', subcity_lemmi_kura: 'LEMMI_KURA' };
+
+const userSubcityName = (user) => user?.subcity || SUBCITY_ROLE_MAP[user?.role] || '';
+
+const isSubcityRole = (role) =>
+  SUB_CITY_ADMIN_ROLES.includes(role) || (typeof role === 'string' && role.startsWith('subcity_'));
+
+export function canModifyAlertForUser(user, alert) {
+  if (!user || !alert) return false;
+  if (GLOBAL_ALERT_ROLES.includes(user.role)) return true;
+
+  if (isSubcityRole(user.role)) {
+    if (alert.scope === 'all' || alert.targetType === 'city') return false;
+    const mine = userSubcityName(user);
+    const mineId = user.subcityId ? String(user.subcityId) : null;
+    const eqId = (id) => String(id) === mineId;
+    const targetsMine =
+      (Array.isArray(alert.subcityIds) && mineId && alert.subcityIds.some(eqId)) ||
+      (Array.isArray(alert.subcityNames) && mine && alert.subcityNames.some((n) => String(n).toLowerCase() === mine.toLowerCase())) ||
+      (alert.subcityId && mineId && eqId(alert.subcityId)) ||
+      (alert.subcityName && mine && alert.subcityName.toLowerCase() === mine.toLowerCase());
+    if (!targetsMine) return false;
+    if (WOREDA_ADMIN_ROLES.includes(user.role)) {
+      const wName = (user.woredaName || '').toLowerCase();
+      const wId = user.woredaId ? String(user.woredaId) : null;
+      const eqWid = (id) => String(id) === wId;
+      return Boolean(
+        (Array.isArray(alert.woredaIds) && wId && alert.woredaIds.some(eqWid)) ||
+        (Array.isArray(alert.woredaNames) && wName && alert.woredaNames.some((n) => String(n).toLowerCase() === wName)) ||
+        (alert.woredaId && wId && eqWid(alert.woredaId)) ||
+        (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName)
+      );
+    }
+    return true;
+  }
+
+  if (WOREDA_ADMIN_ROLES.includes(user.role)) {
+    if (alert.scope === 'all' || alert.targetType === 'city') return false;
+    const wName = (user.woredaName || '').toLowerCase();
+    const wId = user.woredaId ? String(user.woredaId) : null;
+    const eqWid = (id) => String(id) === wId;
+    return Boolean(
+      (Array.isArray(alert.woredaIds) && wId && alert.woredaIds.some(eqWid)) ||
+      (Array.isArray(alert.woredaNames) && wName && alert.woredaNames.some((n) => String(n).toLowerCase() === wName)) ||
+      (alert.woredaId && wId && eqWid(alert.woredaId)) ||
+      (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName)
+    );
+  }
+
+  return false;
+}
 
 export const locationString = (a) => {
   const parts = [];
@@ -322,3 +215,67 @@ export const locationString = (a) => {
   parts.push(...scNames, ...wNames);
   return parts.join(' — ') || 'Addis Ababa';
 };
+
+// Viewer-relative targeting label (scope isolation). A system-wide admin sees
+// the full target list ("Bole, Yeka"); a subcity admin's dashboard shows only
+// their own subcity ("Bole Subcity") and a woreda officer's dashboard only
+// their woreda name. Mirrors backend `viewerScopeLabel`; falls back to the
+// server-supplied `alert.scopeLabel` when present, then to `locationString`.
+export function scopeLabelFor(user, alert) {
+  if (!alert) return '';
+  if (alert.scope === 'all' || alert.targetType === 'city' || alert.scopeType === 'city') return 'Addis Ababa (city-wide)';
+  if (user) {
+    if (isSubcityRole(user.role)) {
+      const mine = userSubcityName(user);
+      if (mine) return `${mine} Subcity`;
+    } else if (WOREDA_ADMIN_ROLES.includes(user.role)) {
+      if (user.woredaName) return user.woredaName;
+    }
+  }
+  return alert.targetLabel || locationString(alert);
+}
+
+export const alertLabelFor = (user, alert) =>
+  typeof alert.scopeLabel === 'string' && alert.scopeLabel ? alert.scopeLabel : scopeLabelFor(user, alert);
+
+export const alertCreatedByMeFor = (user, alert) =>
+  typeof alert.createdByMe === 'boolean'
+    ? alert.createdByMe
+    : Boolean(alert && alert.createdBy && user && user._id && String(alert.createdBy) === String(user._id));
+
+export const isGlobalAlertRole = (role) => GLOBAL_ALERT_ROLES.includes(role);
+
+// Client-side mirror of the backend buildAlertScope predicate, used to reject
+// real-time socket alerts that fall outside the current user's dashboard scope
+// (the socket server emits every alert to every connected client). Global roles
+// see everything; a subcity admin only city-wide + alerts targeting their own
+// subcity; a woreda officer only city-wide + alerts targeting their own woreda.
+export function inAlertScopeFor(user, alert) {
+  if (!user || !alert) return false;
+  if (GLOBAL_ALERT_ROLES.includes(user.role)) return true;
+  if (alert.scope === 'all' || alert.targetType === 'city' || alert.scopeType === 'city') return true;
+
+  if (isSubcityRole(user.role)) {
+    const mine = userSubcityName(user);
+    const mineId = user.subcityId ? String(user.subcityId) : null;
+    return Boolean(
+      (Array.isArray(alert.subcityIds) && mineId && alert.subcityIds.some((id) => String(id) === mineId)) ||
+      (Array.isArray(alert.subcityNames) && mine && alert.subcityNames.some((n) => String(n).toLowerCase() === mine.toLowerCase())) ||
+      (alert.subcityId && mineId && String(alert.subcityId) === mineId) ||
+      (alert.subcityName && mine && alert.subcityName.toLowerCase() === mine.toLowerCase())
+    );
+  }
+
+  if (WOREDA_ADMIN_ROLES.includes(user.role)) {
+    const wName = (user.woredaName || '').toLowerCase();
+    const wId = user.woredaId ? String(user.woredaId) : null;
+    return Boolean(
+      (Array.isArray(alert.woredaIds) && wId && alert.woredaIds.some((id) => String(id) === wId)) ||
+      (Array.isArray(alert.woredaNames) && wName && alert.woredaNames.some((n) => String(n).toLowerCase() === wName)) ||
+      (alert.woredaId && wId && String(alert.woredaId) === wId) ||
+      (alert.woredaName && wName && alert.woredaName.toLowerCase() === wName)
+    );
+  }
+
+  return true;
+}

@@ -59,17 +59,17 @@ router.post('/:id/comments', protect, authorize('citizen', 'government', 'admin'
 router.put('/:id/after-media', protect, authorize('government', 'admin'), uploadLimiter, upload.array('media', 10), addAfterMedia);
 
 // Admin
-router.get('/admin/all', protect, authorize('admin'), getAllReports);
-router.put('/:id/verify', protect, authorize('admin'), validateVerify, verifyReport);
-router.delete('/:id', protect, authorize('admin'), deleteReport);
+router.get('/admin/all', protect, authorize('admin', 'ADMIN'), getAllReports);
+router.put('/:id/verify', protect, authorize('admin', 'ADMIN'), validateVerify, verifyReport);
+router.delete('/:id', protect, authorize('admin', 'ADMIN'), deleteReport);
 
 // Admin + Government
-router.put('/:id/assign', protect, authorize('admin', 'government'), validateAssign, assignReport);
-router.put('/:id/status', protect, authorize('admin', 'government'), validateStatusUpdate, updateStatus);
+router.put('/:id/assign', protect, authorize('admin', 'ADMIN', 'government'), validateAssign, assignReport);
+router.put('/:id/status', protect, authorize('admin', 'ADMIN', 'government'), validateStatusUpdate, updateStatus);
 
 // Bulk operations
-router.post('/bulk/verify', protect, authorize('admin'), bulkVerify);
-router.post('/bulk/delete', protect, authorize('admin'), bulkDelete);
-router.post('/bulk/assign', protect, authorize('admin', 'government'), bulkAssign);
+router.post('/bulk/verify', protect, authorize('admin', 'ADMIN'), bulkVerify);
+router.post('/bulk/delete', protect, authorize('admin', 'ADMIN'), bulkDelete);
+router.post('/bulk/assign', protect, authorize('admin', 'ADMIN', 'government'), bulkAssign);
 
 module.exports = router;

@@ -29,6 +29,7 @@ export default function AdminWoredaManagement() {
 
   // deleteConfirm = null | { id, name }
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   // forceConfirm = null | { id, name, deps }
   const [forceConfirm, setForceConfirm] = useState(null);
 
@@ -181,13 +182,13 @@ export default function AdminWoredaManagement() {
   // ── Delete (safe first, force second) ────────────────────────────────────────
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await adminAPI.deleteWoreda(id);
       toast.success('Woreda deleted successfully');
       setDeleteConfirm(null);
       fetchWoredas();
     } catch (err) {
-      setDeleteConfirm(null);
       const msg = err.response?.data?.message || 'Delete failed';
       const deps = err.response?.data?.deps;
       if (deps) {
@@ -195,17 +196,23 @@ export default function AdminWoredaManagement() {
       } else {
         toast.error(msg);
       }
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
   const handleForceDelete = async (id) => {
     setForceConfirm(null);
+    setDeleting(true);
     try {
       const r = await adminAPI.deleteWoreda(id, { force: 'true' });
       toast.success(r.data?.message || 'Woreda deleted');
       fetchWoredas();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -293,11 +300,11 @@ export default function AdminWoredaManagement() {
 
       {/* ── Delete confirmation (safe) ───────────────────────────────────────── */}
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Woreda"
         message={`Delete "${deleteConfirm?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />
@@ -330,9 +337,10 @@ export default function AdminWoredaManagement() {
               <button
                 type="button"
                 onClick={() => handleForceDelete(forceConfirm.id)}
-                className="btn-primary flex-1 !bg-red-600 hover:!bg-red-700"
+                disabled={deleting}
+                className="btn-primary flex-1 !bg-red-600 hover:!bg-red-700 disabled:opacity-50"
               >
-                Force Delete
+                {deleting ? 'Deleting…' : 'Force Delete'}
               </button>
             </div>
           </div>

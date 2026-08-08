@@ -6,7 +6,6 @@ import NGOEmergency from './NGOEmergency';
 import NGOVolunteers from './NGOVolunteers';
 import CitizenProfile from '../citizen/CitizenProfile';
 import CitizenMessages from '../citizen/CitizenMessages';
-import NGOCampaigns from './NGOCampaigns';
 
 export default function NGODashboard() {
   const { t } = useTranslation();
@@ -14,7 +13,6 @@ export default function NGODashboard() {
   const navItems = [
     { path: '/dashboard/ngo',               icon: '📊', label: t('dashboard.overview') },
     { path: '/dashboard/ngo/emergency',     icon: '🚨', label: t('dashboard.emergencyRequests') },
-    { path: '/dashboard/ngo/campaigns',     icon: '❤️', label: 'Emergency Campaigns' },
     { path: '/dashboard/ngo/volunteers',    icon: '🙋', label: t('dashboard.volunteers') },
     { path: '/dashboard/ngo/messages',      icon: '💬', label: t('dashboard.messages') },
     { path: '/dashboard/ngo/profile',       icon: '👤', label: t('dashboard.profile') },
@@ -25,7 +23,6 @@ export default function NGODashboard() {
       <Routes>
         <Route index element={<NGOOverview />} />
         <Route path="emergency" element={<NGOEmergency />} />
-        <Route path="campaigns" element={<NGOCampaigns />} />
         <Route path="volunteers" element={<NGOVolunteers />} />
         <Route path="messages" element={<CitizenMessages />} />
         <Route path="profile" element={<CitizenProfile />} />

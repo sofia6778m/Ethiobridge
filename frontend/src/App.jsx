@@ -25,13 +25,11 @@ import PublicGovernanceComplaint from './pages/public/PublicGovernanceComplaint'
 import GovernanceTrack from './pages/public/GovernanceTrack';
 import PublicTrack from './pages/public/PublicTrack';
 import WorkflowComplaintSubmit from './pages/public/WorkflowComplaintSubmit';
-import Fundraising from './pages/public/Fundraising';
-import FundraisingDetail from './pages/public/FundraisingDetail';
-import Donate from './pages/public/Donate';
-import DonateNew from './pages/public/DonateNew';
-import DonationTrack from './pages/public/DonationTrack';
 import Alerts from './pages/public/Alerts';
 import AlertDetail from './pages/public/AlertDetail';
+import Campaigns from './pages/public/Campaigns';
+import CampaignDetail from './pages/public/CampaignDetail';
+import DonationTrack from './pages/public/DonationTrack';
 
 // Auth
 import Login from './pages/auth/Login';
@@ -119,13 +117,11 @@ const AppRoutes = () => {
         <Route path="/track/governance/:trackingId" element={<GovernanceTrack />} />
         <Route path="/track" element={<PublicTrack />} />
         <Route path="/report/workflow-complaint" element={<WorkflowComplaintSubmit />} />
-        <Route path="/fundraising" element={<Fundraising />} />
-        <Route path="/fundraising/:id" element={<FundraisingDetail />} />
-        <Route path="/donate" element={<Donate />} />
-        <Route path="/donate/new" element={<DonateNew />} />
-        <Route path="/donate/track" element={<DonationTrack />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/alerts/:id" element={<AlertDetail />} />
+        <Route path="/campaigns" element={<Campaigns />} />
+        <Route path="/campaigns/:id" element={<CampaignDetail />} />
+        <Route path="/donations/track/:ref" element={<DonationTrack />} />
       </Route>
 
       {/* Auth Routes — guest only: authenticated users are auto-redirected */}

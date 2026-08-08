@@ -29,6 +29,7 @@ export default function AdminDepartmentManagement() {
 
   // deleteConfirm = null | { id, name }
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // ── Data fetching ────────────────────────────────────────────────────────────
 
@@ -181,6 +182,7 @@ export default function AdminDepartmentManagement() {
   // ── Delete ───────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await adminAPI.deleteDepartment(id);
       toast.success('Department deleted successfully');
@@ -189,6 +191,8 @@ export default function AdminDepartmentManagement() {
     } catch (err) {
       setDeleteConfirm(null);
       toast.error(err.response?.data?.message || 'Delete failed');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -356,11 +360,11 @@ export default function AdminDepartmentManagement() {
 
       {/* ── Delete confirmation ─────────────────────────────────────────────── */}
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Department"
         message={`Delete "${deleteConfirm?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />

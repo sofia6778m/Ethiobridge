@@ -3,34 +3,60 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { alertAPI } from '../../../services/api';
-import { ALERT_CATEGORIES } from '../../../utils/alertMeta';
+import { useSocket } from '../../../context/SocketContext';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import AlertCard from '../../../components/common/AlertCard';
 
 export default function CitizenAlerts() {
   const { t } = useTranslation();
+  const { on } = useSocket() || {};
   const [subs, setSubs] = useState({ enabled: true, categories: [], channels: { inApp: true, email: false, sms: false, push: false } });
   const [alerts, setAlerts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  const fetchAlerts = useCallback(async () => {
+    try {
+      const alertRes = await alertAPI.getMyAlerts({ limit: 6 });
+      setAlerts(alertRes.data?.data?.alerts || []);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [subRes, alertRes] = await Promise.all([
+      const [subRes, catRes] = await Promise.all([
         alertAPI.getSubscriptions(),
-        alertAPI.getMyAlerts({ limit: 6 }),
+        alertAPI.getCategories().catch(() => ({ data: { data: { categories: [] } } })),
       ]);
       setSubs(subRes.data?.data?.subscriptions || { enabled: true, categories: [], channels: { inApp: true, email: false, sms: false, push: false } });
-      setAlerts(alertRes.data?.data?.alerts || []);
+      setCategories(Array.isArray(catRes.data?.data?.categories) ? catRes.data.data.categories : []);
+      await fetchAlerts();
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchAlerts]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // Real-time: created/edited/deleted alerts refresh this citizen's matched
+  // list immediately so their dashboard stays in sync with the broadcasts.
+  useEffect(() => {
+    if (!on) return;
+    const refresh = () => fetchAlerts();
+    const cleanups = [
+      on('alert:new', refresh),
+      on('alert:updated', refresh),
+      on('alert:deleted', refresh),
+      on('alert:statusUpdate', refresh),
+    ];
+    return () => cleanups.forEach((off) => off && off());
+  }, [on, fetchAlerts]);
 
   const toggleCategory = (value) => {
     setSubs((p) => {
@@ -38,7 +64,7 @@ export default function CitizenAlerts() {
       // When subscribed to everything, clicking a chip opts OUT of just that
       // category (i.e. subscribes to all others).
       if (current.length === 0) {
-        return { ...p, categories: ALERT_CATEGORIES.map((c) => c.value).filter((c) => c !== value) };
+        return { ...p, categories: categories.filter((c) => c !== value) };
       }
       const next = current.includes(value) ? current.filter((c) => c !== value) : [...current, value];
       return { ...p, categories: next };
@@ -123,23 +149,27 @@ export default function CitizenAlerts() {
           <div className="flex gap-2">
             <button onClick={() => setSubs((p) => ({ ...p, categories: [] }))} className="text-xs text-primary-600 hover:underline">All</button>
             <span className="text-xs text-gray-300">|</span>
-            <button onClick={() => setSubs((p) => ({ ...p, categories: ALERT_CATEGORIES.map((c) => c.value) }))} className="text-xs text-primary-600 hover:underline">None</button>
+            <button onClick={() => setSubs((p) => ({ ...p, categories: [...categories] }))} className="text-xs text-primary-600 hover:underline">None</button>
           </div>
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-          {allCategories ? 'You are subscribed to all categories.' : `Subscribed to ${subs.categories.length} of ${ALERT_CATEGORIES.length} categories.`}
+          {allCategories ? 'You are subscribed to all categories.' : `Subscribed to ${subs.categories.length} of ${categories.length} categories.`}
         </p>
-        <div className="flex flex-wrap gap-2">
-          {ALERT_CATEGORIES.map((c) => {
-            const selected = allCategories || subs.categories.includes(c.value);
-            return (
-              <button key={c.value} onClick={() => toggleCategory(c.value)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium border-2 transition-colors ${selected ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300' : 'border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-300'}`}>
-                {c.icon} {c.label}
-              </button>
-            );
-          })}
-        </div>
+        {categories.length === 0 ? (
+          <p className="text-xs text-gray-400 dark:text-gray-500">No categories available yet.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {categories.map((c) => {
+              const selected = allCategories || subs.categories.includes(c);
+              return (
+                <button key={c} onClick={() => toggleCategory(c)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium border-2 transition-colors ${selected ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300' : 'border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:border-gray-300'}`}>
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Live alerts preview */}

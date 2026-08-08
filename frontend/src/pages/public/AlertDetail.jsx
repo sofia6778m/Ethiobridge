@@ -9,7 +9,6 @@ import {
   categoryLabel,
   SEVERITY_STYLES,
   getCategoryBadge,
-  SAFETY_INSTRUCTIONS,
   locationString,
 } from '../../utils/alertMeta';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -55,9 +54,7 @@ export default function PublicAlertDetail() {
   const cat = getCategory(alert.category) || { icon: '📢' };
   const sev = getSeverity(alert.severity);
   const sevStyle = SEVERITY_STYLES[alert.severity] || SEVERITY_STYLES.information;
-  const safety = alert.safetyInstructions?.length
-    ? alert.safetyInstructions
-    : SAFETY_INSTRUCTIONS[alert.category] || [];
+  const safety = alert.safetyInstructions || [];
 
   return (
     <div className="min-h-[60vh]">

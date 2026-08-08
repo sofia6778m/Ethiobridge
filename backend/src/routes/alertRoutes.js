@@ -9,7 +9,9 @@ const {
   getManagedAlert,
   getPublicAlerts,
   getPublicAlertById,
+  getAlertCategories,
   getMyAlerts,
+  getMyScopeAlerts,
   getUnreadAlertCount,
   markAlertRead,
   updateAlertStatus,
@@ -36,6 +38,10 @@ const CITIZEN_ROLES = ['citizen', 'CITIZEN'];
 // Public — list active alerts.
 router.get('/', getPublicAlerts);
 
+// Public — distinct categories currently in use (for dynamic filter dropdowns).
+// Kept BEFORE the /:id catch-all so the fixed path always wins.
+router.get('/categories', getAlertCategories);
+
 // Citizen-facing subscription endpoints.
 router.get('/subscriptions/me', protect, authorize(...CITIZEN_ROLES), getSubscriptions);
 router.put('/subscriptions/me', protect, authorize(...CITIZEN_ROLES), updateSubscriptions);
@@ -53,6 +59,11 @@ router.get('/manage/:id', protect, authorize(...MANAGE_ROLES), getManagedAlert);
 // Citizen — alerts matched to the logged-in user's location (before the public /:id catch-all).
 router.get('/my/unread-count', protect, authorize(...CITIZEN_ROLES), getUnreadAlertCount);
 router.get('/my', protect, authorize(...CITIZEN_ROLES), getMyAlerts);
+
+// "My scope" — alerts within the caller's own administrative scope, for any
+// authenticated user (management roles get their scoped set; citizens get
+// live, location-matched alerts). Kept before the public /:id catch-all.
+router.get('/my-scope', protect, getMyScopeAlerts);
 
 // Public — get an active alert by ID (kept LAST so fixed paths win).
 router.get('/:id', getPublicAlertById);

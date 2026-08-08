@@ -8,7 +8,7 @@ const isActor = (actorId, userId) =>
 // Create a single in-app + realtime notification. A user never receives a
 // notification about their own action — the recipient is skipped entirely when
 // they are the actor.
-const notifyUser = async ({ userId, actorId, title, message, type, relatedReport, relatedReportType, complaintId, io }) => {
+const notifyUser = async ({ userId, actorId, title, message, type, relatedReport, relatedReportType, complaintId, campaignId, io }) => {
   if (!userId) return null;
   if (isActor(actorId, userId)) return null;
   return createNotification({
@@ -20,6 +20,7 @@ const notifyUser = async ({ userId, actorId, title, message, type, relatedReport
     relatedReport,
     relatedReportType,
     complaintId,
+    campaignId,
     io,
   });
 };
@@ -39,20 +40,41 @@ const notifyUsers = async ({ userIds = [], actorId, ...rest }) => {
   return created;
 };
 
-// Mark a notification read — only its owner may do so.
+// Mark a notification read — only its owner may do so. Deleted (hidden)
+// notifications are never touched.
 const markAsRead = async (userId, notificationId) =>
   Notification.findOneAndUpdate(
-    { _id: notificationId, recipient: userId },
+    { _id: notificationId, recipient: userId, isDeleted: false },
     { isRead: true, readAt: new Date() },
     { new: true }
   );
 
-// Mark every notification of a user read.
+// Mark every non-deleted notification of a user read.
 const markAllAsRead = async (userId) =>
-  Notification.updateMany({ recipient: userId, isRead: false }, { isRead: true, readAt: new Date() });
+  Notification.updateMany(
+    { recipient: userId, isRead: false, isDeleted: false },
+    { isRead: true, readAt: new Date() }
+  );
 
 const getUnreadCount = async (userId) =>
-  Notification.countDocuments({ recipient: userId, isRead: false });
+  Notification.countDocuments({ recipient: userId, isRead: false, isDeleted: false });
+
+// Soft-delete (hide) a single notification for its owner. The document is
+// kept so the source record's relationship is preserved; only the owner's
+// inbox stops showing it.
+const softDelete = async (userId, notificationId) =>
+  Notification.findOneAndUpdate(
+    { _id: notificationId, recipient: userId, isDeleted: false },
+    { isDeleted: true },
+    { new: true }
+  );
+
+// Soft-delete (hide) several notifications at once for their owner.
+const softDeleteMany = async (userId, ids) =>
+  Notification.updateMany(
+    { recipient: userId, isDeleted: false, _id: { $in: ids } },
+    { isDeleted: true }
+  );
 
 module.exports = {
   notifyUser,
@@ -60,5 +82,7 @@ module.exports = {
   markAsRead,
   markAllAsRead,
   getUnreadCount,
+  softDelete,
+  softDeleteMany,
   isActor,
 };

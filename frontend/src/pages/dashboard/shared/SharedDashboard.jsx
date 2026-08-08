@@ -17,8 +17,6 @@ import GovernanceComplaintList from '../governance/GovernanceComplaintList';
 import GovernanceComplaintDetail from '../governance/GovernanceComplaintDetail';
 import SharedAlerts from './SharedAlerts';
 import PublicAlertForm from '../alerts/PublicAlertForm';
-import SharedCampaigns from './SharedCampaigns';
-import SharedDonations from './SharedDonations';
 
 const SUB_CITY_LABELS = {
   subcity_bole: 'Bole',
@@ -60,8 +58,6 @@ export default function SharedDashboard() {
       { path: `${base}/governance-complaints`, icon: '⚖️', label: 'Governance Complaints' },
     ] : []),
     ...(!isInspector && !isTechnician && !isWoredaAdmin && !isDepartmentOfficer && !isGovernanceOfficer ? [
-      { path: `${base}/campaigns`, icon: '🎯', label: 'Campaigns' },
-      { path: `${base}/donations`, icon: '❤️', label: 'Donations' },
       { path: `${base}/alerts`, icon: '📢', label: 'Public Alerts' },
     ] : []),
     { path: `${base}/notifications`, icon: '🔔', label: t('dashboard.notifications') },
@@ -116,8 +112,6 @@ export default function SharedDashboard() {
         )}
         {(isSubcity || isWoreda || isSubcityHead || isWoredaHead) && (
           <>
-            <Route path="campaigns" element={<SharedCampaigns />} />
-            <Route path="donations" element={<SharedDonations />} />
             <Route path="alerts" element={<SharedAlerts />} />
             <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/alerts" />} />
           </>

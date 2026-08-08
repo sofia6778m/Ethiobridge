@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { alertAPI } from '../../../services/api';
+import { useSocket } from '../../../context/SocketContext';
+import { useAuth } from '../../../context/AuthContext';
 import {
   ALERT_SEVERITIES,
   ALERT_STATUSES,
@@ -13,25 +15,47 @@ import {
   SEVERITY_STYLES,
   STATUS_STYLES,
   getCategoryBadge,
-  locationString,
+  canModifyAlertForUser,
+  alertLabelFor,
+  alertCreatedByMeFor,
+  isGlobalAlertRole,
+  inAlertScopeFor,
 } from '../../../utils/alertMeta';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import EmptyState from '../../../components/common/EmptyState';
 import Pagination from '../../../components/common/Pagination';
+import ConfirmModal from '../../../components/common/ConfirmModal';
 
 // Reusable, role-scoped alert management view used by the government, admin
 // and shared (subcity/woreda) dashboards. The backend scopes the list by role.
 export default function AlertManagement({ createPath, onCreated }) {
   const { t } = useTranslation();
+  const { user } = useAuth() || {};
+  const { on } = useSocket() || {};
+
+  // Scope isolation: global admins manage every alert in their dashboard; a
+  // subcity/woreda admin may only edit/delete alerts they created themselves,
+  // while alerts received from others (e.g. the System Admin) stay read-only.
+  const isGlobal = isGlobalAlertRole(user?.role);
+  const isLocalityAdmin = Boolean(user) && !isGlobal;
+  const canManageForViewer = (alert) => {
+    if (!canModifyAlertForUser(user, alert)) return false;
+    if (isGlobal) return true;
+    return alertCreatedByMeFor(user, alert);
+  };
+
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState(null);
+  const [categories, setCategories] = useState([]);
   const [filter, setFilter] = useState({ status: '', category: '', severity: '' });
   const [selected, setSelected] = useState(null);
   const [exporting, setExporting] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -63,6 +87,82 @@ export default function AlertManagement({ createPath, onCreated }) {
 
   useEffect(() => { fetchAlerts(); }, [fetchAlerts]);
   useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  // Whether an incoming real-time alert belongs in the currently filtered list.
+  const matchesFilter = useCallback((alert) => {
+    if (!alert) return false;
+    if (filter.status && alert.status !== filter.status) return false;
+    if (filter.severity && alert.severity !== filter.severity) return false;
+    if (filter.category && alert.category !== filter.category) return false;
+    return true;
+  }, [filter]);
+
+  // Dynamic category filter: distinct categories from existing alerts (exact
+  // values), so the dropdown always matches the data instead of a hardcoded list.
+  useEffect(() => {
+    alertAPI.getCategories()
+      .then((res) => {
+        const cats = Array.isArray(res.data?.data?.categories) ? res.data.data.categories : [];
+        setCategories(cats.filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+      })
+      .catch(() => { /* keep the previous list */ });
+  }, []);
+
+  // Merge a category (from a real-time alert) into the dynamic dropdown.
+  const mergeCategory = useCallback((value) => {
+    if (!value || typeof value !== 'string') return;
+    const v = value.trim();
+    if (!v) return;
+    setCategories((prev) => {
+      if (prev.includes(v)) return prev;
+      return [...prev, v].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    });
+  }, []);
+
+  // Real-time synchronization: create, edit, delete and status changes arrive
+  // over the socket so every dashboard reflects them instantly.
+  useEffect(() => {
+    if (!on) return;
+    const cleanups = [
+      on('alert:new', (incoming) => {
+        if (!incoming?._id) return;
+        mergeCategory(incoming.category);
+        setAlerts((prev) => {
+          if (prev.some((a) => a._id === incoming._id)) return prev;
+          if (!inAlertScopeFor(user, incoming)) return prev;
+          if (!matchesFilter(incoming)) return prev;
+          return [incoming, ...prev].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        });
+        fetchStats();
+      }),
+      on('alert:updated', (incoming) => {
+        if (!incoming?._id) return;
+        mergeCategory(incoming.category);
+        setAlerts((prev) => {
+          const exists = prev.some((a) => a._id === incoming._id);
+          if (!exists) {
+            if (!inAlertScopeFor(user, incoming)) return prev;
+            if (!matchesFilter(incoming)) return prev;
+            return [incoming, ...prev].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          }
+          return prev.map((a) => (a._id === incoming._id ? { ...a, ...incoming } : a));
+        });
+      }),
+      on('alert:statusUpdate', (u) => {
+        if (!u?._id) return;
+        setAlerts((prev) => prev.map((a) => (a._id === u._id ? { ...a, status: u.status, severity: u.severity ?? a.severity } : a)));
+        fetchStats();
+      }),
+      on('alert:deleted', (u) => {
+        const id = u?._id;
+        if (!id) return;
+        setAlerts((prev) => prev.filter((a) => a._id !== id));
+        setSelected((prev) => (prev?._id === id ? null : prev));
+        fetchStats();
+      }),
+    ];
+    return () => cleanups.forEach((off) => off && off());
+  }, [on, matchesFilter, fetchStats, mergeCategory, user]);
 
   const handleStatusUpdate = async (id, status) => {
     try {
@@ -101,16 +201,20 @@ export default function AlertManagement({ createPath, onCreated }) {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this alert permanently?')) return;
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await alertAPI.delete(id);
+      await alertAPI.delete(deleteTarget._id);
       toast.success('Alert deleted');
       setSelected(null);
       fetchAlerts();
       fetchStats();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to delete');
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -194,9 +298,13 @@ export default function AlertManagement({ createPath, onCreated }) {
               <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
             ))}
           </select>
-          <input value={filter.category} onChange={e => { setFilter(p => ({ ...p, category: e.target.value })); setPage(1); }}
-            placeholder="Filter by category…"
-            className="input-field w-auto text-sm" />
+          <select value={filter.category} onChange={e => { setFilter(p => ({ ...p, category: e.target.value })); setPage(1); }}
+            className="input-field w-auto text-sm">
+            <option value="">{t('alert.allCategories')}</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
           <select value={filter.severity} onChange={e => { setFilter(p => ({ ...p, severity: e.target.value })); setPage(1); }}
             className="input-field w-auto text-sm">
             <option value="">{t('alert.allSeverities')}</option>
@@ -213,48 +321,88 @@ export default function AlertManagement({ createPath, onCreated }) {
       ) : alerts.length === 0 ? (
         <EmptyState icon="📢" title={t('alert.noAlerts')} description={t('alert.noAlertsManage')} />
       ) : (
-        <div className="space-y-3">
-          {alerts.map(alert => {
-            const cat = getCategory(alert.category) || { icon: '📢' };
-            const sev = getSeverity(alert.severity);
-            return (
-              <div key={alert._id}
-                onClick={() => setSelected(alert)}
-                className={`card hover:shadow-md transition-shadow cursor-pointer border-l-4 ${SEVERITY_STYLES[alert.severity]?.leftBorder || 'border-l-blue-500'}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="text-lg">{cat.icon}</span>
-                      <h3 className="font-semibold text-gray-800 dark:text-gray-200 truncate">{alert.title}</h3>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${SEVERITY_STYLES[alert.severity]?.badge || ''}`}>
-                        {sev.icon} {sev.label}
-                      </span>
-                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[alert.status] || ''}`}>
-                        {alert.status}
-                      </span>
+        <div className="space-y-6">
+          {(() => {
+            const myAlerts = alerts.filter((a) => alertCreatedByMeFor(user, a));
+            const receivedAlerts = alerts.filter((a) => !alertCreatedByMeFor(user, a));
+            const badgeFor = (alert) => {
+              if (!isLocalityAdmin) return null;
+              if (alertCreatedByMeFor(user, alert)) {
+                return { text: 'Created by you', cls: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300' };
+              }
+              return {
+                text: isGlobalAlertRole(alert.createdByRole) ? 'Received from System Admin' : `Received from ${alert.createdByName || 'Admin'}`,
+                cls: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
+              };
+            };
+            const renderCard = (alert) => {
+              const cat = getCategory(alert.category) || { icon: '📢' };
+              const sev = getSeverity(alert.severity);
+              const badge = badgeFor(alert);
+              return (
+                <div key={alert._id}
+                  onClick={() => setSelected(alert)}
+                  className={`card hover:shadow-md transition-shadow cursor-pointer border-l-4 ${SEVERITY_STYLES[alert.severity]?.leftBorder || 'border-l-blue-500'}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap mb-1">
+                        <span className="text-lg">{cat.icon}</span>
+                        <h3 className="font-semibold text-gray-800 dark:text-gray-200 truncate">{alert.title}</h3>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${SEVERITY_STYLES[alert.severity]?.badge || ''}`}>
+                          {sev.icon} {sev.label}
+                        </span>
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[alert.status] || ''}`}>
+                          {alert.status}
+                        </span>
+                        {badge && (
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${badge.cls}`} title={badge.text}>
+                            {badge.text}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-1">{alert.description}</p>
+                      <div className="flex items-center gap-3 mt-2 text-xs text-gray-400 dark:text-gray-500 flex-wrap">
+                        <span>📍 {alertLabelFor(user, alert)}</span>
+                        <span>•</span>
+                        <span>{new Date(alert.publishedAt || alert.createdAt).toLocaleDateString()}</span>
+                        <span>•</span>
+                        <span>By {alert.createdByName}</span>
+                        {alert.attachments?.length > 0 && <span>📎 {alert.attachments.length}</span>}
+                      </div>
                     </div>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-1">{alert.description}</p>
-                    <div className="flex items-center gap-3 mt-2 text-xs text-gray-400 dark:text-gray-500 flex-wrap">
-                      <span>📍 {alert.targetLabel || locationString(alert)}</span>
-                      <span>•</span>
-                      <span>{new Date(alert.publishedAt || alert.createdAt).toLocaleDateString()}</span>
-                      <span>•</span>
-                      <span>By {alert.createdByName}</span>
-                      {alert.attachments?.length > 0 && <span>📎 {alert.attachments.length}</span>}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-gray-400">👁 {alert.views || 0}</span>
+                      {alert.source === 'complaint_cluster' && (
+                        <span className="text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded-full" title="Generated from a complaint cluster">
+                          ⚙️ Cluster
+                        </span>
+                      )}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-gray-400">👁 {alert.views || 0}</span>
-                    {alert.source === 'complaint_cluster' && (
-                      <span className="text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-2 py-0.5 rounded-full" title="Generated from a complaint cluster">
-                        ⚙️ Cluster
-                      </span>
-                    )}
                   </div>
                 </div>
-              </div>
+              );
+            };
+
+            if (!isLocalityAdmin) {
+              return <div className="space-y-3">{alerts.map(renderCard)}</div>;
+            }
+            return (
+              <>
+                {receivedAlerts.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">📥 Received Alerts</h3>
+                    <div className="space-y-3">{receivedAlerts.map(renderCard)}</div>
+                  </div>
+                )}
+                {myAlerts.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-2">📝 My Created Alerts</h3>
+                    <div className="space-y-3">{myAlerts.map(renderCard)}</div>
+                  </div>
+                )}
+              </>
             );
-          })}
+          })()}
         </div>
       )}
 
@@ -292,7 +440,7 @@ export default function AlertManagement({ createPath, onCreated }) {
                   </span>
                 )}
                 <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-                  📍 {selected.targetLabel || locationString(selected)}
+                  📍 {alertLabelFor(user, selected)}
                 </span>
               </div>
 
@@ -351,47 +499,80 @@ export default function AlertManagement({ createPath, onCreated }) {
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2 border-t border-gray-200 dark:border-gray-700 pt-4">
-                {['draft', 'scheduled'].includes(selected.status) && (
-                  <button onClick={() => handlePublish(selected._id)}
-                    className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 px-4 rounded-lg transition-colors">
-                    Publish Now
-                  </button>
-                )}
-                {LIVE_STATUSES.includes(selected.status) && (
-                  <>
-                    <button onClick={() => handleStatusUpdate(selected._id, 'expired')}
-                      className="btn-secondary text-xs py-2 px-4">
-                      Expire Alert
-                    </button>
-                    <button onClick={() => handleArchive(selected._id)}
-                      className="btn-secondary text-xs py-2 px-4">
-                      Archive
-                    </button>
-                  </>
-                )}
-                {['expired', 'archived'].includes(selected.status) && (
-                  <button onClick={() => handlePublish(selected._id)}
-                    className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 px-4 rounded-lg transition-colors">
-                    Reactivate
-                  </button>
-                )}
-                {createPath && (
-                  <Link to={`${createPath}?edit=${selected._id}`} className="btn-secondary text-xs py-2 px-4">
-                    ✏️ Edit
-                  </Link>
-                )}
-                <Link to={`/alerts/${selected._id}`} className="btn-secondary text-xs py-2 px-4">
-                  View Public Page
-                </Link>
-                <button onClick={() => handleDelete(selected._id)}
-                  className="btn-danger text-xs py-2 px-4 ml-auto">
-                  Delete
-                </button>
+                {(() => {
+                  const scopedOut = !canModifyAlertForUser(user, selected);
+                  const receivedReadOnly = !scopedOut && !isGlobal && !alertCreatedByMeFor(user, selected);
+                  const manage = canManageForViewer(selected);
+                  return (
+                    <>
+                      {scopedOut && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 py-2 px-1 mr-auto">
+                          Read-only — this alert is outside your subcity/woreda.
+                        </span>
+                      )}
+                      {receivedReadOnly && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500 py-2 px-1 mr-auto">
+                          Read-only — received from {isGlobalAlertRole(selected.createdByRole) ? 'the System Admin' : selected.createdByName || 'another admin'}. Only the creating admin can edit or delete this alert.
+                        </span>
+                      )}
+                      {manage && ['draft', 'scheduled'].includes(selected.status) && (
+                        <button onClick={() => handlePublish(selected._id)}
+                          className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 px-4 rounded-lg transition-colors">
+                          Publish Now
+                        </button>
+                      )}
+                      {manage && LIVE_STATUSES.includes(selected.status) && (
+                        <>
+                          <button onClick={() => handleStatusUpdate(selected._id, 'expired')}
+                            className="btn-secondary text-xs py-2 px-4">
+                            Expire Alert
+                          </button>
+                          <button onClick={() => handleArchive(selected._id)}
+                            className="btn-secondary text-xs py-2 px-4">
+                            Archive
+                          </button>
+                        </>
+                      )}
+                      {manage && ['expired', 'archived'].includes(selected.status) && (
+                        <button onClick={() => handlePublish(selected._id)}
+                          className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-2 px-4 rounded-lg transition-colors">
+                          Reactivate
+                        </button>
+                      )}
+                      {manage && createPath && (
+                        <Link to={`${createPath}?edit=${selected._id}`} className="btn-secondary text-xs py-2 px-4">
+                          ✏️ Edit
+                        </Link>
+                      )}
+                      <Link to={`/alerts/${selected._id}`} className="btn-secondary text-xs py-2 px-4">
+                        View Public Page
+                      </Link>
+                      {manage && (
+                        <button onClick={() => setDeleteTarget(selected)}
+                          className="btn-danger text-xs py-2 px-4 ml-auto">
+                          Delete
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Delete confirmation modal */}
+      <ConfirmModal
+        open={!!deleteTarget}
+        title="Delete this alert?"
+        message={`"${deleteTarget?.title}" will be permanently removed from every public page, all dashboards, cached lists and citizen notifications. This cannot be undone.`}
+        confirmLabel="Delete Alert"
+        cancelLabel="Cancel"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }}
+      />
     </div>
   );
 }

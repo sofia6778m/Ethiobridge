@@ -9,6 +9,7 @@ export default function Footer() {
     { to: '/about',                  label: t('nav.about') },
     { to: '/infrastructure-reports', label: t('nav.infrastructure') },
     { to: '/emergency-requests',     label: t('nav.emergency') },
+    { to: '/campaigns',              label: t('nav.campaigns') },
     { to: '/track-report',           label: t('nav.trackReport') || 'Track Report' },
     { to: '/news',                   label: t('nav.news') },
   ];

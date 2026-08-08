@@ -10,7 +10,6 @@ import AdminActivity from './AdminActivity';
 import GovAnalytics from '../government/GovAnalytics';
 import CitizenProfile from '../citizen/CitizenProfile';
 import CitizenMessages from '../citizen/CitizenMessages';
-import AdminCampaigns from './AdminCampaigns';
 import AdminSubcityManagement from './AdminSubcityManagement';
 import AdminWoredaManagement from './AdminWoredaManagement';
 import AdminDepartmentManagement from './AdminDepartmentManagement';
@@ -23,8 +22,7 @@ import AdminGovernanceStats from './AdminGovernanceStats';
 import AdminAlerts from './AdminAlerts';
 import PublicAlertForm from '../alerts/PublicAlertForm';
 import AdminAlertAudit from './AdminAlertAudit';
-import AdminDonations from './AdminDonations';
-import AdminPaymentMethods from './AdminPaymentMethods';
+import CampaignAnalytics from '../campaigns/CampaignAnalytics';
 
 export default function AdminDashboard() {
   const { t } = useTranslation();
@@ -32,9 +30,11 @@ export default function AdminDashboard() {
   const navItems = [
     { path: '/dashboard/admin',              icon: '📊', label: t('dashboard.overview') },
     { path: '/dashboard/admin/approvals',    icon: '✅', label: t('dashboard.pendingApprovals') },
-    { path: '/dashboard/admin/campaigns',    icon: '🏆', label: 'Campaigns' },
-    { path: '/dashboard/admin/donations',    icon: '💰', label: 'Donations' },
-    { path: '/dashboard/admin/payment-methods', icon: '💳', label: 'Payment Methods' },
+
+    // ── Campaign Reports (view-only analytics — management is done by the
+    //    owning Subcity / Woreda admins) ────────────────────────────────────
+    { path: '/dashboard/admin/campaigns/analytics', icon: '📈', label: 'Campaign Reports', sectionHeader: true },
+
     { path: '/dashboard/admin/users',        icon: '👥', label: t('dashboard.userManagement') },
     { path: '/dashboard/admin/reports',      icon: '📋', label: t('dashboard.reportManagement') },
     { path: '/dashboard/admin/governance-complaints', icon: '⚖️', label: 'Governance Complaints' },
@@ -57,9 +57,7 @@ export default function AdminDashboard() {
       <Routes>
         <Route index element={<AdminOverview />} />
         <Route path="approvals"  element={<AdminApprovals />} />
-        <Route path="campaigns"  element={<AdminCampaigns />} />
-        <Route path="donations"  element={<AdminDonations />} />
-        <Route path="payment-methods" element={<AdminPaymentMethods />} />
+        <Route path="campaigns/analytics" element={<CampaignAnalytics />} />
         <Route path="users"      element={<AdminUsers />} />
         <Route path="reports"    element={<AdminReports />} />
         <Route path="municipal-complaints" element={<MunicipalComplaintList basePath="/dashboard/admin/municipal-complaints" />} />

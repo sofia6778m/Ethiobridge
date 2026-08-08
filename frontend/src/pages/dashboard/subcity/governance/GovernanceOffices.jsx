@@ -509,11 +509,11 @@ export default function GovernanceOffices() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Government Office"
         message={`Delete "${deleteConfirm?.name}"? Offices with linked complaints or active officer accounts cannot be deleted — deactivate them instead.`}
         confirmLabel="Delete"
-        danger
+        loading={saving}
         onConfirm={handleDelete}
         onCancel={() => setDeleteConfirm(null)}
       />

@@ -837,10 +837,10 @@ export default function MunicipalComplaintDetail() {
       )}
 
       <ConfirmModal
-        isOpen={!!confirmAction}
+        open={!!confirmAction}
         title={confirmAction?.title}
         message={confirmAction?.message}
-        danger={confirmAction?.danger}
+        loading={updating}
         confirmLabel="Confirm"
         onCancel={() => setConfirmAction(null)}
         onConfirm={async () => {

@@ -54,6 +54,15 @@ const onlyValidIds = (ids) => (Array.isArray(ids) ? ids.filter(isValidObjectId) 
 // the real cause in development builds so it is not hidden behind a generic
 // "Failed to create alert".
 function alertErrorResponse(res, err, verb) {
+  // Custom validation errors thrown by targeting/scope checks carry an explicit
+  // status + field so they map straight to a 4xx response instead of a 500.
+  if (err && err.statusCode) {
+    return res.status(err.statusCode).json({
+      success: false,
+      message: err.message,
+      field: err.field || undefined,
+    });
+  }
   if (err && err.name === 'CastError') {
     return res.status(400).json({
       success: false,
@@ -73,6 +82,15 @@ function alertErrorResponse(res, err, verb) {
     return res.status(500).json({ success: false, message: `Failed to ${verb} alert. Please try again.` });
   }
   return res.status(500).json({ success: false, message: `Failed to ${verb} alert: ${err?.message || err}` });
+}
+
+// Build a validation error that alertErrorResponse translates into a 4xx
+// response carrying a `field` so the UI can highlight the offending control.
+function httpError(statusCode, message, field) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.field = field;
+  return err;
 }
 
 function isGlobalUser(user) {
@@ -131,10 +149,6 @@ function buildAlertScope(user) {
     if (user.woredaName) {
       $or.push({ woredaName: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
       $or.push({ woredaNames: { $regex: `^${esc(user.woredaName)}$`, $options: 'i' } });
-    }
-    if (user.subcity) {
-      $or.push({ subcityName: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
-      $or.push({ subcityNames: { $regex: `^${esc(user.subcity)}$`, $options: 'i' } });
     }
     return { $or };
   }
@@ -218,6 +232,37 @@ function canModifyAlert(user, alert) {
   return false;
 }
 
+// Viewer-relative targeting label (scope isolation). A system-wide admin sees
+// the full target list ("Bole, Yeka"); a subcity admin's dashboard shows only
+// their own subcity ("Bole Subcity") and a woreda officer's dashboard only
+// their woreda name — no matter how wide the alert's real audience is.
+function viewerScopeLabel(user, alert) {
+  if (!alert) return '';
+  const cityWide = alert.scope === 'all' || alert.targetType === 'city' || alert.scopeType === 'city';
+  if (cityWide) return 'Addis Ababa (city-wide)';
+  if (isSubcityUser(user)) {
+    const mine = userSubcityName(user);
+    if (mine) return `${mine} Subcity`;
+  } else if (isWoredaUser(user)) {
+    if (user.woredaName) return user.woredaName;
+  }
+  return alert.targetLabel || '';
+}
+
+// Whether the current viewer created this alert (drives "Created by you" badges
+// and the created-by-you-only edit/delete gate on locality dashboards).
+function alertCreatedByMe(user, alert) {
+  if (!user || !alert || !alert.createdBy) return false;
+  return String(alert.createdBy) === String(user._id || user.id);
+}
+
+function toObjectWithScopeView(user, alert) {
+  const obj = alert.toObject();
+  obj.scopeLabel = viewerScopeLabel(user, alert);
+  obj.createdByMe = alertCreatedByMe(user, alert);
+  return obj;
+}
+
 const toArray = (v) => {
   if (Array.isArray(v)) return v.filter(Boolean);
   if (v) return [v];
@@ -236,6 +281,45 @@ function buildTargetLabel(targetType, subcityNames, woredaNames) {
 // and must pick at least one woreda; a woreda officer is locked to their
 // subcity + woreda. Legacy single-target payloads (scope/subcityName/
 // woredaName) are also accepted so pre-existing clients keep working.
+// Validate that every requested woreda belongs to one of the allowed subcities
+// (spec: "Woredas must belong to selected subcities"). Prevented clients from
+// attaching a foreign woreda to an alert that targets a different subcity.
+// Throws an httpError(400) describing the first offending woreda.
+async function assertWoredasBelongToSubcities({ woredaIds, woredaNames, allowedSubcityIds, allowedSubcityNames }) {
+  if ((!woredaIds || !woredaIds.length) && (!woredaNames || !woredaNames.length)) return;
+
+  const idSet = new Set((allowedSubcityIds || []).map((id) => String(id)));
+  const nameSet = new Set((allowedSubcityNames || []).map((n) => String(n).toLowerCase().trim()));
+
+  // Resolve the woredas the caller actually selected. When ids are present they
+  // are authoritative; name-only payloads are resolved by name so they can be
+  // checked the same way.
+  let docs = [];
+  if (woredaIds && woredaIds.length) {
+    docs = await Woreda.find({ _id: { $in: woredaIds } }).select('name subcity subcityId').lean();
+    if (docs.length !== woredaIds.length) {
+      throw httpError(400, 'One or more selected woredas no longer exist. Refresh and try again.', 'targeting');
+    }
+  } else {
+    const names = woredaNames.map((n) => new RegExp(`^${esc(n)}$`, 'i'));
+    docs = await Woreda.find({ name: { $in: names } }).select('name subcity subcityId').lean();
+  }
+
+  for (const w of docs) {
+    const wSubcityId = w.subcityId ? String(w.subcityId) : null;
+    const wSubcityName = String(w.subcity || '').toLowerCase().trim();
+    const belongsById = wSubcityId && idSet.has(wSubcityId);
+    const belongsByName = wSubcityName && nameSet.has(wSubcityName);
+    if (!belongsById && !belongsByName) {
+      throw httpError(
+        400,
+        `"${w.name}" is not in a targeted subcity — pick woredas only from the selected subcities.`,
+        'targeting'
+      );
+    }
+  }
+}
+
 async function resolveTargeting(user, body) {
   const fallback = (targetType, scope) => ({
     targetType,
@@ -278,6 +362,15 @@ async function resolveTargeting(user, body) {
       if (docs.length === woredaIds.length) woredaNames = docs.map((d) => d.name);
     }
 
+    // Woredas must belong to the selected subcities — a woreda from an
+    // unselected subcity would mis-broadcast outside the intended audience.
+    await assertWoredasBelongToSubcities({
+      woredaIds,
+      woredaNames,
+      allowedSubcityIds: subcityIds,
+      allowedSubcityNames: subcityNames,
+    });
+
     const targetType = woredaIds.length || woredaNames.length ? 'woreda' : subcityIds.length || subcityNames.length ? 'subcity' : 'city';
     const scope = targetType === 'city' ? 'all' : targetType === 'woreda' ? 'woreda' : 'subcity';
     return {
@@ -304,6 +397,15 @@ async function resolveTargeting(user, body) {
       const docs = await Woreda.find({ _id: { $in: woredaIds } }).select('name').lean();
       if (docs.length === woredaIds.length) woredaNames = docs.map((d) => d.name);
     }
+
+    // A subcity admin may only target woredas inside their OWN subcity.
+    await assertWoredasBelongToSubcities({
+      woredaIds,
+      woredaNames,
+      allowedSubcityIds: subcityIds,
+      allowedSubcityNames: subcityNames,
+    });
+
     const targetType = woredaIds.length || woredaNames.length ? 'woreda' : 'subcity';
     const scope = targetType === 'woreda' ? 'woreda' : 'subcity';
     return {
@@ -690,6 +792,8 @@ function toSocketPayload(alert) {
     publishedAt: alert.publishedAt,
     expiresAt: alert.expiresAt,
     attachments: alert.attachments || [],
+    createdBy: alert.createdBy,
+    createdByRole: alert.createdByRole,
     createdByName: alert.createdByName,
     createdByOrg: alert.createdByOrg,
     createdAt: alert.createdAt,
@@ -718,16 +822,17 @@ const createAlert = async (req, res) => {
     }
 
     const {
-      title, category, customCategory, severity, description,
+      title, category, alertCategory, customCategory, severity, description,
       startAt, endAt, scheduledAt, expiresAt,
       emergencyContact, sourceAuthority, status: requestedStatus,
     } = req.body;
 
     // Category is OPTIONAL and free-text: null / "" / undefined are all valid
     // and stored as null; any non-empty string (e.g. "Flood Warning") is kept
-    // verbatim. There is no predefined list and no validation error when the
-    // field is empty.
-    const rawCategory = typeof category === 'string' ? category.trim() : category;
+    // verbatim. `alertCategory` is the canonical form-field name; the legacy
+    // `category` field is still accepted so existing API callers keep working.
+    const rawCategoryInput = alertCategory !== undefined ? alertCategory : category;
+    const rawCategory = typeof rawCategoryInput === 'string' ? rawCategoryInput.trim() : rawCategoryInput;
     const normalizedCategory = rawCategory || null;
 
     if (!title || !title.trim() || title.trim().length > 200) {
@@ -865,7 +970,7 @@ const updateAlert = async (req, res) => {
     }
 
     const {
-      title, category, description, severity, customCategory, safetyInstructions,
+      title, category, alertCategory, description, severity, customCategory, safetyInstructions,
       startAt, endAt, scheduledAt, expiresAt,
       emergencyContact, sourceAuthority, status,
     } = req.body;
@@ -875,9 +980,11 @@ const updateAlert = async (req, res) => {
       alert.title = title.trim();
     }
     // Category is optional and free-text — null / "" / undefined all mean
-    // "no category", any other string is stored as-is.
-    if (category !== undefined) {
-      const normalized = typeof category === 'string' ? category.trim() : category;
+    // "no category", any other string is stored as-is. `alertCategory` is the
+    // canonical field name; `category` remains accepted for old callers.
+    const categoryInput = alertCategory !== undefined ? alertCategory : category;
+    if (categoryInput !== undefined) {
+      const normalized = typeof categoryInput === 'string' ? categoryInput.trim() : categoryInput;
       if (normalized && normalized.length > 120) return res.status(400).json({ success: false, message: 'Category must be under 120 characters.' });
       alert.category = normalized || null;
     }
@@ -1000,7 +1107,7 @@ const publishAlert = async (req, res) => {
   try {
     const alert = await PublicAlert.findById(req.params.id);
     if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
-    if (!canManageAlert(req.user, alert)) {
+    if (!canModifyAlert(req.user, alert)) {
       return res.status(403).json({ success: false, message: 'You cannot publish this alert.' });
     }
 
@@ -1053,7 +1160,7 @@ const archiveAlert = async (req, res) => {
   try {
     const alert = await PublicAlert.findById(req.params.id);
     if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
-    if (!canManageAlert(req.user, alert)) {
+    if (!canModifyAlert(req.user, alert)) {
       return res.status(403).json({ success: false, message: 'You cannot archive this alert.' });
     }
 
@@ -1089,7 +1196,9 @@ const getAlerts = async (req, res) => {
       .skip((parseInt(page) - 1) * parseInt(limit))
       .limit(parseInt(limit));
 
-    res.json({ success: true, data: { alerts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) } });
+    const items = alerts.map((a) => toObjectWithScopeView(req.user, a));
+
+    res.json({ success: true, data: { alerts: items, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) } });
   } catch (err) {
     console.error('[Alert] Manage list error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
@@ -1105,7 +1214,7 @@ const getManagedAlert = async (req, res) => {
     if (!canManageAlert(req.user, alert)) {
       return res.status(403).json({ success: false, message: 'You cannot view this alert.' });
     }
-    res.json({ success: true, data: { alert } });
+    res.json({ success: true, data: { alert: toObjectWithScopeView(req.user, alert) } });
   } catch (err) {
     console.error('[Alert] Manage get error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alert' });
@@ -1144,6 +1253,31 @@ const getPublicAlerts = async (req, res) => {
   } catch (err) {
     console.error('[Alert] Public list error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
+  }
+};
+
+// @desc  Distinct categories actually used by existing alerts. The filter
+//        dropdowns (public site + management dashboards) are populated from
+//        here instead of a hardcoded taxonomy. `scope=live` narrows the values
+//        to categories present on currently-live alerts (public page); without
+//        it the full, role-scoped alert set is used (dashboards).
+// @route GET /api/alerts/categories
+const getAlertCategories = async (req, res) => {
+  try {
+    const query = buildAlertScope(req.user);
+    query.category = { $nin: [null, ''] };
+    if (req.query.scope === 'live') {
+      query.status = { $in: LIVE_STATUSES };
+      query.isPublished = true;
+      query.$or = [{ expiresAt: { $gt: new Date() } }, { expiresAt: null }];
+    }
+    const values = await PublicAlert.distinct('category', query);
+    const categories = values.filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: { categories } });
+  } catch (err) {
+    console.error('[Alert] Categories error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch categories' });
   }
 };
 
@@ -1203,6 +1337,69 @@ const getMyAlerts = async (req, res) => {
     res.json({ success: true, data: { alerts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) } });
   } catch (err) {
     console.error('[Alert] Citizen list error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
+  }
+};
+
+// @desc  Alerts within the logged-in user's own administrative scope — the
+//        unified "my scope" endpoint. Management roles get their role-scoped
+//        set (any status, filterable — same visibility as the dashboards);
+//        citizens get live alerts matched to their registered subcity/woreda.
+// @route GET /api/alerts/my-scope
+const getMyScopeAlerts = async (req, res) => {
+  try {
+    const user = req.user;
+    const isCitizen = user && (user.role === 'citizen' || user.role === 'CITIZEN');
+
+    // Only scoped roles may list "my scope": city/subcity/woreda admins see
+    // their management scope; citizens see live location-matched alerts.
+    if (!isCitizen && !isGlobalUser(user) && !isSubcityUser(user) && !isWoredaUser(user)) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to view alerts in this scope.' });
+    }
+
+    if (isCitizen) {
+      const { page = 1, limit = 20, category, severity } = req.query;
+      const query = { status: { $in: LIVE_STATUSES }, isPublished: true };
+      query.$or = [{ expiresAt: { $gt: new Date() } }, { expiresAt: null }];
+      query.$and = [citizenVisibilityQuery(user)];
+      if (category) query.category = { $regex: esc(category), $options: 'i' };
+      if (severity) query.severity = severity;
+
+      const total = await PublicAlert.countDocuments(query);
+      const alerts = await PublicAlert.find(query)
+        .sort({ pinned: -1, publishedAt: -1, createdAt: -1 })
+        .skip((parseInt(page) - 1) * parseInt(limit))
+        .limit(parseInt(limit));
+
+      res.set('Cache-Control', 'no-store');
+      return res.json({
+        success: true,
+        data: { alerts, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), scope: 'citizen' },
+      });
+    }
+
+    const { page = 1, limit = 20, status, category, severity, scope } = req.query;
+    const query = buildAlertScope(user);
+    if (status) query.status = status;
+    if (category) query.category = { $regex: esc(category), $options: 'i' };
+    if (severity) query.severity = severity;
+    if (scope) query.scope = scope;
+
+    const total = await PublicAlert.countDocuments(query);
+    const alerts = await PublicAlert.find(query)
+      .sort({ createdAt: -1 })
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .limit(parseInt(limit));
+
+    const items = alerts.map((a) => toObjectWithScopeView(user, a));
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      data: { alerts: items, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)), scope: 'admin' },
+    });
+  } catch (err) {
+    console.error('[Alert] My-scope list error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch alerts' });
   }
 };
@@ -1286,7 +1483,7 @@ const updateAlertStatus = async (req, res) => {
 
     const alert = await PublicAlert.findById(req.params.id);
     if (!alert) return res.status(404).json({ success: false, message: 'Alert not found' });
-    if (!canManageAlert(req.user, alert)) {
+    if (!canModifyAlert(req.user, alert)) {
       return res.status(403).json({ success: false, message: 'You cannot modify this alert.' });
     }
 
@@ -1539,8 +1736,10 @@ const updateSubscriptions = async (req, res) => {
     const existing = current?.alertSubscriptions || {};
     const merged = {
       enabled: typeof enabled === 'boolean' ? enabled : existing.enabled,
+      // Categories are free-text now, so any non-empty string is kept (trimmed
+      // and deduped) instead of being filtered against a hardcoded list.
       categories: Array.isArray(categories)
-        ? categories.filter((c) => CATEGORY_VALUES.includes(c))
+        ? [...new Set(categories.map((c) => String(c || '').trim()).filter(Boolean))].slice(0, 200)
         : (existing.categories || []),
       channels: {
         inApp: channels?.inApp ?? existing.channels?.inApp ?? true,
@@ -1595,7 +1794,9 @@ module.exports = {
   getManagedAlert,
   getPublicAlerts,
   getPublicAlertById,
+  getAlertCategories,
   getMyAlerts,
+  getMyScopeAlerts,
   getUnreadAlertCount,
   markAlertRead,
   updateAlertStatus,

@@ -1,85 +1,99 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
+const { upload, alertUpload } = require('../config/cloudinary');
 const {
-  createCampaign, updateCampaign, deleteCampaign, approveCampaign, rejectCampaign,
-  getCampaigns, getPublicCampaigns, getCampaign, getMyCampaigns,
-  donate, getDonationHistory, getReceipt, getMyReceipts,
-  getCampaignStats, getFinancialReports, getFinancialAnalytics, detectFraud,
-  saveCampaign, getSavedCampaigns,
-  getSuccessStories, getTopDonors, getDistributionReports,
-  getAvailableReports, createCampaignFromReport,
-  // Community Campaign Platform
-  getCampaignCategories, getCampaignTransparency, getPublicDonorStats,
-  addCampaignUpdate, deleteCampaignUpdate, addExpense, updateImpactMetrics,
+  getPublicCampaigns,
+  getFeaturedCampaigns,
+  getCampaignCategories,
+  getCampaignById,
+  getManageCampaigns,
+  getApprovals,
+  getCampaignAnalytics,
+  getCampaignDashboardStats,
+  exportCampaigns,
+  createCampaign,
+  updateCampaign,
+  submitCampaign,
+  approveCampaign,
+  rejectCampaign,
   completeCampaign,
+  suspendCampaign,
+  restoreCampaign,
+  deleteCampaign,
+  activateCampaign,
+  deactivateCampaign,
+  addCampaignUpdate,
+  getCampaignUpdates,
+  uploadCampaignProof,
+  getCampaignProofs,
+  getProofQueue,
+  verifyProof,
+  rejectProof,
+  saveCampaign,
+  unSaveCampaign,
+  getSavedCampaigns,
+  getFraudReview,
+  checkFraud,
+  reviewFraudFlag,
+  reportCampaign,
 } = require('../controllers/campaignController');
 
-// Subcity & Woreda admins manage campaign content for their own office.
-const OFFICE_ROLES = ['subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'woreda', 'SUBCITY_HEAD', 'WOREDA_HEAD'];
+// Campaign managers: system admin / government, subcity admins (canonical +
+// derived + legacy), and woreda admins. The controller re-enforces scoping.
+const MANAGE_ROLES = [
+  'admin', 'ADMIN', 'government',
+  'subcity_admin', 'subcity_bole', 'subcity_yeka', 'subcity_lemmi_kura', 'SUBCITY_HEAD', 'SUBCITY_ADMIN',
+  'woreda_admin', 'woreda', 'WOREDA_HEAD', 'WOREDA_ADMIN',
+];
+const CITIZEN_ROLES = ['citizen', 'CITIZEN'];
+const ADMIN_ROLES = ['admin', 'ADMIN'];
 
-// Public routes
-router.get('/public', getPublicCampaigns);
-router.get('/public/success-stories', getSuccessStories);
-router.get('/public/top-donors', getTopDonors);
-router.get('/public/donor-stats', getPublicDonorStats);
-router.get('/public/:id/transparency', getCampaignTransparency);
-router.get('/public/:id', getCampaign);
+// ── Public reads (no auth) ───────────────────────────────────────────────────
 router.get('/categories', getCampaignCategories);
+router.get('/featured', getFeaturedCampaigns);
+router.get('/', getPublicCampaigns);
 
-// Protected routes
-router.get('/', protect, getCampaigns);
-router.get('/my', protect, getMyCampaigns);
-router.get('/stats', protect, getCampaignStats);
-router.post('/', protect, createCampaign);
-router.put('/:id', protect, updateCampaign);
-router.delete('/:id', protect, deleteCampaign);
+// ── Manager reads (fixed paths BEFORE the /:id catch-all) ────────────────────
+router.get('/manage', protect, authorize(...MANAGE_ROLES), getManageCampaigns);
+router.get('/approvals', protect, authorize(...MANAGE_ROLES), getApprovals);
+router.get('/analytics', protect, authorize(...MANAGE_ROLES), getCampaignAnalytics);
+router.get('/dashboard-stats', protect, authorize(...MANAGE_ROLES), getCampaignDashboardStats);
+router.get('/export', protect, authorize(...MANAGE_ROLES), exportCampaigns);
 
-// Admin only
-router.put('/:id/approve', protect, authorize('admin'), approveCampaign);
-router.put('/:id/reject', protect, authorize('admin'), rejectCampaign);
+// ── Citizen saved campaigns ──────────────────────────────────────────────────
+router.get('/my/saved', protect, authorize(...CITIZEN_ROLES), getSavedCampaigns);
+router.post('/:id/save', protect, authorize(...CITIZEN_ROLES), saveCampaign);
+router.delete('/:id/save', protect, authorize(...CITIZEN_ROLES), unSaveCampaign);
 
-// ── Community Campaign Platform: transparency & office content ───────────────
-// Proof-of-work updates with media (photos / videos / receipts). Up to 6 files
-// per update under the multipart field name "media".
-const updateMediaMiddleware = (req, res, next) => {
-  upload.array('media', 6)(req, res, (err) => {
-    if (err) {
-      const message = err.code === 'LIMIT_FILE_SIZE'
-        ? 'Each media file must be under 50 MB.'
-        : (err.message || 'Invalid media file.');
-      return res.status(400).json({ success: false, message });
-    }
-    next();
-  });
-};
-router.post('/:id/updates', protect, authorize('admin', 'ADMIN', ...OFFICE_ROLES), updateMediaMiddleware, addCampaignUpdate);
-router.delete('/:id/updates/:updateId', protect, authorize('admin', 'ADMIN', ...OFFICE_ROLES), deleteCampaignUpdate);
-router.post('/:id/expenses', protect, authorize('admin', 'ADMIN', ...OFFICE_ROLES), addExpense);
-router.put('/:id/impact', protect, authorize('admin', 'ADMIN', ...OFFICE_ROLES), updateImpactMetrics);
-router.put('/:id/complete', protect, authorize('admin', 'ADMIN', ...OFFICE_ROLES), completeCampaign);
+// ── Fraud review (system admins) ─────────────────────────────────────────────
+router.get('/fraud-review', protect, authorize(...ADMIN_ROLES), getFraudReview);
+router.post('/fraud-review/:flagId', protect, authorize(...ADMIN_ROLES), reviewFraudFlag);
+router.post('/:id/fraud-check', protect, authorize(...ADMIN_ROLES), checkFraud);
 
-// Donation
-router.post('/donate', donate);
-router.get('/donations/history', protect, getDonationHistory);
-router.get('/donations/receipt/:receiptNumber', getReceipt);
-router.get('/donations/receipts/my', protect, getMyReceipts);
+// ── Public detail + updates ──────────────────────────────────────────────────
+router.get('/:id', getCampaignById);
+router.get('/:id/updates', getCampaignUpdates);
+router.get('/:id/proofs', protect, authorize(...MANAGE_ROLES), getCampaignProofs);
+router.get('/proofs/queue', protect, authorize(...MANAGE_ROLES), getProofQueue);
 
-// Save Campaign (Citizen)
-router.post('/:id/save', protect, saveCampaign);
-router.get('/saved/my', protect, getSavedCampaigns);
-
-// Government / NGO
-router.get('/financial/reports', protect, getFinancialReports);
-router.get('/financial/analytics', protect, authorize('admin'), getFinancialAnalytics);
-router.get('/financial/distribution', protect, getDistributionReports);
-
-// Admin fraud detection
-router.get('/admin/fraud-detection', protect, authorize('admin'), detectFraud);
-
-// Report-to-Campaign Integration
-router.get('/available-reports', protect, getAvailableReports);
-router.post('/create-from-report', protect, createCampaignFromReport);
+// ── Mutations ────────────────────────────────────────────────────────────────
+router.post('/', protect, authorize(...MANAGE_ROLES), upload.single('image'), createCampaign);
+router.put('/:id', protect, authorize(...MANAGE_ROLES), upload.single('image'), updateCampaign);
+router.post('/:id/submit', protect, authorize(...MANAGE_ROLES), submitCampaign);
+router.post('/:id/approve', protect, authorize(...MANAGE_ROLES), approveCampaign);
+router.post('/:id/reject', protect, authorize(...MANAGE_ROLES), rejectCampaign);
+router.post('/:id/complete', protect, authorize(...MANAGE_ROLES), completeCampaign);
+router.post('/:id/suspend', protect, authorize(...ADMIN_ROLES), suspendCampaign);
+router.post('/:id/restore', protect, authorize(...ADMIN_ROLES), restoreCampaign);
+// Self-service lifecycle for subcity / woreda owners (scope enforced in controller).
+router.delete('/:id', protect, authorize(...MANAGE_ROLES), deleteCampaign);
+router.post('/:id/activate', protect, authorize(...MANAGE_ROLES), activateCampaign);
+router.post('/:id/deactivate', protect, authorize(...MANAGE_ROLES), deactivateCampaign);
+router.post('/:id/report', protect, authorize(...CITIZEN_ROLES), reportCampaign);
+router.post('/:id/updates', protect, authorize(...MANAGE_ROLES), alertUpload.array('files', 5), addCampaignUpdate);
+router.post('/:id/proofs', protect, authorize(...MANAGE_ROLES), alertUpload.array('files', 5), uploadCampaignProof);
+router.post('/:id/proofs/:proofId/verify', protect, authorize(...MANAGE_ROLES), verifyProof);
+router.post('/:id/proofs/:proofId/reject', protect, authorize(...MANAGE_ROLES), rejectProof);
 
 module.exports = router;

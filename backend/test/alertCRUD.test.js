@@ -38,6 +38,9 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 const {
   createAlert,
   updateAlert,
+  publishAlert,
+  archiveAlert,
+  updateAlertStatus,
   deleteAlert,
   canModifyAlert,
 } = require('../src/controllers/alertController');
@@ -276,6 +279,86 @@ describe('updateAlert — scoped editing', () => {
     assert.equal(after.length, 2);
     assert.match(after[after.length - 1].title, /Updated:/);
     assert.equal(after[after.length - 1].type, 'public_alert');
+  });
+});
+
+describe('publish/archive/status — scoped via canModifyAlert', () => {
+  let bole, w1;
+
+  beforeEach(async () => {
+    bole = await Subcity.create({ name: 'Bole' });
+    w1 = await Woreda.create({ name: 'Woreda 01', subcity: 'Bole', subcityId: bole._id });
+  });
+
+  const admin = () => mkUser('admin');
+  const boleAdmin = () => mkUser('subcity_bole', { subcity: 'Bole', subcityId: bole._id });
+  const woreda01 = () => mkUser('woreda', { subcity: 'Bole', subcityId: bole._id, woredaName: 'Woreda 01', woredaId: w1._id });
+
+  it('Subcity Admin CANNOT publish a city-wide alert (403)', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), status: 'draft' });
+
+    const res = mockRes();
+    await publishAlert(mockReq(boleAdmin(), {}, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 403);
+    const saved = await PublicAlert.findById(alert._id);
+    assert.equal(saved.status, 'draft');
+  });
+
+  it('Subcity Admin CAN publish an alert within their subcity', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), scope: 'subcity', subcityIds: [String(bole._id)] });
+
+    const res = mockRes();
+    await publishAlert(mockReq(boleAdmin(), {}, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 200, res.jsonPayload?.message);
+    assert.equal((await PublicAlert.findById(alert._id)).status, 'published');
+  });
+
+  it('Subcity Admin CANNOT archive a city-wide alert (403)', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), scope: 'subcity', subcityIds: [String(bole._id)] });
+    const res0 = mockRes();
+    await publishAlert(mockReq(admin(), {}, [], { id: alert._id }), res0);
+    assert.equal(res0.statusCode, 200);
+
+    const res = mockRes();
+    await archiveAlert(mockReq(boleAdmin(), {}, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 200, res.jsonPayload?.message);
+    assert.equal((await PublicAlert.findById(alert._id)).status, 'archived');
+  });
+
+  it('Woreda officer CANNOT archive a whole-subcity alert (403)', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), scope: 'subcity', subcityIds: [String(bole._id)] });
+    const res0 = mockRes();
+    await publishAlert(mockReq(admin(), {}, [], { id: alert._id }), res0);
+    assert.equal(res0.statusCode, 200);
+
+    const res = mockRes();
+    await archiveAlert(mockReq(woreda01(), {}, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 403);
+    assert.equal((await PublicAlert.findById(alert._id)).status, 'published');
+  });
+
+  it('Subcity Admin CANNOT change status of a city-wide alert (403)', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), status: 'draft' });
+
+    const res = mockRes();
+    await updateAlertStatus(mockReq(boleAdmin(), { status: 'active' }, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 403);
+    assert.equal((await PublicAlert.findById(alert._id)).status, 'draft');
+  });
+
+  it('Subcity Admin CAN change status of an alert within their subcity', async () => {
+    const alert = await makeAlert(admin(), { ...baseBody(), scope: 'subcity', subcityIds: [String(bole._id)] });
+
+    const res = mockRes();
+    await updateAlertStatus(mockReq(boleAdmin(), { status: 'expired' }, [], { id: alert._id }), res);
+
+    assert.equal(res.statusCode, 200, res.jsonPayload?.message);
+    assert.equal((await PublicAlert.findById(alert._id)).status, 'expired');
   });
 });
 

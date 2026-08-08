@@ -24,6 +24,7 @@ export default function SubcityWoredas() {
   const [adminError, setAdminError] = useState('');
 
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -183,6 +184,7 @@ export default function SubcityWoredas() {
   };
 
   const handleDelete = async (id) => {
+    setDeleting(true);
     try {
       await hierarchyAPI.deleteSubcityWoreda(id);
       toast.success('Woreda deleted successfully');
@@ -190,6 +192,9 @@ export default function SubcityWoredas() {
       fetchData();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Delete failed');
+      setDeleteConfirm(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -409,11 +414,11 @@ export default function SubcityWoredas() {
       )}
 
       <ConfirmModal
-        isOpen={!!deleteConfirm}
+        open={!!deleteConfirm}
         title="Delete Woreda"
         message={`Delete "${deleteConfirm?.name}"? Woredas with staff, departments, or complaints cannot be deleted.`}
         confirmLabel="Delete"
-        danger
+        loading={deleting}
         onConfirm={() => handleDelete(deleteConfirm.id)}
         onCancel={() => setDeleteConfirm(null)}
       />
