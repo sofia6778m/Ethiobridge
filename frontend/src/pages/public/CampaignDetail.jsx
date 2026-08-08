@@ -5,13 +5,15 @@ import { toast } from 'react-toastify';
 import { useAuth } from '../../context/AuthContext';
 import { campaignAPI } from '../../services/api';
 import { getCategory, progressPct, formatETB, timeAgo, STATUS_STYLES } from '../../utils/campaignMeta';
+import { useCitizenGuard } from '../../utils/roleGuard';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import DonateModal from '../../components/campaigns/DonateModal';
 
 export default function PublicCampaignDetail() {
   const { id } = useParams();
   const { t } = useTranslation();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated } = useAuth();
+  const requireCitizen = useCitizenGuard();
   const [campaign, setCampaign] = useState(null);
   const [updates, setUpdates] = useState([]);
   const [proofs, setProofs] = useState([]);
@@ -56,7 +58,7 @@ export default function PublicCampaignDetail() {
   const location = [campaign.location?.subcity, campaign.location?.woreda].filter(Boolean).join(', ') || campaign.location?.region || t('campaign.addisAbaba');
 
   const handleSave = async () => {
-    if (!isAuthenticated) { toast.info(t('campaign.loginToSave')); return; }
+    if (!requireCitizen({ returnUrl: `/campaigns/${id}` })) return;
     try {
       if (saved) await campaignAPI.unSave(id);
       else await campaignAPI.save(id);
@@ -68,7 +70,7 @@ export default function PublicCampaignDetail() {
   };
 
   const handleReport = async () => {
-    if (!isAuthenticated) { toast.info(t('campaign.loginToReport')); return; }
+    if (!requireCitizen({ returnUrl: `/campaigns/${id}` })) return;
     const reason = window.prompt(t('campaign.reportPrompt'));
     if (!reason) return;
     setReporting(true);

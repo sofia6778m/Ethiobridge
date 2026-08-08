@@ -5,6 +5,7 @@ import { campaignAPI } from '../../services/api';
 import { useSocket } from '../../context/SocketContext';
 import { CAMPAIGN_CATEGORIES, CAMPAIGN_LEVELS } from '../../utils/campaignMeta';
 import CampaignCard from '../../components/campaigns/CampaignCard';
+import DonateModal from '../../components/campaigns/DonateModal';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import EmptyState from '../../components/common/EmptyState';
 import Pagination from '../../components/common/Pagination';
@@ -16,6 +17,7 @@ export default function PublicCampaigns() {
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(1);
+  const [donateCampaign, setDonateCampaign] = useState(null);
 
   const category = searchParams.get('category') || '';
   const level = searchParams.get('level') || '';
@@ -130,7 +132,7 @@ export default function PublicCampaigns() {
           <>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {campaigns.map((c) => (
-                <CampaignCard key={c._id} campaign={c} />
+                <CampaignCard key={c._id} campaign={c} onDonate={setDonateCampaign} />
               ))}
             </div>
             <div className="mt-8">
@@ -139,6 +141,13 @@ export default function PublicCampaigns() {
           </>
         )}
       </section>
+
+      <DonateModal
+        campaign={donateCampaign}
+        open={!!donateCampaign}
+        onClose={() => setDonateCampaign(null)}
+        onSuccess={load}
+      />
     </div>
   );
 }

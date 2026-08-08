@@ -35,6 +35,20 @@ const isSubcityAdmin = (user) =>
 
 const isWoredaAdmin = (user) => Boolean(user && WOREDA_ADMIN_ROLES.includes(user.role));
 
+// A campaign is "expired" once its end date has passed, even if its status is
+// still `active`. Expired campaigns must never surface on the public site.
+const isExpired = (campaign) =>
+  Boolean(campaign?.endDate && new Date(campaign.endDate).getTime() < Date.now());
+
+// Query fragment shared by every public read: only non-expired campaigns.
+const NOT_EXPIRED = () => ({
+  $or: [
+    { endDate: { $exists: false } },
+    { endDate: null },
+    { endDate: { $gte: new Date() } },
+  ],
+});
+
 // Management-list scope. System admin / government see everything; subcity
 // admins see campaigns in their subcity; woreda admins see campaigns in their
 // woreda. Falls back to the denormalized name strings when the ObjectId refs
@@ -167,8 +181,8 @@ const getCampaignCategories = (req, res) => {
 
 const getFeaturedCampaigns = async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit, 10) || 5;
-    const campaigns = await Campaign.find({ status: 'active' })
+    const limit = Math.min(parseInt(req.query.limit, 10) || 12, 50);
+    const campaigns = await Campaign.find({ status: 'active', ...NOT_EXPIRED() })
       .select('-fraudScore -fraudFlags')
       .sort({ isFeatured: -1, createdAt: -1 })
       .limit(limit)
@@ -186,9 +200,10 @@ const getPublicCampaigns = async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 12, 50);
     const skip = (page - 1) * limit;
 
-    // Only ACTIVE campaigns are ever shown to the public. Draft, pending,
-    // rejected, cancelled, suspended and completed campaigns stay hidden.
-    const query = { status: 'active' };
+    // Only non-expired ACTIVE campaigns are ever shown to the public. Draft,
+    // pending, rejected, cancelled, suspended, completed and expired campaigns
+    // stay hidden.
+    const query = { status: 'active', ...NOT_EXPIRED() };
     if (req.query.level) query.campaignLevel = req.query.level;
     if (req.query.category) query.category = req.query.category;
     if (req.query.subcity) query['location.subcity'] = { $regex: `^${esc(req.query.subcity)}$`, $options: 'i' };
@@ -224,10 +239,10 @@ const getCampaignById = async (req, res) => {
       .lean();
     if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
 
-    // Only ACTIVE campaigns are visible to the public. Draft, pending, rejected,
-    // cancelled, suspended and completed campaigns must never leak on the
-    // public site, even via a direct URL.
-    if (campaign.status !== 'active') {
+    // Only non-expired ACTIVE campaigns are visible to the public. Draft,
+    // pending, rejected, cancelled, suspended, completed and expired campaigns
+    // must never leak on the public site, even via a direct URL.
+    if (campaign.status !== 'active' || isExpired(campaign)) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
@@ -261,10 +276,19 @@ const getManageCampaigns = async (req, res) => {
       query.$or = [{ title: rx }, { description: rx }, { 'location.subcity': rx }, { 'location.woreda': rx }];
     }
 
-    const [campaigns, total] = await Promise.all([
-      Campaign.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      Campaign.countDocuments(query),
-    ]);
+    const campaigns = await Campaign.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const total = await Campaign.countDocuments(query);
+
+    // Donation count per campaign so the frontend can decide (and explain)
+    // whether deletion is permitted without a round trip.
+    const counts = campaigns.length
+      ? await Donation.aggregate([
+          { $match: { campaign: { $in: campaigns.map((c) => c._id) } } },
+          { $group: { _id: '$campaign', count: { $sum: 1 } } },
+        ])
+      : [];
+    const countMap = new Map(counts.map((d) => [String(d._id), d.count]));
+    campaigns.forEach((c) => { c.donationCount = countMap.get(String(c._id)) || 0; });
 
     res.json({ success: true, data: { campaigns, total, page, pages: Math.ceil(total / limit) } });
   } catch (err) {
@@ -708,6 +732,9 @@ const suspendCampaign = async (req, res) => {
 
     const campaign = await Campaign.findById(req.params.id);
     if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot suspend this campaign' });
+    }
     if (campaign.status !== 'active') {
       return res.status(400).json({ success: false, message: 'Only active campaigns can be suspended' });
     }
@@ -746,6 +773,9 @@ const restoreCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findById(req.params.id);
     if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!canManageCampaign(req.user, campaign)) {
+      return res.status(403).json({ success: false, message: 'You cannot restore this campaign' });
+    }
     if (campaign.status !== 'suspended') {
       return res.status(400).json({ success: false, message: 'Only suspended campaigns can be restored' });
     }
@@ -777,9 +807,18 @@ const restoreCampaign = async (req, res) => {
 
 // ── Self-service lifecycle (subcity / woreda owners) ─────────────────────────
 
-// Hard-delete a campaign that has not started receiving verified funding. Only
-// draft / rejected / suspended / cancelled campaigns can be removed; campaigns
-// that ever received verified money stay in place for audit purposes.
+// Campaigns that are safe to hard-delete: never been live and never raised any
+// money. Everything else (active, pending, completed) or any campaign that has
+// donations / pledges must be suspended or cancelled first — and even then,
+// deletion is only permitted while the donation count is zero so no financial
+// history is ever destroyed.
+const DELETABLE_STATUSES = ['draft', 'rejected', 'suspended', 'cancelled'];
+
+// Hard-delete a campaign. The manager must own the campaign (or be a system
+// admin), enforced via canManageCampaign — subcity admins can only delete
+// campaigns inside their subcity, woreda admins only inside their woreda.
+// Related records (updates, proofs, saved entries, donations) are removed
+// together so nothing orphaned remains.
 const deleteCampaign = async (req, res) => {
   try {
     const campaign = await Campaign.findById(req.params.id);
@@ -787,12 +826,21 @@ const deleteCampaign = async (req, res) => {
     if (!canManageCampaign(req.user, campaign)) {
       return res.status(403).json({ success: false, message: 'You cannot delete this campaign' });
     }
-    if (!['draft', 'rejected', 'suspended', 'cancelled'].includes(campaign.status)) {
-      return res.status(400).json({ success: false, message: 'Only draft, rejected, suspended or cancelled campaigns can be deleted' });
+
+    if (!DELETABLE_STATUSES.includes(campaign.status)) {
+      const message =
+        campaign.status === 'active'
+          ? 'This campaign cannot be deleted because it is active or has donation records. Suspend or cancel it first.'
+          : `This campaign cannot be deleted because its status is ${campaign.status}. Suspend or cancel it first.`;
+      return res.status(403).json({ success: false, message });
     }
-    const verified = await Donation.countDocuments({ campaign: campaign._id, status: 'verified' });
-    if (verified > 0) {
-      return res.status(400).json({ success: false, message: 'This campaign has verified donations and cannot be deleted' });
+
+    const donationCount = await Donation.countDocuments({ campaign: campaign._id });
+    if (donationCount > 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'This campaign cannot be deleted because it has donation records. Suspend or cancel it first.',
+      });
     }
 
     await Promise.all([
@@ -807,7 +855,7 @@ const deleteCampaign = async (req, res) => {
     io?.to(campaign._id.toString()).emit('campaign:deleted', { id: campaign._id });
     await logAction({ user: req.user, action: 'campaign_delete', resource: 'campaign', resourceId: campaign._id, details: { title: campaign.title }, req });
 
-    res.json({ success: true, message: 'Campaign deleted' });
+    res.json({ success: true, message: 'Campaign deleted', data: { id: campaign._id } });
   } catch (err) {
     console.error('[Campaign] Failed to delete campaign:', err.message);
     res.status(500).json({ success: false, message: 'Failed to delete campaign' });

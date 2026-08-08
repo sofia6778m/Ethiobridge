@@ -7,6 +7,7 @@ import StatusBadge from '../../components/common/StatusBadge';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import AlertBanner from '../../components/common/AlertBanner';
 import CampaignCard from '../../components/campaigns/CampaignCard';
+import DonateModal from '../../components/campaigns/DonateModal';
 
 const REGIONS = ['Addis Ababa','Oromia','Amhara','Tigray','Somali','Afar','Sidama','Central Ethiopia','South Ethiopia','Southwest Ethiopia','Gambella','Benishangul-Gumuz','Harari','Dire Dawa'];
 
@@ -16,6 +17,7 @@ export default function Home() {
   const [latestNews, setLatestNews] = useState([]);
   const [featured, setFeatured]     = useState([]);
   const [loading, setLoading]       = useState(true);
+  const [donateCampaign, setDonateCampaign] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -23,7 +25,7 @@ export default function Home() {
         const [s, n, c] = await Promise.all([
           publicAPI.getStats(),
           newsAPI.getPublic({ limit: 4 }),
-          campaignAPI.getFeatured({ limit: 3 }).catch(() => ({ data: { data: { campaigns: [] } } })),
+          campaignAPI.getFeatured({ limit: 12 }).catch(() => ({ data: { data: { campaigns: [] } } })),
         ]);
         setStats(s.data.stats);
         setLatestNews(n.data.news || []);
@@ -37,12 +39,13 @@ export default function Home() {
     load();
   }, []);
 
-  // Live refresh: reload featured campaigns when anything changes so raised
-  // amounts and newly-approved campaigns appear without a manual refresh.
+  // Live refresh: reload active campaigns when anything changes so raised
+  // amounts and newly-activated campaigns appear (and deleted/deactivated/
+  // completed/expired ones disappear) without a manual refresh.
   const { on } = useSocket() || {};
   const loadFeatured = async () => {
     try {
-      const c = await campaignAPI.getFeatured({ limit: 3 }).catch(() => ({ data: { data: { campaigns: [] } } }));
+      const c = await campaignAPI.getFeatured({ limit: 12 }).catch(() => ({ data: { data: { campaigns: [] } } }));
       setFeatured(c.data?.data?.campaigns || []);
     } catch (e) {
       console.error(e);
@@ -163,11 +166,18 @@ export default function Home() {
               <Link to="/campaigns" className="text-primary-600 hover:underline text-sm font-medium whitespace-nowrap">{t('home.viewAllCampaigns')} →</Link>
             </div>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {featured.map((c) => <CampaignCard key={c._id} campaign={c} />)}
+              {featured.map((c) => <CampaignCard key={c._id} campaign={c} onDonate={setDonateCampaign} />)}
             </div>
           </div>
         </section>
       )}
+
+      <DonateModal
+        campaign={donateCampaign}
+        open={!!donateCampaign}
+        onClose={() => setDonateCampaign(null)}
+        onSuccess={loadFeatured}
+      />
 
       {/* Statistics */}
       {loading ? <LoadingSpinner /> : stats && (

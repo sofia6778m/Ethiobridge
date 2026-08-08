@@ -79,13 +79,38 @@ const createDonation = async (req, res) => {
       if (!amt || amt <= 0) {
         return res.status(400).json({ success: false, message: 'A valid donation amount is required', field: 'amount' });
       }
+      if (amt > 10000000) {
+        return res.status(400).json({ success: false, message: 'Donation amount is too large', field: 'amount' });
+      }
     } else {
       if (!Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ success: false, message: 'Please list at least one item to pledge', field: 'items' });
       }
     }
 
+    // Donation is open to guests and every role. Logged-in users can be
+    // prefilled from their account; guests must supply name + phone unless
+    // the donation is anonymous.
     const anon = isAnonymous === true || isAnonymous === 'true';
+    const loggedIn = Boolean(req.user);
+    const name = String(donorName || '').trim();
+    const phone = String(donorPhone || '').trim();
+
+    if (!anon) {
+      if (!(name || (loggedIn && req.user.fullName))) {
+        return res.status(400).json({ success: false, message: 'Full name is required', field: 'donorName' });
+      }
+      const effectivePhone = phone || (loggedIn ? req.user.phone : '');
+      if (!effectivePhone || !isValidPhone(effectivePhone)) {
+        return res.status(400).json({ success: false, message: 'A valid phone number is required', field: 'donorPhone' });
+      }
+    }
+
+    const email = String(donorEmail || '').trim();
+    if (email && !isValidEmail(email)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address', field: 'donorEmail' });
+    }
+
     const method =
       donationType === 'in_kind'
         ? 'in_kind'
@@ -98,10 +123,10 @@ const createDonation = async (req, res) => {
     const donation = await Donation.create({
       campaign: campaign._id,
       donationRef,
-      donor: anon ? null : req.user._id,
-      donorName: anon ? 'Anonymous' : String(donorName || req.user.fullName || '').trim(),
-      donorPhone: anon ? '' : String(donorPhone || req.user.phone || '').trim(),
-      donorEmail: anon ? '' : String(donorEmail || '').trim(),
+      donor: anon ? null : loggedIn ? req.user._id : null,
+      donorName: anon ? 'Anonymous' : (name || (loggedIn ? req.user.fullName : '') || 'Anonymous').trim(),
+      donorPhone: anon ? '' : (phone || (loggedIn ? req.user.phone : '') || '').trim(),
+      donorEmail: anon ? '' : email,
       message: sanitizeMessage(message),
       isAnonymous: anon,
       type: donationType,
@@ -112,28 +137,54 @@ const createDonation = async (req, res) => {
           ? items.map((it) => ({ name: String(it.name || '').trim(), quantity: Number(it.quantity) || 1 }))
           : [],
       itemNotes: String(itemNotes || ''),
-      status: 'pending',
+      // Money donations are verified immediately so the campaign's raised
+      // total reflects them right away. In-kind pledges stay pending until a
+      // manager confirms the delivery.
+      status: donationType === 'money' ? 'verified' : 'pending',
+      verification:
+        donationType === 'money'
+          ? {
+              verifiedByName: loggedIn ? req.user.fullName || 'Donor' : 'Public donation (auto-verified)',
+              verifiedAt: new Date(),
+              note: 'Auto-verified donation',
+            }
+          : undefined,
     });
 
     const io = getIo(req);
 
-    // Donor receipt. No actorId is passed so the donor is still notified about
-    // their own (successful) action — receipts are the one intentional case.
-    await notifyUser({
-      userId: req.user._id,
-      title: 'Donation received',
-      message: `Thank you! Your ${donationType} donation to "${campaign.title}" was received. Reference: ${donationRef}.`,
-      type: 'donation_receipt',
-      campaignId: campaign._id,
-      io,
-    });
+    // Money donations update the campaign's raised total immediately.
+    if (donationType === 'money') {
+      campaign.raisedAmount = (campaign.raisedAmount || 0) + donation.amount;
+      campaign.auditHistory.push({
+        action: 'donation_received',
+        byName: donation.donorName,
+        byRole: loggedIn ? req.user.role || 'donor' : 'public',
+        at: new Date(),
+        note: `Donation ${donationRef}`,
+      });
+      await campaign.save();
+    }
 
-    // Campaign organizer is told about the new donation.
+    // Receipt notification goes only to the donor when they have an account;
+    // guests get their receipt inline in the confirmation screen. The campaign
+    // organizer / admins are always told about the new donation.
+    if (loggedIn) {
+      await notifyUser({
+        userId: req.user._id,
+        title: 'Donation received',
+        message: `Thank you! Your ${donationType} donation to "${campaign.title}" was received. Reference: ${donationRef}.`,
+        type: 'donation_receipt',
+        campaignId: campaign._id,
+        io,
+      });
+    }
     await notifyCampaignOwner(req, campaign, donation, anon);
 
     io?.to(campaign._id.toString()).emit('donation:new', { donation });
+    io?.to(campaign._id.toString()).emit('campaign:updated', { campaign });
     await logAction({
-      user: req.user,
+      user: loggedIn ? req.user : { _id: null, fullName: donation.donorName, role: 'public' },
       action: 'donation_create',
       resource: 'donation',
       resourceId: donation._id,
@@ -143,105 +194,11 @@ const createDonation = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Donation recorded. Awaiting payment verification.',
-      data: { donation },
-    });
-  } catch (err) {
-    console.error('[Donation] Failed to create donation:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to record donation' });
-  }
-};
-
-// Public (guest) donation — no login required. Money donations are recorded as
-// verified immediately so the campaign's raised total updates in real time and
-// the donor receives a tracking reference that doubles as their receipt.
-const createPublicDonation = async (req, res) => {
-  try {
-    const { campaignId, donorName, donorPhone, donorEmail, amount, paymentMethod, message } = req.body;
-
-    if (!campaignId || !mongoose.isValidObjectId(campaignId)) {
-      return res.status(400).json({ success: false, message: 'A valid campaign is required', field: 'campaignId' });
-    }
-    const campaign = await Campaign.findById(campaignId);
-    if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
-    if (campaign.status !== 'active') {
-      return res.status(400).json({ success: false, message: 'Donations are only accepted while the campaign is active' });
-    }
-
-    const name = String(donorName || '').trim();
-    if (!name) return res.status(400).json({ success: false, message: 'Full name is required', field: 'donorName' });
-
-    const phone = String(donorPhone || '').trim();
-    if (!phone || !isValidPhone(phone)) {
-      return res.status(400).json({ success: false, message: 'A valid phone number is required', field: 'donorPhone' });
-    }
-
-    const email = String(donorEmail || '').trim();
-    if (email && !isValidEmail(email)) {
-      return res.status(400).json({ success: false, message: 'Please enter a valid email address', field: 'donorEmail' });
-    }
-
-    const amt = Number(amount);
-    if (!amt || amt <= 0) {
-      return res.status(400).json({ success: false, message: 'A valid donation amount is required', field: 'amount' });
-    }
-    if (amt > 10000000) {
-      return res.status(400).json({ success: false, message: 'Donation amount is too large', field: 'amount' });
-    }
-
-    if (!PAYMENT_METHODS.includes(paymentMethod) || paymentMethod === 'in_kind') {
-      return res.status(400).json({ success: false, message: 'Please select a valid payment method', field: 'paymentMethod' });
-    }
-
-    const donationRef = await generateDonationRef();
-
-    const donation = await Donation.create({
-      campaign: campaign._id,
-      donationRef,
-      donor: null,
-      donorName: name,
-      donorPhone: phone,
-      donorEmail: email,
-      message: sanitizeMessage(message),
-      isAnonymous: false,
-      type: 'money',
-      amount: amt,
-      paymentMethod,
-      items: [],
-      status: 'verified',
-      verification: {
-        verifiedByName: 'Public donation (auto-verified)',
-        verifiedAt: new Date(),
-        note: 'Auto-verified public donation',
-      },
-    });
-
-    // Update the campaign's raised total immediately.
-    campaign.raisedAmount = (campaign.raisedAmount || 0) + amt;
-    campaign.auditHistory.push({ action: 'donation_received', byName: name, byRole: 'public', at: new Date(), note: `Public donation ${donationRef}` });
-    await campaign.save();
-
-    const io = getIo(req);
-    await notifyCampaignOwner(req, campaign, donation, false);
-    io?.to(campaign._id.toString()).emit('donation:new', { donation });
-    io?.to(campaign._id.toString()).emit('campaign:updated', { campaign });
-
-    await logAction({
-      user: { _id: null, fullName: name, role: 'public' },
-      action: 'donation_public',
-      resource: 'donation',
-      resourceId: donation._id,
-      details: { donationRef, campaign: campaign.title, amount: amt, paymentMethod },
-      req,
-    });
-
-    res.status(201).json({
-      success: true,
       message: `Thank you! Your donation is recorded. Reference: ${donationRef}.`,
       data: { donation },
     });
   } catch (err) {
-    console.error('[Donation] Failed to record public donation:', err.message);
+    console.error('[Donation] Failed to create donation:', err.message);
     if (err.name === 'ValidationError') {
       const first = Object.values(err.errors || {})[0];
       return res.status(400).json({ success: false, message: first?.message || 'The donation data is invalid', field: first?.path });
@@ -562,7 +519,6 @@ const exportDonations = async (req, res) => {
 module.exports = {
   CASH_METHODS,
   createDonation,
-  createPublicDonation,
   trackDonationByRef,
   getMyDonations,
   getDonation,

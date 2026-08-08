@@ -22,8 +22,10 @@ const donationSchema = new mongoose.Schema(
     donationRef: { type: String, unique: true },
     // Present unless the donation is fully anonymous.
     donor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    donorName: { type: String, required: [true, 'Donor name is required'], trim: true },
-    donorPhone: { type: String, required: [true, 'Donor phone is required'], trim: true },
+    // Name/phone are validated in the controller (required unless anonymous),
+    // so the schema stays permissive enough to store anonymous donations.
+    donorName: { type: String, default: '', trim: true },
+    donorPhone: { type: String, default: '', trim: true },
     donorEmail: { type: String, default: '', trim: true },
     message: { type: String, default: '', trim: true, maxlength: 500 },
     isAnonymous: { type: Boolean, default: false },

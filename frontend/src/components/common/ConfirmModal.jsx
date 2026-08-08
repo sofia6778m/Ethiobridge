@@ -1,6 +1,8 @@
 // Reusable confirmation dialog. Replaces window.confirm everywhere so
 // destructive actions (e.g. deleting an alert) require an explicit,
-// style-consistent confirmation.
+// style-consistent confirmation. When `onConfirm` is omitted the confirm
+// button is hidden and the dialog acts as a single-button notice (used to show
+// why a destructive action is blocked).
 export default function ConfirmModal({
   open,
   title = 'Are you sure?',
@@ -42,14 +44,16 @@ export default function ConfirmModal({
           >
             {cancelLabel}
           </button>
-          <button
-            onClick={onConfirm}
-            disabled={loading}
-            className={`${confirmStyles} text-white font-semibold text-sm py-2 px-4 rounded-lg transition-colors disabled:opacity-50 inline-flex items-center gap-2`}
-          >
-            {loading && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-            {loading ? 'Working…' : confirmLabel}
-          </button>
+          {onConfirm && (
+            <button
+              onClick={onConfirm}
+              disabled={loading}
+              className={`${confirmStyles} text-white font-semibold text-sm py-2 px-4 rounded-lg transition-colors disabled:opacity-50 inline-flex items-center gap-2`}
+            >
+              {loading && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {loading ? 'Working…' : confirmLabel}
+            </button>
+          )}
         </div>
       </div>
     </div>

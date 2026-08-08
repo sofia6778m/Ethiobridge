@@ -54,7 +54,7 @@ export default function GovernmentDashboard() {
         <Route path="emergency" element={<GovEmergency />} />
         <Route path="alerts" element={<GovAlerts />} />
         <Route path="alerts/create" element={<PublicAlertForm homePath="/dashboard/government/alerts" />} />
-        <Route path="campaigns"          element={<CampaignManage basePath="/dashboard/government/campaigns" createPath="/dashboard/government/campaigns/new" editPath="/dashboard/government/campaigns/new" allowSuspend />} />
+        <Route path="campaigns"          element={<CampaignManage basePath="/dashboard/government/campaigns" createPath="/dashboard/government/campaigns/new" editPath="/dashboard/government/campaigns/new" />} />
         <Route path="campaigns/new"      element={<CampaignForm listPath="/dashboard/government/campaigns" />} />
         <Route path="campaigns/approvals" element={<CampaignApprovals />} />
         <Route path="campaigns/donations" element={<CampaignDonations />} />

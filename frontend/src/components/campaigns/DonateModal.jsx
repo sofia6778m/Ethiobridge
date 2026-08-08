@@ -6,10 +6,10 @@ import { useAuth } from '../../context/AuthContext';
 import { donationAPI } from '../../services/api';
 import { PAYMENT_METHODS, formatETB } from '../../utils/campaignMeta';
 
-// Donation / pledge modal for an active campaign.
-//  - Guests can donate money WITHOUT logging in (public donation). The backend
-//    auto-verifies the payment and returns a tracking reference / receipt.
-//  - Logged-in citizens can record a money donation or an in-kind pledge.
+// Donation / pledge modal for an active campaign. Open to everyone — guests and
+// every logged-in role. Guests fill in their name + phone; logged-in users get
+// their profile data pre-filled. There is no login gate: clicking Donate Now
+// always opens this form.
 export default function DonateModal({ campaign, open, onClose, onSuccess }) {
   const { t } = useTranslation();
   const { isAuthenticated, user } = useAuth();
@@ -17,9 +17,8 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
   const [amount, setAmount] = useState(1000);
   const [method, setMethod] = useState('telebirr');
   const [isAnonymous, setIsAnonymous] = useState(false);
-  const [donorName, setDonorName] = useState(user?.fullName || '');
-  const [donorPhone, setDonorPhone] = useState(user?.phone || '');
-  const [donorEmail, setDonorEmail] = useState(user?.email || '');
+  const [donorName, setDonorName] = useState('');
+  const [donorPhone, setDonorPhone] = useState('');
   const [message, setMessage] = useState('');
   const [items, setItems] = useState([{ name: '', quantity: 1 }]);
   const [itemNotes, setItemNotes] = useState('');
@@ -32,7 +31,7 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
       setMessage('');
       setDonorName(user?.fullName || '');
       setDonorPhone(user?.phone || '');
-      setDonorEmail(user?.email || '');
+      setTab('money');
     }
   }, [open, user]);
 
@@ -42,40 +41,36 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
     setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
 
   const handleSubmit = async () => {
+    if (tab === 'money' && !isAnonymous) {
+      if (!String(donorName || '').trim()) {
+        toast.error(t('campaign.donorNameRequired'));
+        return;
+      }
+      if (!String(donorPhone || '').trim()) {
+        toast.error(t('campaign.donorPhoneRequired'));
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
-      let res;
-      if (tab === 'in_kind' && isAuthenticated) {
-        res = await donationAPI.create({
-          campaignId: campaign._id,
-          type: 'in_kind',
-          items: items.filter((it) => it.name && String(it.name).trim()).map((it) => ({ name: it.name.trim(), quantity: Number(it.quantity) || 1 })),
-          itemNotes,
-        });
-      } else if (isAuthenticated) {
-        res = await donationAPI.create({
-          campaignId: campaign._id,
-          type: 'money',
-          amount: Number(amount),
-          paymentMethod: method,
-          isAnonymous,
-          donorName,
-          donorPhone,
-          donorEmail,
-          message,
-        });
-      } else {
-        // Public (guest) donation — no login required.
-        res = await donationAPI.createPublic({
-          campaignId: campaign._id,
-          donorName,
-          donorPhone,
-          donorEmail,
-          amount: Number(amount),
-          paymentMethod: method,
-          message,
-        });
-      }
+      const res = tab === 'in_kind' && isAuthenticated
+        ? await donationAPI.create({
+            campaignId: campaign._id,
+            type: 'in_kind',
+            items: items.filter((it) => it.name && String(it.name).trim()).map((it) => ({ name: it.name.trim(), quantity: Number(it.quantity) || 1 })),
+            itemNotes,
+          })
+        : await donationAPI.create({
+            campaignId: campaign._id,
+            type: 'money',
+            amount: Number(amount),
+            paymentMethod: method,
+            isAnonymous,
+            donorName,
+            donorPhone,
+            message,
+          });
 
       const donation = res.data?.data?.donation;
       setReceipt(donation || { donationRef: res.data?.data?.donationRef });
@@ -131,9 +126,7 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
                   </span>
                 </div>
               </div>
-              {receiptStatus === 'verified' && (
-                <p className="text-xs text-gray-400 mb-5">{t('campaign.receiptHint')}</p>
-              )}
+              <p className="text-xs text-gray-400 mb-5">{t('campaign.receiptHint')}</p>
               <div className="flex flex-col sm:flex-row gap-2 justify-center">
                 <Link to={`/donations/track/${receipt.donationRef}`} className="btn-primary text-sm py-2 px-5">{t('campaign.trackDonation')}</Link>
                 <button onClick={onClose} className="btn-secondary text-sm py-2 px-5">{t('common.close')}</button>
@@ -156,10 +149,6 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
                     📦 {t('campaign.pledgeItems')}
                   </button>
                 </div>
-              )}
-
-              {!isAuthenticated && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">🔓 {t('campaign.guestDonateHint')}</p>
               )}
 
               {tab === 'money' ? (
@@ -198,20 +187,12 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
                     </div>
                   </div>
 
-                  {!isAuthenticated && (
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">{t('campaign.donorEmail')}</label>
-                      <input type="email" value={donorEmail} onChange={(e) => setDonorEmail(e.target.value)} className="input-field text-sm" placeholder="you@example.com" />
-                    </div>
-                  )}
-
                   <div>
                     <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1">{t('campaign.paymentMethod')}</label>
                     <select value={method} onChange={(e) => setMethod(e.target.value)} className="input-field text-sm">
-                      {PAYMENT_METHODS.filter((m) => m.value !== 'cash').map((m) => (
+                      {PAYMENT_METHODS.map((m) => (
                         <option key={m.value} value={m.value}>{m.icon} {m.label}</option>
                       ))}
-                      <option value="cash">💵 {t('campaign.cash')}</option>
                     </select>
                   </div>
 
@@ -220,12 +201,10 @@ export default function DonateModal({ campaign, open, onClose, onSuccess }) {
                     <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={2} maxLength={500} className="input-field text-sm" placeholder={t('campaign.messagePlaceholder')} />
                   </div>
 
-                  {isAuthenticated && (
-                    <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
-                      <input type="checkbox" checked={isAnonymous} onChange={(e) => setIsAnonymous(e.target.checked)} className="rounded" />
-                      {t('campaign.donateAnonymously')}
-                    </label>
-                  )}
+                  <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
+                    <input type="checkbox" checked={isAnonymous} onChange={(e) => setIsAnonymous(e.target.checked)} className="rounded" />
+                    {t('campaign.donateAnonymously')}
+                  </label>
                 </div>
               ) : (
                 <div className="space-y-4">

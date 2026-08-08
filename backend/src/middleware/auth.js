@@ -61,7 +61,7 @@ const authorize = (...roles) => {
     if (allowed || derivedSubcityAllowed) return next();
     return res.status(403).json({
       success: false,
-      message: `Role '${role}' is not authorized to access this route`,
+      message: 'You are not authorized to perform this action',
     });
   };
 };

@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { hierarchyAPI, campaignAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
+import { useSocket } from '../../../context/SocketContext';
 import { formatETB } from '../../../utils/campaignMeta';
 import StatCard from '../../../components/common/StatCard';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
@@ -14,8 +15,8 @@ export default function SubcityOverview() {
   const [campaignStats, setCampaignStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchStats = useCallback(async () => {
-    setLoading(true);
+  const fetchStats = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [hRes, cRes] = await Promise.all([
         hierarchyAPI.getSubcityStats(),
@@ -26,11 +27,23 @@ export default function SubcityOverview() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to load dashboard stats');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  // Live refresh: campaign counters update immediately when a campaign is
+  // created / edited / deleted / activated / deactivated anywhere.
+  const { on } = useSocket() || {};
+  const fetchRef = useRef(fetchStats);
+  fetchRef.current = fetchStats;
+  useEffect(() => {
+    if (!on) return;
+    const events = ['campaign:new', 'campaign:updated', 'campaign:statusUpdate', 'campaign:deleted'];
+    const cleanups = events.map((e) => on(e, () => fetchRef.current(true)));
+    return () => cleanups.forEach((off) => off && off());
+  }, [on]);
 
   if (loading) return <LoadingSpinner />;
   if (!stats) return null;

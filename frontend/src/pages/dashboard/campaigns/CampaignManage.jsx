@@ -3,9 +3,8 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { campaignAPI } from '../../../services/api';
-import { useAuth } from '../../../context/AuthContext';
 import { useSocket } from '../../../context/SocketContext';
-import { CAMPAIGN_STATUSES, CAMPAIGN_LEVELS, CAMPAIGN_CATEGORIES, STATUS_STYLES, getCategory, formatETB, timeAgo } from '../../../utils/campaignMeta';
+import { CAMPAIGN_STATUSES, CAMPAIGN_LEVELS, CAMPAIGN_CATEGORIES, STATUS_STYLES, getCategory, formatETB, timeAgo, isExpired, displayStatus, canDeleteCampaign, deleteBlockReason } from '../../../utils/campaignMeta';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
 import EmptyState from '../../../components/common/EmptyState';
 import Pagination from '../../../components/common/Pagination';
@@ -14,10 +13,8 @@ import CampaignCard from '../../../components/campaigns/CampaignCard';
 
 // Role-scoped campaign list shared by the subcity / woreda / admin / government
 // dashboards. The backend scopes the results by the logged-in manager.
-export default function CampaignManage({ basePath, createPath, editPath, allowSuspend = false }) {
+export default function CampaignManage({ basePath, createPath, editPath }) {
   const { t } = useTranslation();
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin' || user?.role === 'ADMIN';
 
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,6 +30,9 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
   const [actionType, setActionType] = useState(null);
   const [actionNote, setActionNote] = useState('');
   const [acting, setActing] = useState(false);
+  // Campaign whose delete was refused: { campaign, key, options } from the
+  // client-side check, or { campaign, backendMessage } from a 403 response.
+  const [blockedDelete, setBlockedDelete] = useState(null);
 
   const fetchCampaigns = useCallback(async () => {
     setLoading(true);
@@ -95,19 +95,40 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
     if (!actionTarget) return;
     setActing(true);
     try {
-      if (actionType === 'submit') await campaignAPI.submit(actionTarget._id);
-      else if (actionType === 'activate') await campaignAPI.activate(actionTarget._id);
-      else if (actionType === 'deactivate') await campaignAPI.deactivate(actionTarget._id, { reason: actionNote });
-      else if (actionType === 'delete') await campaignAPI.remove(actionTarget._id);
-      else if (actionType === 'complete') await campaignAPI.complete(actionTarget._id, { note: actionNote });
-      else if (actionType === 'suspend') await campaignAPI.suspend(actionTarget._id, { reason: actionNote });
-      else if (actionType === 'restore') await campaignAPI.restore(actionTarget._id);
-      toast.success(t('campaign.actionDone'));
-      setActionTarget(null);
-      setSelected(null);
-      fetchCampaigns();
+      if (actionType === 'delete') {
+        // Delete removes the card from the list immediately (no refresh) and
+        // only refetches afterwards to re-sync counters. On failure the
+        // campaign stays visible and the error is surfaced.
+        await campaignAPI.remove(actionTarget._id);
+        setCampaigns((prev) => prev.filter((c) => c._id !== actionTarget._id));
+        setTotal((prev) => Math.max(0, prev - 1));
+        setSelected(null);
+        setActionTarget(null);
+        toast.success(t('campaign.deleted'));
+        fetchCampaigns();
+      } else {
+        if (actionType === 'submit') await campaignAPI.submit(actionTarget._id);
+        else if (actionType === 'activate') await campaignAPI.activate(actionTarget._id);
+        else if (actionType === 'complete') await campaignAPI.complete(actionTarget._id, { note: actionNote });
+        else if (actionType === 'suspend') await campaignAPI.suspend(actionTarget._id, { reason: actionNote });
+        else if (actionType === 'restore') await campaignAPI.restore(actionTarget._id);
+        toast.success(t('campaign.actionDone'));
+        setActionTarget(null);
+        setSelected(null);
+        fetchCampaigns();
+      }
     } catch (e) {
-      toast.error(e.response?.data?.message || t('campaign.actionFailed'));
+      if (actionType === 'delete' && e.response?.status === 403) {
+        // The backend refused the delete (e.g. the campaign went live or
+        // received donations since the list loaded). Surface the exact reason
+        // in the blocked modal instead of a generic toast.
+        setBlockedDelete({
+          campaign: actionTarget,
+          backendMessage: e.response.data?.message || t('campaign.deleteBlockedActive'),
+        });
+      } else {
+        toast.error(e.response?.data?.message || t('campaign.actionFailed'));
+      }
     } finally {
       setActing(false);
     }
@@ -134,17 +155,28 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
     setActionNote('');
   };
 
+  // Delete is only allowed for dead campaigns with zero donations. When it is
+  // blocked, open the reason modal instead of asking for a confirmation that
+  // would fail anyway.
+  const promptDelete = (campaign) => {
+    if (canDeleteCampaign(campaign)) {
+      promptAction(campaign, 'delete');
+      return;
+    }
+    const reason = deleteBlockReason(campaign);
+    setBlockedDelete({ campaign, key: reason.key, options: reason.options });
+  };
+
   const actionTitle = {
     submit: t('campaign.submitForApproval'),
     activate: t('campaign.activateCampaign'),
-    deactivate: t('campaign.deactivateCampaign'),
     delete: t('campaign.deleteCampaign'),
     complete: t('campaign.completeCampaign'),
     suspend: t('campaign.suspendCampaign'),
     restore: t('campaign.restoreCampaign'),
   }[actionType] || '';
 
-  const needsNote = ['complete', 'suspend', 'deactivate'].includes(actionType);
+  const needsNote = ['complete', 'suspend'].includes(actionType);
   const isDelete = actionType === 'delete';
 
   return (
@@ -193,45 +225,55 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
         <EmptyState icon="🎗️" title={t('campaign.noCampaigns')} description={t('campaign.noCampaignsManage')} />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {campaigns.map((c) => (
-            <CampaignCard key={c._id} campaign={c} to={`${basePath}/${c._id}`} showDonate={false} onClick={(e) => { e.preventDefault(); openDetail(c); }}>
-              <div className="mt-4 flex items-center gap-2 flex-wrap">
-                <button onClick={() => openDetail(c)} className="btn-secondary text-xs py-1.5 px-3">{t('campaign.view')}</button>
-                {['draft', 'rejected', 'suspended'].includes(c.status) && (
-                  <button onClick={() => promptAction(c, 'submit')} className="bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
-                    {t('campaign.submit')}
+          {campaigns.map((c) => {
+            const expired = isExpired(c);
+            const status = displayStatus(c);
+            return (
+              <CampaignCard key={c._id} campaign={c} to={`${basePath}/${c._id}`} displayStatus={status} showDonate={false} onClick={(e) => { e.preventDefault(); openDetail(c); }}>
+                <div className="mt-4 flex items-center gap-2 flex-wrap">
+                  <button onClick={() => openDetail(c)} className="btn-secondary text-xs py-1.5 px-3">{t('campaign.view')}</button>
+                  {['draft', 'rejected', 'suspended'].includes(c.status) && (
+                    <button onClick={() => promptAction(c, 'submit')} className="bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
+                      {t('campaign.submit')}
+                    </button>
+                  )}
+                  {['draft', 'rejected', 'cancelled', 'suspended'].includes(c.status) && (
+                    <button onClick={() => promptAction(c, 'activate')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
+                      ▶ {t('campaign.activate')}
+                    </button>
+                  )}
+                  {c.status === 'active' && !expired && (
+                    <button onClick={() => promptAction(c, 'complete')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
+                      {t('campaign.complete')}
+                    </button>
+                  )}
+                  {editPath && ['draft', 'rejected', 'suspended', 'pending', 'active'].includes(c.status) && !expired && (
+                    <Link to={`${editPath}?edit=${c._id}`} className="btn-secondary text-xs py-1.5 px-3">✏️ {t('campaign.edit')}</Link>
+                  )}
+                  {/* Suspend is available for every active campaign (including
+                      expired ones) so the owner can stop it and then delete it. */}
+                  {c.status === 'active' && (
+                    <button onClick={() => promptAction(c, 'suspend')} className="btn-danger text-xs py-1.5 px-3">⏸ {t('campaign.suspend')}</button>
+                  )}
+                  {/* Delete only applies to dead campaigns with zero donations.
+                      Blocked campaigns open the reason modal instead. */}
+                  <button
+                    onClick={() => promptDelete(c)}
+                    disabled={acting}
+                    className="btn-danger text-xs py-1.5 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={!canDeleteCampaign(c) ? t('campaign.deleteBlockedHint') : undefined}
+                  >
+                    🗑 {t('campaign.delete')}
                   </button>
-                )}
-                {['draft', 'rejected', 'cancelled', 'suspended'].includes(c.status) && (
-                  <button onClick={() => promptAction(c, 'activate')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
-                    ▶ {t('campaign.activate')}
-                  </button>
-                )}
-                {c.status === 'active' && (
-                  <button onClick={() => promptAction(c, 'deactivate')} className="btn-danger text-xs py-1.5 px-3">⏸ {t('campaign.deactivate')}</button>
-                )}
-                {c.status === 'active' && (
-                  <button onClick={() => promptAction(c, 'complete')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
-                    {t('campaign.complete')}
-                  </button>
-                )}
-                {editPath && ['draft', 'rejected', 'suspended', 'pending', 'active'].includes(c.status) && (
-                  <Link to={`${editPath}?edit=${c._id}`} className="btn-secondary text-xs py-1.5 px-3">✏️ {t('campaign.edit')}</Link>
-                )}
-                {['draft', 'rejected', 'cancelled', 'suspended'].includes(c.status) && (
-                  <button onClick={() => promptAction(c, 'delete')} className="btn-danger text-xs py-1.5 px-3">🗑 {t('campaign.delete')}</button>
-                )}
-                {allowSuspend && isAdmin && c.status === 'active' && (
-                  <button onClick={() => promptAction(c, 'suspend')} className="btn-danger text-xs py-1.5 px-3">⏸ {t('campaign.suspend')}</button>
-                )}
-                {allowSuspend && isAdmin && c.status === 'suspended' && (
-                  <button onClick={() => promptAction(c, 'restore')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
-                    {t('campaign.restore')}
-                  </button>
-                )}
-              </div>
-            </CampaignCard>
-          ))}
+                  {c.status === 'suspended' && (
+                    <button onClick={() => promptAction(c, 'restore')} className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors">
+                      {t('campaign.restore')}
+                    </button>
+                  )}
+                </div>
+              </CampaignCard>
+            );
+          })}
         </div>
       )}
 
@@ -335,6 +377,41 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
                   </>
                 )}
               </div>
+
+              {/* Campaign actions — kept consistent with the card buttons. */}
+              <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700 flex items-center gap-2 flex-wrap">
+                {selected.status === 'active' && (
+                  <button
+                    onClick={() => { setSelected(null); promptAction(selected, 'suspend'); }}
+                    className="btn-danger text-xs py-1.5 px-3"
+                  >
+                    ⏸ {t('campaign.suspend')}
+                  </button>
+                )}
+                {selected.status === 'active' && !isExpired(selected) && (
+                  <button
+                    onClick={() => { setSelected(null); promptAction(selected, 'complete'); }}
+                    className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors"
+                  >
+                    {t('campaign.complete')}
+                  </button>
+                )}
+                {selected.status === 'suspended' && (
+                  <button
+                    onClick={() => { setSelected(null); promptAction(selected, 'restore'); }}
+                    className="bg-green-600 hover:bg-green-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg transition-colors"
+                  >
+                    {t('campaign.restore')}
+                  </button>
+                )}
+                <button
+                  onClick={() => { setSelected(null); promptDelete(selected); }}
+                  disabled={acting}
+                  className="btn-danger text-xs py-1.5 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  🗑 {t('campaign.delete')}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -362,6 +439,17 @@ export default function CampaignManage({ basePath, createPath, editPath, allowSu
           />
         )}
       </ConfirmModal>
+
+      {/* Blocked-delete modal: shows the exact reason the campaign cannot be
+          removed. No confirm button — the only way forward is to suspend /
+          cancel it first. */}
+      <ConfirmModal
+        open={!!blockedDelete}
+        title={t('campaign.deleteBlockedTitle')}
+        message={blockedDelete?.backendMessage || (blockedDelete ? t(blockedDelete.key, blockedDelete.options || {}) : '')}
+        cancelLabel={t('common.close')}
+        onCancel={() => setBlockedDelete(null)}
+      />
     </div>
   );
 }

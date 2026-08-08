@@ -23,6 +23,8 @@ import AdminAlerts from './AdminAlerts';
 import PublicAlertForm from '../alerts/PublicAlertForm';
 import AdminAlertAudit from './AdminAlertAudit';
 import CampaignAnalytics from '../campaigns/CampaignAnalytics';
+import CampaignManage from '../campaigns/CampaignManage';
+import CampaignForm from '../campaigns/CampaignForm';
 
 export default function AdminDashboard() {
   const { t } = useTranslation();
@@ -31,9 +33,11 @@ export default function AdminDashboard() {
     { path: '/dashboard/admin',              icon: '📊', label: t('dashboard.overview') },
     { path: '/dashboard/admin/approvals',    icon: '✅', label: t('dashboard.pendingApprovals') },
 
-    // ── Campaign Reports (view-only analytics — management is done by the
-    //    owning Subcity / Woreda admins) ────────────────────────────────────
-    { path: '/dashboard/admin/campaigns/analytics', icon: '📈', label: 'Campaign Reports', sectionHeader: true },
+    // ── Campaigns & Fundraising (system admin manages all campaigns) ────────
+    { path: '/dashboard/admin/campaigns', icon: '🎗️', label: 'Campaign Management', sectionHeader: true },
+    { path: '/dashboard/admin/campaigns', icon: '🎗️', label: 'Manage Campaigns', indent: true },
+    { path: '/dashboard/admin/campaigns/new', icon: '➕', label: 'Create Campaign', indent: true },
+    { path: '/dashboard/admin/campaigns/analytics', icon: '📈', label: 'Campaign Reports', indent: true },
 
     { path: '/dashboard/admin/users',        icon: '👥', label: t('dashboard.userManagement') },
     { path: '/dashboard/admin/reports',      icon: '📋', label: t('dashboard.reportManagement') },
@@ -57,6 +61,8 @@ export default function AdminDashboard() {
       <Routes>
         <Route index element={<AdminOverview />} />
         <Route path="approvals"  element={<AdminApprovals />} />
+        <Route path="campaigns" element={<CampaignManage basePath="/dashboard/admin/campaigns" createPath="/dashboard/admin/campaigns/new" editPath="/dashboard/admin/campaigns/new" />} />
+        <Route path="campaigns/new" element={<CampaignForm listPath="/dashboard/admin/campaigns" />} />
         <Route path="campaigns/analytics" element={<CampaignAnalytics />} />
         <Route path="users"      element={<AdminUsers />} />
         <Route path="reports"    element={<AdminReports />} />

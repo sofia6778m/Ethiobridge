@@ -4,11 +4,15 @@ import { getCategory, progressPct, formatETB, STATUS_STYLES } from '../../utils/
 
 // Reusable campaign card used across the public site and every dashboard.
 // `to` overrides the default link target so manager views can point at their
-// own detail/action routes.
-export default function CampaignCard({ campaign, to, showStatus = true, showDonate = true, children }) {
+// own detail/action routes. `displayStatus` overrides the badge label (used by
+// dashboards to show "expired" for active campaigns past their end date).
+// When `onDonate` is provided the Donate Now button opens a donation modal
+// immediately (no login gate); otherwise it navigates to the campaign page.
+export default function CampaignCard({ campaign, to, showStatus = true, showDonate = true, displayStatus: statusOverride, onDonate, children }) {
   const { t } = useTranslation();
   if (!campaign) return null;
 
+  const status = statusOverride || campaign.status;
   const cat = getCategory(campaign.category);
   const target = to || `/campaigns/${campaign._id}`;
   const pct = progressPct(campaign);
@@ -30,8 +34,8 @@ export default function CampaignCard({ campaign, to, showStatus = true, showDona
             {cat.icon} {cat.label}
           </span>
           {showStatus && (
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STATUS_STYLES[campaign.status] || STATUS_STYLES.draft}`}>
-              {campaign.status}
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STATUS_STYLES[status] || STATUS_STYLES.draft}`}>
+              {status}
             </span>
           )}
         </div>
@@ -76,12 +80,21 @@ export default function CampaignCard({ campaign, to, showStatus = true, showDona
         {children}
 
         {showDonate && campaign.status === 'active' && (
-          <Link
-            to={`/campaigns/${campaign._id}`}
-            className="mt-3 block text-center bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
-          >
-            💖 {t('campaign.donateNow')}
-          </Link>
+          onDonate ? (
+            <button
+              onClick={() => onDonate(campaign)}
+              className="mt-3 block w-full text-center bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+            >
+              💖 {t('campaign.donateNow')}
+            </button>
+          ) : (
+            <Link
+              to={`/campaigns/${campaign._id}`}
+              className="mt-3 block text-center bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+            >
+              💖 {t('campaign.donateNow')}
+            </Link>
+          )
         )}
       </div>
     </div>

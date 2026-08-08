@@ -30,6 +30,36 @@ export const getCategory = (value) =>
 export const getPaymentMethod = (value) =>
   PAYMENT_METHODS.find((m) => m.value === value) || { value, icon: '💳', label: value || '—' };
 
+// A campaign is "expired" once its end date has passed, even when its stored
+// status is still `active`. Expired campaigns never surface on the public site
+// and are shown as "expired" in dashboards.
+export const isExpired = (campaign) =>
+  Boolean(campaign?.endDate && new Date(campaign.endDate).getTime() < Date.now());
+
+export const displayStatus = (campaign) => (isExpired(campaign) ? 'expired' : campaign?.status || '');
+
+// Campaigns that may be hard-deleted: never been live and never received any
+// donation. Mirrors DELETABLE_STATUSES in campaignController.js — anything
+// else must be suspended / cancelled first and even then only with zero
+// donations.
+export const DELETABLE_STATUSES = ['draft', 'rejected', 'suspended', 'cancelled'];
+
+// Whether a campaign is safe to delete (dead status AND zero donations).
+export const canDeleteCampaign = (campaign) =>
+  Boolean(campaign) &&
+  DELETABLE_STATUSES.includes(campaign.status) &&
+  (campaign.donationCount ?? 0) === 0;
+
+// Localized reason a campaign cannot be deleted, for the blocked-delete modal.
+// Returns { key, options } for i18n (mirrors the backend 403 messages) or null
+// when deletion is permitted.
+export const deleteBlockReason = (campaign) => {
+  if (!campaign) return { key: 'campaign.deleteBlockedStatus', options: { status: '' } };
+  if ((campaign.donationCount ?? 0) > 0) return { key: 'campaign.deleteBlockedDonations' };
+  if (campaign.status === 'active') return { key: 'campaign.deleteBlockedActive' };
+  return { key: 'campaign.deleteBlockedStatus', options: { status: campaign.status } };
+};
+
 export const progressPct = (campaign) => {
   if (!campaign || !campaign.goalAmount) return 0;
   return Math.min(100, Math.round(((campaign.raisedAmount || 0) / campaign.goalAmount) * 100));
@@ -61,6 +91,7 @@ export const STATUS_STYLES = {
   completed: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
   suspended: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300',
   cancelled: 'bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
+  expired:   'bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
 };
 
 export const DONATION_STATUS_STYLES = {

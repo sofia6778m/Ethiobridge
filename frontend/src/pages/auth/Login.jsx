@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
 import { getRoleDashboard } from '../../utils/roleRoutes';
@@ -12,6 +12,7 @@ export default function Login() {
   const { t } = useTranslation();
   const { login, isAuthenticated, user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [form,         setForm]         = useState({ email: '', password: '' });
   const [loading,      setLoading]      = useState(false);
@@ -19,12 +20,22 @@ export default function Login() {
   // error: null | { message, isLockout, retryAfterMinutes }
   const [error, setError] = useState(null);
 
-  // If the user is already logged in, send them straight to their dashboard.
+  // After sign-in, honor a ?return= URL (e.g. /login?return=/campaigns/:id) so
+  // users bounce straight back to the page they were on. Only in-app paths are
+  // allowed to prevent open redirects.
+  const getRedirectTarget = () => {
+    const raw = new URLSearchParams(location.search).get('return');
+    if (raw && raw.startsWith('/') && !raw.startsWith('//')) return raw;
+    return null;
+  };
+
+  // If the user is already logged in, send them straight to their dashboard
+  // (or back to the requested page when a safe ?return= is present).
   useEffect(() => {
     if (isAuthenticated && user) {
-      navigate(getRoleDashboard(user), { replace: true });
+      navigate(getRedirectTarget() || getRoleDashboard(user), { replace: true });
     }
-  }, [isAuthenticated, user, navigate]);
+  }, [isAuthenticated, user, navigate, location.search]);
 
   const handleChange = (e) => {
     setForm(p => ({ ...p, [e.target.name]: e.target.value }));

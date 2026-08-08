@@ -1,9 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, protectOptional, authorize } = require('../middleware/auth');
 const {
   createDonation,
-  createPublicDonation,
   trackDonationByRef,
   getMyDonations,
   getDonation,
@@ -21,12 +20,16 @@ const MANAGE_ROLES = [
 ];
 const CITIZEN_ROLES = ['citizen', 'CITIZEN'];
 
-// Citizens record money donations + in-kind pledges and track their receipts.
-router.post('/', protect, authorize(...CITIZEN_ROLES), createDonation);
+// Public donation submission — guests and every logged-in role can donate.
+// protectOptional attaches the account identity for logged-in users (so their
+// profile data pre-fills and the donor is linked) but never rejects a guest.
+// Donor identity is never gated by role.
+router.post('/', protectOptional, createDonation);
+
+// Citizens can list their own donations and track their receipts.
 router.get('/my', protect, authorize(...CITIZEN_ROLES), getMyDonations);
 
-// Public (guest) donation + receipt tracking — no auth, kept before the /:id catch-all.
-router.post('/public', createPublicDonation);
+// Public receipt lookup by tracking reference — no auth, kept before the /:id catch-all.
 router.get('/track/:donationRef', trackDonationByRef);
 
 // Manager reads (fixed paths BEFORE the /:id catch-all).

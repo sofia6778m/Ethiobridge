@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { hierarchyAPI, governanceComplaintAPI, campaignAPI } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
+import { useSocket } from '../../../context/SocketContext';
 import { formatETB } from '../../../utils/campaignMeta';
 import StatCard from '../../../components/common/StatCard';
 import LoadingSpinner from '../../../components/common/LoadingSpinner';
@@ -15,8 +16,8 @@ export default function WoredaOverview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const fetchStats = useCallback(async () => {
-    setLoading(true);
+  const fetchStats = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await hierarchyAPI.getWoredaStats();
@@ -32,13 +33,25 @@ export default function WoredaOverview() {
         .catch(() => setCampaignStats(null));
     } catch (err) {
       console.error('[WOREDA] Failed to load stats:', err.response?.data || err.message);
-      setError(err.response?.data?.message || 'Failed to load dashboard stats');
+      if (!silent) setError(err.response?.data?.message || 'Failed to load dashboard stats');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  // Live refresh: campaign counters update immediately when a campaign is
+  // created / edited / deleted / activated / deactivated anywhere.
+  const { on } = useSocket() || {};
+  const fetchRef = useRef(fetchStats);
+  fetchRef.current = fetchStats;
+  useEffect(() => {
+    if (!on) return;
+    const events = ['campaign:new', 'campaign:updated', 'campaign:statusUpdate', 'campaign:deleted'];
+    const cleanups = events.map((e) => on(e, () => fetchRef.current(true)));
+    return () => cleanups.forEach((off) => off && off());
+  }, [on]);
 
   if (loading) return <LoadingSpinner />;
 

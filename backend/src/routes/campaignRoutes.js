@@ -84,8 +84,11 @@ router.post('/:id/submit', protect, authorize(...MANAGE_ROLES), submitCampaign);
 router.post('/:id/approve', protect, authorize(...MANAGE_ROLES), approveCampaign);
 router.post('/:id/reject', protect, authorize(...MANAGE_ROLES), rejectCampaign);
 router.post('/:id/complete', protect, authorize(...MANAGE_ROLES), completeCampaign);
-router.post('/:id/suspend', protect, authorize(...ADMIN_ROLES), suspendCampaign);
-router.post('/:id/restore', protect, authorize(...ADMIN_ROLES), restoreCampaign);
+// Suspend / restore are open to every campaign manager (not just system
+// admins) so any owner can stop a live campaign — and only then delete it.
+// Ownership is enforced inside the controller via canManageCampaign.
+router.post('/:id/suspend', protect, authorize(...MANAGE_ROLES), suspendCampaign);
+router.post('/:id/restore', protect, authorize(...MANAGE_ROLES), restoreCampaign);
 // Self-service lifecycle for subcity / woreda owners (scope enforced in controller).
 router.delete('/:id', protect, authorize(...MANAGE_ROLES), deleteCampaign);
 router.post('/:id/activate', protect, authorize(...MANAGE_ROLES), activateCampaign);

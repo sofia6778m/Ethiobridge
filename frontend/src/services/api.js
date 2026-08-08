@@ -31,7 +31,10 @@ API.interceptors.response.use(
       localStorage.removeItem('zda_token');
       localStorage.removeItem('zda_user');
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+        // Keep the current location so the user lands back where they were
+        // after signing in again (e.g. the campaign they tried to donate to).
+        const returnPath = window.location.pathname + window.location.search;
+        window.location.href = `/login?return=${encodeURIComponent(returnPath)}`;
       }
     }
 
@@ -321,11 +324,9 @@ export const campaignAPI = {
   restore: (id) => API.post(`/campaigns/${id}/restore`),
 };
 
-// ---- Donations / pledges ----
+// ---- Donations / pledges (citizen-only submission; receipt lookup is public) ----
 export const donationAPI = {
   create: (data) => API.post('/donations', data),
-  // Public (guest) donation — no login required. Returns the receipt reference.
-  createPublic: (data) => API.post('/donations/public', data),
   // Public receipt lookup by tracking reference — no login required.
   trackByRef: (ref) => API.get(`/donations/track/${encodeURIComponent(ref)}`),
   getMy: (params) => API.get('/donations/my', { params }),
